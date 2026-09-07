@@ -176,14 +176,16 @@ implementation surface where a soundness bug could hide.
 
 | tier | protocol | rounds/reps | why here | DEMO h=48 | STRONG h=208 |
 |---|---|---|---|---|---|
-| local | MPC-in-the-head | τ=10, N=256 | smallest proof, verifies every transaction | ~48 KB* | ~200 KB* |
-| super | 5-pass SSH | 80 | middle ground | 192 KB | 0.75 MB |
-| supreme | 3-pass SSH | 137 | simplest analysis, fewest verifications, irreversible output | 316 KB | ~1.3 MB* |
+| local | MPC-in-the-head | τ=20, N=16 | smallest proof, verifies every transaction | 62 KB | ~260 KB* |
+| super | 5-pass SSH | 80 | middle ground | 185 KB | 0.75 MB |
+| supreme | 3-pass SSH | 137 | simplest analysis, fewest verifications, irreversible output | 295 KB | ~1.3 MB* |
 
-\* estimated from `mq.md`'s per-repetition formula and our measured per-round
-size; 5-pass figures measured on the current implementation. Round counts follow
-`mq.md`: 2^-80 needs 137 rounds at error 2/3 for 3-pass, 80 at error ~1/2 for
-5-pass.
+\* STRONG figures extrapolated; DEMO figures measured on the shipped
+implementation. Round counts follow `mq.md`: 2^-80 needs 137 rounds at error 2/3
+for 3-pass, 80 at error ~1/2 for 5-pass, and ceil(80/log2 N) repetitions for
+MPCitH. N=16 rather than the sketched N=256 is the shipped default: N=256 is
+half the size (32.3 KB) but 7x slower both ways (0.22 s prove, 0.20 s verify vs
+0.03 s), and the local tier is the one that verifies most.
 
 ### The ordering is deliberate in two directions
 
@@ -227,18 +229,26 @@ demand from the originating grid rather than carried by every block.
 
 ### Scope — updated after implementation
 
-`chain/proofs.py` now ships **two** of the three. The 5-pass wraps
-`mq/ms6`'s existing `prove_hidden`/`verify_hidden`; the **3-pass was written**
-against the same gamma-batched form (`mq/ms6` had dropped its 3-pass path when it
-moved to 5-pass, leaving only the `rounds_for_security` helper). Measured at
-2^-80: 5-pass 192 KB in 80 rounds, 3-pass 316 KB in 137. The two reject each
-other's proofs, so the diversity is real.
+**All three ship, and all three live in `mq/` rather than in the chain.** The
+5-pass is `mq/ms6`'s existing `prove_hidden`/`verify_hidden`. The **3-pass was
+written** against the same gamma-batched form as `mq/ms6/ssh3.py` (`mq/ms6/core.py`
+had dropped its 3-pass path when it moved to 5-pass, leaving only the
+`rounds_for_security` helper). **MPCitH was written** as `mq/ms6/mpcith.py`, built
+from the stages 1-3 that `mq/mq.md` specifies for a module which is not in this
+repository: gamma-batched quadratic form, additive sharing over a binary seed
+tree, sacrifice check, three-phase Fiat-Shamir. Two deviations from that spec are
+documented in the module — the party broadcast computes `<alpha, [w]_i>` as
+`<A^T alpha, [z]_i>` (cost falls from `tau*N*h^2` to `tau*(h^2 + N*h)`, 40x less
+arithmetic at N=256, h=48), and there is no correction term for the unconstrained
+mask `a`, so each party draws that share from its own seed.
 
-**MPCitH was not implemented.** The module `mq.md` refers to is not in this
-repository and its stage 3 was never written; hand-rolling an MPC-in-the-head
-prover with no reference to validate against would be worse than shipping
-nothing. It is registered as a backend that raises, and `ChainParams.DESIGNED`
-still names it at the local tier so the intent stays visible in configuration.
+Measured at 2^-80, h=48: MPCitH 62 KB / 0.03 s, 5-pass 185 KB, 3-pass 295 KB.
+Every pair rejects the others' proofs, so the diversity is real, and each
+protocol has a prover-free verifier half in `vs6` generated from the original by
+`mq/sync_vs6.py` — `chain/proofs.py` runs it as `verify_independent`.
+
+`ChainParams.DESIGNED` is now `DEMO`: the designed per-tier policy is the running
+one. A transaction carries all three proofs, 542 KB in 0.09 s.
 
 ## 7. Concurrency: the problem that actually bites
 
@@ -322,7 +332,7 @@ node set and a quorum, so they run at all three tiers unchanged.
 | `trustlist.py` | *new* — each node's private, unrooted view; explicitly forbidden from touching quorum |
 | `locality.py` | *new* — locality tags, candidate grids, seeded enrolment, split/merge rules |
 | `tiers.py` | *new* — epoch scheduler; phases L, S, X; assembles super and network blocks |
-| `proofs/` | *new* — backend interface over `prove`/`verify`; existing 5-pass wired in, 3-pass and MPCitH to be written |
+| `proofs.py` | *new* — backend interface over `prove`/`verify`; 5-pass wired in, 3-pass and MPCitH written into `mq/ms6` and mirrored into `mq/vs6` |
 | `ceremony.py` | `Grid.seat` takes standing from the register; shadow attestations collected separately from quorum |
 | `block.py` | three block types; attendance roll and `register_root` in the certificate |
 | `state.py` | split: per-grid delta validation vs. tier-2 global application |
@@ -336,7 +346,7 @@ the three protocols add:
 
 | item | why it is open |
 |---|---|
-| Two of three provers do not exist | Only gamma-batched 5-pass ships. 3-pass needs writing; MPCitH needs writing including the stage 3 `mq.md` designs but never built, and the module it refers to is not in this repository. |
+| ~~Two of three provers do not exist~~ | **Closed.** All three are implemented in `mq/ms6`, with independent verifiers in `mq/vs6`. What remains is that the 3-pass and MPCitH have no reference implementation to differential-test against — they are validated by soundness tests and by two independent verifiers agreeing, not by a third-party vector. |
 | Three proof systems, three audit surfaces | Diversity protects against a bug in one system and multiplies the code that could contain one. Worth it only if all three are actually reviewed. |
 | Sample rates at the upper tiers | How much of a grid's work super and supreme re-verify decides both cost and catch probability. Unset. |
 | Register handling on split and merge | Counters survive involuntary restructuring by design, but which register a split's records land in, and how two merged registers reconcile, needs a concrete rule. |

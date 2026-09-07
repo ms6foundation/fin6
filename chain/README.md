@@ -34,7 +34,7 @@ Both are run from the repository root (the same place `examples/` imports
 | `network.py` | bootstrapping a test network; wallets |
 | `demo.py` | the single-grid walkthrough |
 | **tiered path** | |
-| `proofs.py` | proof backends: `ssh5`, `ssh3` (both real), `mpcith` (declared, unimplemented) |
+| `proofs.py` | proof backends over `mq/`: `ssh5`, `ssh3`, `mpcith` — all three real |
 | `register.py` | `GridRegister` — attendance as rooted state, not opinion |
 | `trustlist.py` | each node's private view; structurally barred from quorum |
 | `locality.py` | persistent grids, seeded enrolment, nullifier partitioning |
@@ -229,8 +229,8 @@ Carried from the design sketch:
   everything below it. Skip-edges (`front` from `r−2` as well as `r−1`) would
   fix it; not implemented.
 - **Grid resize across epochs** — reseating is implemented; join/leave is not.
-- **Proof cost at scale** — measured above; MPC-in-the-head
-  (`ms6acc_mpcith.py`) is the lever if 0.75 MB is too large.
+- **Proof cost at scale** — measured above; MPC-in-the-head is now implemented
+  (`mq/ms6/mpcith.py`) and is the smallest of the three by 3x.
 - **Quorum signature scheme** — see caveat 3.
 
 Added by the implementation:
@@ -322,28 +322,50 @@ tripwire that raises on read and asserts the epoch still finalises.
 
 ## Proof systems per tier
 
-| tier | backend | rounds for 2^-80 | proof at h=48 |
+| tier | backend | rounds / reps for 2^-80 | proof at h=48 |
 |---|---|---|---|
-| local | `ssh5` (`mpcith` when it exists) | 80 | 192 KB |
-| super | `ssh5` | 80 | 192 KB |
-| supreme | `ssh3` | 137 | 316 KB |
+| local | `mpcith` (N=16) | 20 | 62 KB |
+| super | `ssh5` | 80 | 185 KB |
+| supreme | `ssh3` | 137 | 295 KB |
+
+This is the designed policy, and it is the running one: `ChainParams.DEMO`
+carries all three backends and `proof_policy` maps each tier to its own. A
+transaction built for the full policy carries ~542 KB of proof and takes 0.09 s
+to build; the local tier verifies its `mpcith` proof in 0.026 s.
 
 **The 3-pass had to be written.** `mq/ms6/core.py` dropped its 3-pass path when
 it moved to 5-pass — only the `rounds_for_security` helper survived, computing
-the 137 rounds that error 2/3 needs.  `chain/proofs.py` implements it on the same
+the 137 rounds that error 2/3 needs.  `mq/ms6/ssh3.py` implements it on the same
 gamma-batched form, so the identity a seat checks on challenge 1 is
 
     G(t0, r1) + e0  =  t - q(r1) + c - G(t1, r1) - e1
 
-with challenge 0's whole response derivable from the round seed.  The two systems
-reject each other's proofs (`test_the_two_systems_reject_each_other`), which is
-what makes the diversity real rather than nominal.
+with challenge 0's whole response derivable from the round seed.  Every pair of
+the three systems rejects the others' proofs, which is what makes the diversity
+real rather than nominal.
 
-`mpcith` is registered and raises `NotImplementedError` pointing at `mq/mq.md`.
-It was **not** implemented: the module `mq.md` refers to is not in this
-repository and its stage 3 was never written, and hand-rolling an MPC-in-the-head
-prover that cannot be validated against a reference would be worse than shipping
-nothing.
+**MPC-in-the-head had to be written too.** `mq/mq.md` specifies stages 1-3 of
+an MQOM-style proof in a module (`ms6acc_mpcith.py`) that is not in this
+repository, so `mq/ms6/mpcith.py` builds it from that spec: gamma-batched
+quadratic form, additive sharing over a binary seed tree, sacrifice check, and
+three-phase Fiat-Shamir (`h1` -> gamma, `h2` -> epsilon, `h3` -> the hidden
+party `i*`). Two deviations from the spec are documented in the module: the
+party broadcast computes `<alpha, [w]_i>` as `<A^T alpha, [z]_i>`, which drops
+prover cost from `tau*N*h^2` to `tau*(h^2 + N*h)` — 40x less arithmetic at
+N=256, h=48 — and there is no correction term for the mask `a`, which is
+unconstrained, so every party draws its share from its own seed.
+
+Party count is the size/time dial (h=48, 2^-80):
+
+| N | reps | proof | prove | verify |
+|---|---|---|---|---|
+| 8 | 27 | 80.3 KB | | |
+| **16** | **20** | **63.2 KB** | 0.03 s | 0.03 s |
+| 64 | 14 | 44.7 KB | | |
+| 256 | 10 | 32.3 KB | 0.22 s | 0.20 s |
+
+N=16 is the shipped default: still 3x smaller than 5-pass while staying the
+fastest of the three both ways.
 
 ## Costs
 
@@ -440,3 +462,11 @@ faster. Threshold is a real trade, not a free win.
 
 Measured: 320-turn pool builds in 0.29 s; a full epoch — three consensus tiers
 plus hardening — runs in 0.2–0.3 s at demo scale. 28 hardening tests in ~4 s.
+
+**Both halves of `mq` carry all three.** `mq/vs6/ssh3.py` and `mq/vs6/mpcith.py`
+are generated from the `ms6` originals by `mq/sync_vs6.py`, which drops the
+provers and every import `vs6` does not need — the verifier package contains no
+prover and imports nothing from `ms6`. `chain/proofs.py` exposes this as
+`ProofBackend.verify_independent`, and `chain/tests/test_mq_backends.py` asserts
+the copied verifier sources are byte-identical to the originals and that both
+verifiers agree on every proof.

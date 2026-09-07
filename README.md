@@ -127,11 +127,15 @@ equivocation detection and view change, the three-tier epoch through to the
 supreme mempool, grid registers and standing, nullifier partitioning, and
 hardening into history.
 
-**Two proof backends ship.** `ssh5` wraps `mq/ms6`'s gamma-batched 5-pass; `ssh3`
-is a 3-pass written for this repo (`mq/ms6` dropped its 3-pass path, leaving only
-the round-count helper). They reject each other's proofs, which is what makes the
-per-tier diversity real. `mpcith` is declared and raises — it is specified in
-`mq/mq.md` but the module that spec refers to is not in this repository.
+**Three proof backends ship**, one per tier, all living in `mq/` proper with
+verifier halves in `vs6`. `ssh5` is `mq/ms6`'s gamma-batched 5-pass (80 rounds,
+185 KB at h=48); `ssh3` is the 3-pass written for this repo in `mq/ms6/ssh3.py`
+(137 rounds, 295 KB), since `mq/ms6/core.py` had dropped its 3-pass path leaving
+only the round-count helper; `mq/ms6/mpcith.py` is the MPC-in-the-head proof
+`mq/mq.md` specifies but never shipped (20 repetitions at N=16, 62 KB — the
+smallest and the fastest). All three reject each other's proofs, which is what
+makes the per-tier diversity real, and every proof is checked by the independent
+`vs6` verifier as well as the prover's own.
 
 **Not built:** grid split and merge, cross-partition transactions, reorg
 rollback, a wire format, and real transport. The ceremony is a synchronous

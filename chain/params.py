@@ -45,7 +45,7 @@ class ChainParams:
 
     # ── proof systems ─────────────────────────────────────────────────────────
     security_bits: int = 80
-    proof_backends: tuple = ("ssh5", "ssh3")   # what a wallet proves the statement in
+    proof_backends: tuple = ("mpcith", "ssh5", "ssh3")  # what a wallet proves in
     default_backend: str = "ssh5"         # what a bare verify_transaction checks
 
     # ── standing ──────────────────────────────────────────────────────────────
@@ -60,7 +60,7 @@ class ChainParams:
     quorum_den: int = 3
 
     # tier -> proof backend.  See backend_for().
-    proof_policy: tuple = (("local", "ssh5"), ("super", "ssh5"),
+    proof_policy: tuple = (("local", "mpcith"), ("super", "ssh5"),
                            ("supreme", "ssh3"))
 
     def __post_init__(self):
@@ -86,11 +86,9 @@ class ChainParams:
     def backend_for(self, tier: str) -> str:
         """Which proof system guards a tier.
 
-        The designed mapping is mpcith / ssh5 / ssh3 from local to supreme:
-        smallest proof where the most verifying happens, simplest analysis where
-        the output is irreversible.  mpcith is specified in mq/mq.md but not
-        implemented, so a params preset that names it must be run through
-        runnable_policy() first.
+        mpcith / ssh5 / ssh3 from local to supreme: smallest proof where the
+        most verifying happens, simplest analysis where the output is
+        irreversible.  All three now ship in mq/.
         """
         return dict(self.proof_policy)[tier]
 
@@ -107,10 +105,12 @@ class ChainParams:
 # Fast; note commitments are undersized.  Tests and the runnable demo.
 DEMO = ChainParams(name="demo")
 
-# The mapping part two argues for.  Not runnable until mpcith exists.
-DESIGNED = ChainParams(name="designed",
-                       proof_policy=(("local", "mpcith"), ("super", "ssh5"),
-                                     ("supreme", "ssh3")))
+# The two-backend mapping, for comparing against the full policy.
+NO_MPCITH = ChainParams(name="no-mpcith",
+                        proof_backends=("ssh5", "ssh3"),
+                        proof_policy=(("local", "ssh5"), ("super", "ssh5"),
+                                      ("supreme", "ssh3")))
+DESIGNED = DEMO
 
 # Sized per mq/mq.md's parameter guidance.  Slow in pure Python.
 STRONG = ChainParams(
@@ -122,4 +122,4 @@ STRONG = ChainParams(
     row_size=8,
 )
 
-PRESETS = {p.name: p for p in (DEMO, STRONG, DESIGNED)}
+PRESETS = {p.name: p for p in (DEMO, STRONG, NO_MPCITH)}

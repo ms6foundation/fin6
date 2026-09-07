@@ -3,6 +3,9 @@
 Public API
 ----------
 ms6(vals, d, ...)        → (c, h_list, x_list, mq_sec, v_list, sys, params)
+prove_hidden(...)        → gamma-batched 5-pass SSH proof
+prove_hidden3(...)       → gamma-batched 3-pass SSH proof      (ssh3.py)
+prove_mpcith(...)        → MPC-in-the-head proof               (mpcith.py)
 ps6(iset, h_list, ...)   → ps_list
 Commitment(vals, d, ...) → updatable commitment object
 
@@ -79,17 +82,31 @@ from .core import (
     ut,
     gen,
 )
+from .ssh3 import (prove_hidden3, verify_hidden3, serialize_proof3,
+                   fs_trits, DEFAULT_ROUNDS_3PASS)
+from .mpcith import (prove_mpcith, verify_mpcith, serialize_proof_mpcith,
+                     sacrifice_check_in_the_clear, matvec_transpose,
+                     repetitions_for, tree_leaves, tree_path, tree_rebuild,
+                     DEFAULT_PARTIES)
+
 from . import utils6
 from . import pow6
+from . import ssh3
+from . import mpcith
 
 __all__ = [
     # main API
     "ms6", "ps6", "Commitment",
     # MQ system
     "MQSystem", "RestrictedMap",
-    # ZK
+    # ZK — 5-pass (core), 3-pass (ssh3), MPC-in-the-head (mpcith)
     "prove_hidden", "verify_hidden", "hash_to_field",
     "serialize_proof", "DirectBatched",
+    "prove_hidden3", "verify_hidden3", "serialize_proof3", "fs_trits",
+    "DEFAULT_ROUNDS_3PASS",
+    "prove_mpcith", "verify_mpcith", "serialize_proof_mpcith",
+    "sacrifice_check_in_the_clear", "matvec_transpose", "repetitions_for",
+    "tree_leaves", "tree_path", "tree_rebuild", "DEFAULT_PARTIES",
     # params
     "make_params", "unpack_params", "PARAM_KEYS", "ParamMismatch",
     # governance
@@ -111,5 +128,5 @@ __all__ = [
     # singletons
     "ut", "gen",
     # sub-modules
-    "utils6", "pow6",
+    "utils6", "pow6", "ssh3", "mpcith",
 ]

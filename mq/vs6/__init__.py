@@ -3,6 +3,8 @@
 Public API
 ----------
 vs6(c, claims, ps_list, x_list, sys, params, ...) → True
+verify_hidden(...)   → 5-pass SSH          verify_hidden3(...) → 3-pass SSH
+verify_mpcith(...)   → MPC-in-the-head
 
 Zero-prover-dependency rule
 ---------------------------
@@ -61,15 +63,24 @@ from .core import (
     # ── module-level singleton ────────────────────────────────────────────
     ut,
 )
+from .ssh3 import verify_hidden3, serialize_proof3, fs_trits
+from .mpcith import (verify_mpcith, serialize_proof_mpcith, matvec_transpose,
+                     repetitions_for, tree_rebuild)
+
 from . import utils6
+from . import ssh3
+from . import mpcith
 
 __all__ = [
     # main API
     "vs6",
     # MQ system
     "MQSystem", "RestrictedMap",
-    # ZK
+    # ZK — one verifier per protocol, none of them able to prove
     "verify_hidden", "hash_to_field",
+    "verify_hidden3", "serialize_proof3", "fs_trits",
+    "verify_mpcith", "serialize_proof_mpcith", "matvec_transpose",
+    "repetitions_for", "tree_rebuild",
     # linked commitment
     "LinkedSystem", "verify_linked",
     # params
@@ -85,6 +96,8 @@ __all__ = [
     "chunk_of", "chunks", "_get_batch_ids",
     # singletons
     "ut",
+    # sub-modules
+    "ssh3", "mpcith",
     # sub-modules
     "utils6",
 ]

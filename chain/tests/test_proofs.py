@@ -22,8 +22,8 @@ def _statement(rounds_hint=None):
     return ts, v, {ts.bind_pos: beta}, z, beta
 
 
-def test_both_shipped_backends_are_available():
-    assert set(available_backends()) == {"ssh3", "ssh5"}
+def test_all_three_backends_are_available():
+    assert set(available_backends()) == {"mpcith", "ssh3", "ssh5"}
 
 
 def test_round_counts_follow_the_soundness_error():
@@ -62,13 +62,17 @@ def test_three_pass_cannot_be_rebound():
     assert not b.verify(ts, v, {ts.bind_pos: (beta + 1) % P}, proof)
 
 
-def test_the_two_systems_reject_each_other():
+def test_every_pair_of_systems_rejects_the_other():
     """Diversity is only real if the verifiers are genuinely different."""
     ts, v, known, z, _ = _statement()
-    p5 = get_backend("ssh5").prove(ts, v, known, z, rounds=8)
-    p3 = get_backend("ssh3").prove(ts, v, known, z, rounds=8)
-    assert not get_backend("ssh3").verify(ts, v, known, p5)
-    assert not get_backend("ssh5").verify(ts, v, known, p3)
+    proofs = {n: get_backend(n).prove(ts, v, known, z, rounds=4)
+              for n in ("mpcith", "ssh5", "ssh3")}
+    for checker in proofs:
+        for maker, proof in proofs.items():
+            if checker == maker:
+                continue
+            assert not get_backend(checker).verify(ts, v, known, proof), \
+                f"{checker} accepted a {maker} proof"
 
 
 def test_three_pass_is_bulkier_at_equal_security():
@@ -84,16 +88,22 @@ def test_three_pass_is_bulkier_at_equal_security():
     assert s3 < 3 * s5, "…but not by more than a small factor"
 
 
-def test_mpcith_is_declared_but_refuses_to_run():
+def test_mpcith_round_trip():
     b = get_backend("mpcith")
-    assert not b.available
+    assert b.available
     ts, v, known, z, _ = _statement()
-    try:
-        b.prove(ts, v, known, z)
-    except NotImplementedError as exc:
-        assert "mq/mq.md" in str(exc)
-        return
-    raise AssertionError("the unimplemented backend pretended to prove something")
+    proof = b.prove(ts, v, known, z, rounds=4)
+    assert b.verify(ts, v, known, proof)
+
+
+def test_mpcith_is_the_smallest_of_the_three():
+    """Why it guards the tier that verifies most."""
+    ts, v, known, z, _ = _statement()
+    sizes = {}
+    for name in ("mpcith", "ssh5", "ssh3"):
+        b = get_backend(name)
+        sizes[name] = b.size(b.prove(ts, v, known, z, rounds=b.rounds_for(80)))
+    assert sizes["mpcith"] < sizes["ssh5"] < sizes["ssh3"], sizes
 
 
 def test_unknown_backend_is_refused():
@@ -104,10 +114,9 @@ def test_unknown_backend_is_refused():
     raise AssertionError("an unknown backend was accepted")
 
 
-def test_the_designed_policy_names_mpcith_at_the_local_tier():
-    assert DESIGNED.backend_for("local") == "mpcith"
-    assert DESIGNED.backend_for("super") == "ssh5"
-    assert DESIGNED.backend_for("supreme") == "ssh3"
-    # the runnable preset falls back at the local tier only
-    assert DEMO.backend_for("local") == "ssh5"
+def test_the_designed_policy_is_now_the_running_one():
+    """mpcith / ssh5 / ssh3 from local to supreme — all three implemented."""
+    assert DEMO.backend_for("local") == "mpcith"
+    assert DEMO.backend_for("super") == "ssh5"
     assert DEMO.backend_for("supreme") == "ssh3"
+    assert set(DEMO.proof_backends) == {"mpcith", "ssh5", "ssh3"}
