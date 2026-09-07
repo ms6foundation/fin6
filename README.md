@@ -1,0 +1,167 @@
+# fin6
+
+A private, transaction-based financial ledger. Transactions are verified with
+multivariate-quadratic commitments and zero-knowledge proofs; blocks are agreed
+by scheduled grid ceremonies rather than proof of work; and agreed blocks are
+hardened into history by a finite pool of single-use turns.
+
+> **Research code — unaudited, and not safe for value.** This is a working
+> implementation of a design, not a reviewed cryptosystem. See
+> [Security](#security) before doing anything with it.
+
+## What's here
+
+| path | |
+|---|---|
+| `mq/` | the MQ-hardened batched commitment — `ms6` (prover) and `vs6` (independent verifier) |
+| `examples/` | account-based ledger and sanctions-screening demos built on `mq/` |
+| `chain/` | the private chain: ~7,200 lines, 135 tests |
+| `docs/` | the three design sketches the chain was built from |
+
+## Quick start
+
+Python 3.10+. One runtime dependency — `cryptography`, used only for validator
+and spend signatures. Run everything from the repository root.
+
+```bash
+python3 -m chain.demo             # one grid: transfers, ceremony, Byzantine leaders
+python3 -m chain.demo_tiers       # many grids: registers, partitions, three phases
+python3 -m chain.demo_hardening   # consensus through to hardened history
+python3 -m chain.tests.run_all    # 135 tests, ~20 s
+```
+
+```python
+from chain import DEMO, bootstrap, transfer, run_epoch
+
+nodes, wallets, genesis = bootstrap(["v0", "v1", "v2"], {"alice": [1000]}, DEMO)
+tx, _ = transfer(wallets["alice"], wallets["bob"], 300, 5, DEMO)
+for n in nodes.values():
+    n.submit(tx)
+epoch = run_epoch(nodes, DEMO, height=1, epoch=1, base_seed="s")
+```
+
+## The design, in three layers
+
+### 1. Ledger and ceremony
+
+State is a set of **notes** — this chain's UTXO — each committed under a fixed
+public MQ map rather than a hash. The commitment is algebraic because the
+transaction proof has to reason about it: `chain/txsystem.py` embeds one copy of
+the note map per note slot, so a single gamma-batched proof relates a note's
+hidden value to the very commitment the ledger stores.
+
+One spend, one proof, covering all at once: value conservation, one asset per
+transaction, every output in range, each nullifier derived from the note being
+spent, each spending key matching that note's owner slot, and the whole thing
+welded to this transaction body.
+
+Consensus is a grid. The leader sits alone in row 0; every seat synchronises to
+`front` (same column, row above) and `right`, with the rightmost seat wrapping to
+the leftmost — so each row is a ring fed vertically by the row ahead of it.
+Degree 2 per seat, `O(N)` messages per round, and a leader that sends different
+blocks into different columns has them meet inside a row.
+
+### 2. Tiered consensus
+
+Many grids run concurrently and fan in:
+
+```
+Phase L   local grids, in parallel        →  CeremonyBlock  →  local mempool
+Phase S   their leaders form super grids  →  SuperBlock     →  super mempool
+Phase X   super leaders → supreme grid    →  NetworkBlock   →  supreme mempool
+```
+
+The ceremony machinery is untouched across all three — each tier supplies a
+*workload* saying what its leader builds and what its seats check.
+
+Standing is earned in the **grid register**: a rooted, deterministic record every
+seat recomputes, so the leader's claimed `register_root` is checkable. Newcomers
+are apprentices, seated in the back rows where no counting seat depends on them
+to relay, casting shadow attestations that move their counter but not the quorum.
+Because the counter lives in the grid, relocating restarts it — capturing a
+particular grid costs 40 ceremonies per node, in the open.
+
+Each node also keeps a private trust list built from what it watched. It is
+deliberately powerless: it steers peering and preferences, never quorum.
+
+Cross-grid double spends are made impossible rather than merely detectable — a
+grid may only include transactions whose nullifiers fall in its partition.
+
+### 3. Hardening
+
+Consensus finality is instant; **historical** finality accrues. A block leaves
+the supreme mempool agreed but reversible, and enters history when turns from a
+finite single-use pool have burned themselves on it.
+
+Each turn is a Winternitz one-time key in a Merkle tree. Spending it means
+solving a puzzle and signing the result — and signing twice with a one-time key
+leaks it, so equivocation is self-punishing. Verification recovers the public key
+*from* the signature and opens it against the era root, so membership and
+signature check in one step.
+
+The pool is finite, which couples two things Bitcoin keeps independent:
+
+```
+block_interval = era_seconds × width / turns = 43200 × 32 / 70000 = 19.75 s
+```
+
+Two eras a day, 2,187 blocks each. And because the committee is redrawn every
+block, the threshold *compounds* — an attacker must clear 22-of-32 on a fresh
+unbiased draw every time:
+
+| attacker's share of the pool | P(one block) | P(six consecutive) |
+|---|---|---|
+| 10% | 2.4e-15 | ~0 |
+| 50% | 2.5e-02 | 2.5e-10 |
+| 67% | 5.0e-01 | 1.6e-02 |
+| 80% | 9.6e-01 | 7.8e-01 |
+
+So the practical bar is near 80% of the pool, not 51%. The finite-pool ceiling
+(`max fork depth = owned turns / width`) is the second line — and every failed
+attempt burns the turns it drew, permanently shrinking the next one.
+
+## Status
+
+**Implemented and tested** — the ledger, the single-grid ceremony with
+equivocation detection and view change, the three-tier epoch through to the
+supreme mempool, grid registers and standing, nullifier partitioning, and
+hardening into history.
+
+**Two proof backends ship.** `ssh5` wraps `mq/ms6`'s gamma-batched 5-pass; `ssh3`
+is a 3-pass written for this repo (`mq/ms6` dropped its 3-pass path, leaving only
+the round-count helper). They reject each other's proofs, which is what makes the
+per-tier diversity real. `mpcith` is declared and raises — it is specified in
+`mq/mq.md` but the module that spec refers to is not in this repository.
+
+**Not built:** grid split and merge, cross-partition transactions, reorg
+rollback, a wire format, and real transport. The ceremony is a synchronous
+simulation with no clock.
+
+## Security
+
+- **Unaudited.** Novel constructions, no external review.
+- **The `DEMO` preset is deliberately insecure**: 8 note coordinates of which 4
+  are random puts the note-commitment MQ instance inside Gröbner range. `STRONG`
+  (48 coordinates) is sized per `mq/mq.md` and costs 0.33 s per transaction.
+- **The spend graph is public.** Amounts, output owners and note randomness are
+  hidden; which note is being spent is not. This is the confidential-transactions
+  model, not the Zcash one.
+- **Bootstrap is a trusted setup.** Each grid's founding cohort starts as
+  attesters, because a grid of pure apprentices can never reach quorum. So is
+  era 0 of the hardening pool, and genesis issuance proves nothing about the
+  value it puts into circulation.
+- **`chain/hardening/wots.py` is a teaching implementation.** A deployment should
+  use a reviewed one (RFC 8391).
+- **Distribution is the security parameter.** 70,000 turns on 200 machines is 200
+  points of failure. An attacker's share of the pool *is* the rewrite ceiling.
+
+## Documents
+
+- [`docs/private_chain_design.md`](docs/private_chain_design.md) — the ledger and the single-grid ceremony
+- [`docs/tiered_ceremony_design.md`](docs/tiered_ceremony_design.md) — many grids, registers, trust, per-tier proofs
+- [`docs/hardening_design.md`](docs/hardening_design.md) — moving blocks into network history
+- [`chain/README.md`](chain/README.md) — implementation notes, measured costs, and what the code changed about the design
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
