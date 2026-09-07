@@ -27,6 +27,7 @@ and spend signatures. Run everything from the repository root.
 python3 -m chain.demo             # one grid: transfers, ceremony, Byzantine leaders
 python3 -m chain.demo_tiers       # many grids: registers, partitions, three phases
 python3 -m chain.demo_hardening   # consensus through to hardened history
+python3 -m chain.demo_archive     # what an archive costs, and where it goes
 python3 -m chain.tests.run_all    # 135 tests, ~20 s
 ```
 
@@ -137,8 +138,15 @@ smallest and the fastest). All three reject each other's proofs, which is what
 makes the per-tier diversity real, and every proof is checked by the independent
 `vs6` verifier as well as the prover's own.
 
+**Storage is partly built.** `chain/store/` has the canonical binary codec and
+the archive segment — retention profiles, opaque/structured sections, per-record
+digests. Keeping one proof per transaction instead of three makes a fully
+verifying archive 8.5x smaller, 505 GB/day down to 56 GB/day at 10 tx/s. The
+rest of the persistence layer — the index, snapshots, undo, the signing
+high-water mark — is sketched in `docs/persistence_design.md` and not written.
+
 **Not built:** grid split and merge, cross-partition transactions, reorg
-rollback, a wire format, and real transport. The ceremony is a synchronous
+rollback, real transport. The ceremony is a synchronous
 simulation with no clock.
 
 ## Security
@@ -164,7 +172,7 @@ simulation with no clock.
 - [`docs/private_chain_design.md`](docs/private_chain_design.md) — the ledger and the single-grid ceremony
 - [`docs/tiered_ceremony_design.md`](docs/tiered_ceremony_design.md) — many grids, registers, trust, per-tier proofs
 - [`docs/hardening_design.md`](docs/hardening_design.md) — moving blocks into network history
-- [`docs/persistence_design.md`](docs/persistence_design.md) — what survives a restart, and what may be thrown away *(sketch; not implemented)*
+- [`docs/persistence_design.md`](docs/persistence_design.md) — what survives a restart, and what may be thrown away *(the archive is built; the rest is a sketch)*
 - [`chain/README.md`](chain/README.md) — implementation notes, measured costs, and what the code changed about the design
 
 ## License

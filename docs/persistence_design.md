@@ -240,7 +240,80 @@ Bodies and proofs go into segment files, one per era (2,187 blocks), addressed b
 `(seg_id, offset, length)`. Pruning an era is deleting one file and clearing
 three columns.
 
-## 8. The one write that must precede its action
+## 8. Compressing an archive
+
+Measured rather than assumed, because the intuition is wrong in both
+directions: the bulk of the data cannot be compressed at all, and the part that
+can does not need a compressor.
+
+**Proofs do not compress, and trying costs bytes.** At 7.996-7.999 bits per byte
+there is nothing there — uniform field elements and hash output:
+
+| proof | raw | zlib-9 | bzip2 | lzma |
+|---|---|---|---|---|
+| mpcith | 63,192 | 63,218 | 63,792 | 63,256 |
+| ssh5 | 199,844 | 199,915 | 201,161 | 199,916 |
+| ssh3 | 326,877 | 326,983 | 328,816 | 326,952 |
+
+Every entry to the right of `raw` is larger than `raw`. So the archive never
+offers a proof to a compressor; the format separates opaque bytes from
+structured ones and only tries on the second.
+
+**Canonical encoding is what compresses the rest.** One block's headers, rolls
+and certificates:
+
+| | bytes | |
+|---|---|---|
+| Python objects as JSON | 19,001 | |
+| JSON + zlib-9 | 5,404 | 3.5x |
+| `codec.encode` | 5,011 | **3.8x** |
+| `codec.encode` + deflate | 4,429 | **4.3x** |
+
+Three mechanisms do that work, and all three are specific to what this chain
+actually holds. *Interning*: a quorum certificate names one block hash once per
+attestation — 28 times in the measured block — and the table stores it once.
+*Hex packing*: every identifier here is a hex string, usually behind a short tag
+(`tx:`, `nb:`), and the hex half is stored as the bytes it stands for.
+*Vector packing*: a list of field elements is written as one length and n
+fixed-width elements with no per-item tags, chosen per list against the tagged
+encoding so a list of small integers is never inflated to 32 bytes an entry.
+Deflate still finds another ~11% on top, so a structured section is deflated
+only when the result is actually smaller, with a codec tag recording which
+happened — the format therefore cannot make a record larger than not
+compressing at all.
+
+The encoding costs 0.86% against the per-protocol serialisers in `mq`, which is
+the price of being decodable at all: those write bytes, this writes bytes that
+come back as the object.
+
+**Retention is the order of magnitude.** Every transaction carries three proofs
+of the same statement because the tiers deliberately do not share an
+implementation. That diversity protects the live consensus; it does nothing for
+a reader in five years, who needs the statement to be true, not to be proved
+three ways.
+
+| profile | keeps | bytes/block | at 10 tx/s | can it re-derive history? |
+|---|---|---|---|---|
+| `full` | all three proofs | 583,445 | 505 GB/day | yes, in three independent systems |
+| `compact` | one proof (`mpcith`) | 68,830 | 56 GB/day | yes |
+| `headers` | no proofs | 5,865 | 1.4 GB/day | no — it can show what was agreed, not re-check it |
+
+`compact` is **8.5x** smaller than `full` and every transaction in it still
+verifies; `headers` is 99x smaller and honest about what it gave up. Dropping
+proofs is a storage policy rather than a change to history, because no root
+commits to them: `txid` binds the transaction body, and the proof bytes are not
+in it.
+
+**The segment.** One file per era, append-only, records of
+`header | descriptors | payloads | sha256`. Descriptors precede payloads, so a
+reader builds its index by seeking rather than by reading, and rebuilds it on
+every open — a lost index can never be what loses an archive. The digest covers
+descriptors and payloads together, which turns silent bit-rot into a refusal to
+serve that record while its neighbours stay readable. Pruning an era is
+`os.remove`, which is the whole reason for one file per era.
+
+
+## 9. The one write that must precede its action
 
 Everything above records what already happened. Turn spending cannot: signing a
 second anchor with one WOTS key publishes the private key, so the record must be
@@ -273,7 +346,7 @@ The 131,072-leaf era tree is ~132M hashes of pure derived data — class C — b
 the *next* era's tree must exist before the boundary, so it is precomputed and
 cached as an ordinary file that may be deleted at any time.
 
-## 9. What not to persist
+## 10. What not to persist
 
 - **The three mempools.** Rebuilt by gossip within an epoch, and a restored
   mempool is a way to re-admit transactions the chain has since invalidated.
@@ -290,13 +363,13 @@ It is the only state in the system that is costly to lose and harmless to get
 wrong, so it gets the cheapest durability available: asynchronous, unfsynced,
 best-effort.
 
-## 10. What this adds to `chain/`
+## 11. What this adds to `chain/`
 
 | module | change |
 |---|---|
-| `store/codec.py` | *new* — canonical binary encoding of every object; the same codec the wire needs |
+| `store/codec.py` | **written** — canonical binary encoding of every object; the same codec the wire needs |
 | `store/db.py` | *new* — schema, migrations, the single-writer transaction |
-| `store/segments.py` | *new* — append-only body and proof segments, one file per era, prune by unlink |
+| `store/archive.py` | **written** — append-only segments, retention profiles, opaque/structured sections, digests, prune by unlink |
 | `store/snapshot.py` | *new* — export/import, range digests, root check against a header |
 | `store/undo.py` | *new* — undo records, LIFO rollback, ceiling-driven retention |
 | `store/high_water.py` | *new* — the fsync-first signing guard |
@@ -311,7 +384,7 @@ Nothing in `ceremony.py` changes. The ceremony moves signatures around and has n
 durable state of its own, which is the same reason it survived the tiering and
 the hardening untouched.
 
-## 11. Open items
+## 12. Open items
 
 | item | why it is open |
 |---|---|
@@ -319,10 +392,10 @@ the hardening untouched.
 | The flat fold cost | ~1.4 ms per touched leaf caps a single node near 125 tx/s at ten million notes. That is an implementation ceiling, not a design one, and it is where a C or gmpy2 inner loop would pay. |
 | Nullifiers never shrink | The one class-A term with no bound: correctness needs every nullifier ever, forever — 27 MB/day at 10 tx/s. Epoch-scoped nullifiers with note expiry would bound it and would change the note format. |
 | Snapshot cadence | An era is 2,187 blocks and a snapshot is a full state copy. The cost of keeping them against the cost of not having them is unmeasured. |
-| Archive incentives | Someone must hold 505 GB/day at 10 tx/s or from-genesis verification quietly stops being possible. That is economics, and the design leaves it blank. |
+| Archive incentives | Retention brings a fully verifying archive from 505 GB/day to 56 GB/day at 10 tx/s, which makes the role affordable but does not make it anyone's job. Still economics, still blank. |
 | Fsync honesty | The high-water guard is only as good as the platform's fsync; on consumer SSDs with volatile write caches it is not a guarantee. A deployment that holds turns has to say what hardware it means. |
 | Multi-process access | One writer is assumed. SQLite WAL gives an RPC reader MVCC, but the accumulator lives in the writer's memory and is not shared. |
-| Corruption detection | Nothing here notices silent bit-rot in a segment. The snapshot format's per-range digests are half an answer. |
+| ~~Corruption detection~~ | **Closed for segments.** Every archive record carries a sha256 over its descriptors and payloads, and a damaged record is refused rather than served while its neighbours stay readable. The snapshot format still needs its per-range digests. |
 
 Unchanged from part three: era genesis is a trusted setup.
 

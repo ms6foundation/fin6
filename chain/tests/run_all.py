@@ -15,6 +15,8 @@ MODULES = ["test_notes", "test_transaction", "test_state", "test_grid",
            "test_ceremony", "test_e2e",
            # tiered design
            "test_proofs", "test_mq_backends", "test_register", "test_tiers",
+           # storage
+           "test_archive",
            # hardening
            "test_hardening"]
 

@@ -9,6 +9,7 @@ work.
 python3 -m chain.demo            # one grid: transfers, ceremony, Byzantine leaders
 python3 -m chain.demo_tiers      # many grids: register, partitions, three phases
 python3 -m chain.demo_hardening  # consensus through to hardened network history
+python3 -m chain.demo_archive    # what an archive costs, and where it goes
 python3 -m chain.tests.run_all   # 135 tests, ~20 s
 ```
 
@@ -48,6 +49,10 @@ Both are run from the repository root (the same place `examples/` imports
 | `hardening/stamp.py` | the puzzle, the one-time signature, verification |
 | `hardening/history.py` | cumulative weight, spent turns, fork choice |
 | `demo_hardening.py` | the full pipeline through to history |
+| **storage** | |
+| `store/codec.py` | canonical binary encoding — interning, hex packing, vector packing |
+| `store/archive.py` | append-only segments: retention profiles, opaque/structured sections, digests |
+| `demo_archive.py` | what an archive costs, measured |
 
 ---
 
@@ -313,6 +318,58 @@ and dedupe, because compliance is a rule a Byzantine leader can break.
 
 A transaction spending notes from two partitions has no home and is refused at
 submission — consolidation first is the v1 answer.
+
+
+## Storing an archive
+
+An archive node is the only role that keeps everything, and at 10 tx/s that is
+505 GB a day. `chain/store/` gives most of it back, and the measurements say
+where from — `python3 -m chain.demo_archive` reproduces all of this.
+
+**Proof bytes are incompressible.** 7.996–7.999 bits per byte, so zlib, bzip2
+and lzma each return *more* bytes than they were given:
+
+| proof | raw | zlib-9 | bzip2 | lzma |
+|---|---|---|---|---|
+| mpcith | 63,192 | 63,218 | 63,792 | 63,256 |
+| ssh5 | 199,844 | 199,915 | 201,161 | 199,916 |
+| ssh3 | 326,877 | 326,983 | 328,816 | 326,952 |
+
+So a record is split: an opaque section that is never offered to a compressor,
+and a structured one that is deflated only when the result is smaller. The
+codec tag records which happened, so the format can never store a section
+larger than it arrived.
+
+**The encoding is the compression for everything else.** One block's headers,
+rolls and certificates: 19,001 B as JSON, 5,404 with zlib on the JSON, **5,011
+with `codec.encode`**, 4,429 with deflate on top. Interning (a certificate names
+one block hash once per attestation and stores it once), hex packing (every
+identifier here is hex behind a short tag), and vector packing (field-element
+runs with no per-item tags, chosen per list against the tagged form so small
+integers are never inflated). It round-trips exactly and canonically — the same
+object always gives the same bytes, which matters because the archive digests
+them — and costs 0.86% against the per-protocol serialisers in `mq`, which is
+what being decodable costs.
+
+**Retention is the order of magnitude.**
+
+| profile | keeps | bytes/block | at 10 tx/s | still verifiable? |
+|---|---|---|---|---|
+| `FULL` | all three proofs | 583,445 | 505 GB/day | yes, three ways |
+| `COMPACT` | one proof (`mpcith`) | 68,830 | 56 GB/day | yes |
+| `HEADERS` | none | 5,865 | 1.4 GB/day | no |
+
+`COMPACT` is 8.5x smaller than `FULL` and every transaction read back from it
+still verifies. Dropping the other two is a storage policy rather than a change
+to history: no root commits to proof bytes, since `txid` binds the body only.
+The three systems exist so that a bug in one cannot take the live consensus;
+they are not what makes the history true.
+
+`test_archive.py` holds the tripwires — that a `COMPACT` archive verifies and
+says plainly which proof it dropped, that a flipped bit is refused rather than
+served, and that no section is ever stored larger than it arrived.
+
+---
 
 ## Trust lists are powerless by construction
 
