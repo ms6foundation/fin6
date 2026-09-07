@@ -868,7 +868,13 @@ def _ps6_build_copath(h_list, touched, chunk_size, x, d, mod, sbs):
 
 
 class _SealTree:
-    """Cached incremental seal tree — unchanged from DL version."""
+    """Cached incremental seal tree.
+
+    Leaves are appended and updated in place; every level keeps the counts that
+    produced it, so one change costs a fold per level rather than a rebuild.
+    Growth is by extension at every level, including the root level, which is
+    what keeps `append_leaf` flat in the number of leaves.
+    """
 
     def __init__(self, leaves, x, chunk_size, d, mod, sbs=DEFAULT_SEAL_BATCH_SIZE):
         self.x, self.chunk_size = x, chunk_size
@@ -907,18 +913,51 @@ class _SealTree:
         return self.levels[-1][0]
 
     def _propagate(self, idx, old_v, new_v):
-        for k in range(1, len(self.levels)):
-            j   = idx // self.sbs
+        """Fold one change at level 0 up through the counts.
+
+        `old_v is None` means the entry at `idx` was appended rather than
+        replaced — which is also how a freshly opened group announces itself to
+        the level above, so growth and update share one path.
+        """
+        k = 1
+        while k < len(self.levels):
+            j = idx // self.sbs
+            if j == len(self.levels[k]):
+                # A new group opens at this level: extend it.  Rebuilding the
+                # whole tree here instead is what used to make building by
+                # append quadratic in the number of leaves.
+                self.counts[k].append(self._counts_of(()))
+                self.levels[k].append(None)
             cnt = self.counts[k][j]
             if old_v is not None:
                 _apply_rows(cnt, _seal_rows(old_v, self._chunk_of), -1)
             _apply_rows(cnt, _seal_rows(new_v, self._chunk_of), +1)
-            old_v = self.levels[k][j]
-            raw   = _seal_from_counts(cnt, self.chunk_size, self.d, self.mod)
-            new_v = raw if k == len(self.levels) - 1 else _seal_hash(raw)
-            self.levels[k][j] = new_v
-            idx = j
+            raw  = _seal_from_counts(cnt, self.chunk_size, self.d, self.mod)
+            prev = self.levels[k][j]
+            if k == len(self.levels) - 1:
+                if len(self.levels[k]) == 1:
+                    self.levels[k][j] = raw          # this level *is* the root
+                    return self.root
+                self._roof(k, j, raw)                # ... and now it is not
+                return self.root
+            self.levels[k][j] = _seal_hash(raw)
+            old_v, new_v, idx, k = prev, self.levels[k][j], j, k + 1
         return self.root
+
+    def _roof(self, k, j, raw):
+        """Level k has just grown past one entry, so it is no longer the root.
+
+        A root level stores its single value unhashed, so becoming an interior
+        level means hashing what is there and folding a new level over the top.
+        Only ever reached with two entries at level k, since a root level holds
+        exactly one.
+        """
+        self.levels[k] = [_seal_hash(raw) if t == j else _seal_hash(v)
+                          for t, v in enumerate(self.levels[k])]
+        cnt = self._counts_of(self.levels[k])
+        self.counts.append([cnt])
+        self.levels.append([_seal_from_counts(cnt, self.chunk_size, self.d,
+                                              self.mod)])
 
     def update_leaf(self, i, new_val):
         old = self.levels[0][i]
@@ -929,14 +968,8 @@ class _SealTree:
 
     def append_leaf(self, val):
         i = len(self.levels[0])
-        if len(self.levels) > 1 and i // self.sbs < len(self.levels[1]) and len(self.levels[1]) > 1:
-            self.levels[0].append(val)
-            return self._propagate(i, None, val)
-        if len(self.levels) == 2 and i < self.sbs:
-            self.levels[0].append(val)
-            return self._propagate(i, None, val)
         self.levels[0].append(val)
-        return self.build(self.levels[0])
+        return self._propagate(i, None, val)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

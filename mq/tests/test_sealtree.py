@@ -45,6 +45,26 @@ def run(check):
                                              seal_batch_size=sbs)
     check("stage 4 cache  : root tracks _seal_batch over appends/updates", tree_ok)
 
+    # Growth must be by extension, not rebuild.  append_leaf used to rebuild the
+    # whole tree whenever a new group opened, which made building a tree by
+    # append quadratic in the number of leaves; this is the tripwire for that.
+    calls = []
+    T = _SealTree([_seal_hash(rng.randrange(1, 2 ** 160))], 2, u_cs, d,
+                  DEFAULT_MOD, sbs=2)
+    real_build = T.build
+    T.build = lambda leaves: (calls.append(len(leaves)), real_build(leaves))[1]
+    grown = [T.levels[0][0]]
+    for _ in range(40):                       # crosses five levels at sbs=2
+        nv = _seal_hash(rng.randrange(1, 2 ** 160))
+        T.append_leaf(nv)
+        grown.append(nv)
+    check("stage 4 growth : append never rebuilds the tree", calls == [])
+    check("stage 4 growth : root still tracks _seal_batch after 40 appends",
+          T.root == _seal_batch(grown, u_cs, 2, d, DEFAULT_MOD,
+                                seal_batch_size=2))
+    check("stage 4 growth : grown tree matches one built in a single pass",
+          T.root == _SealTree(grown, 2, u_cs, d, DEFAULT_MOD, sbs=2).root)
+
     # Verify _seal_batch fold matches Commitment's stored root after appends.
     C = Commitment([mk(i) for i in range(4)], d, chunk_size=u_cs, batch_size=2)
     C.append(mk(100))

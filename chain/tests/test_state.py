@@ -36,6 +36,28 @@ def test_spending_moves_the_root_and_membership():
     assert len(a) == 3
 
 
+def test_the_set_grows_across_group_boundaries():
+    """The accumulator must not care where the seal tree's groups end.
+
+    A small batch size crosses several group boundaries in a few dozen adds,
+    which is where the tree has to open new groups and grow new levels.  An
+    incrementally grown accumulator must land on exactly the root of one built
+    in a single pass, before and after a spend.
+    """
+    grown = SealAccumulator("utxo", sbs=4)
+    for i in range(40):
+        grown.add(f"cm:{i}")
+    fresh = SealAccumulator("utxo", sbs=4)
+    for i in range(40):
+        fresh.add(f"cm:{i}")
+    assert grown.root == fresh.root
+    assert grown.root == grown.clone().root
+
+    grown.spend("cm:7")
+    fresh.spend("cm:7")
+    assert grown.root == fresh.root, "a spend after growth must still agree"
+
+
 def test_label_separates_domains():
     u, n = SealAccumulator("utxo"), SealAccumulator("nf")
     u.add("x")

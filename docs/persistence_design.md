@@ -115,23 +115,38 @@ to an mq implementation detail to save a minute once per restart.
 rebuilding folds hashes. The two differ by about five orders of magnitude, and
 that difference is what makes proof pruning (§2) tolerable.
 
-**3. `append_leaf` has a defect the storage arithmetic makes unignorable.** It
-rebuilds the entire tree whenever a new `sbs` group opens, so appending is
-amortised O(N/1000) and building by append is quadratic:
+**3. `append_leaf` had a defect the storage arithmetic made unignorable — now
+fixed.** It rebuilt the entire tree whenever a new `sbs` group opened, because
+extending a level meant growing the level above it and, at the top, promoting a
+root. So the cost of an append was two terms: a flat fold of ~1.4 ms, which is
+what incremental maintenance inherently costs, plus a rebuild term of
+`N x 4.1 us / 1000`. The second term is invisible at demo sizes and eventually
+swamps the first — they cross at about 340,000 notes. Marginal cost of an
+append, measured at the production `sbs=1000` over 2,000 appends onto an
+existing tree:
 
-| notes | by append | in one pass |
+| existing notes | before | after |
 |---|---|---|
-| 1,000 | 0.81 s | 0.004 s |
-| 10,000 | 12.1 s | 0.041 s |
-| 50,000 | 71.6 s | 0.205 s |
+| 20,000 | 1.45 ms | 1.35 ms |
+| 100,000 | 1.90 ms | 1.46 ms |
+| 400,000 | 3.29 ms | 1.58 ms |
+| 10,000,000 (extrapolated) | ~42 ms | ~2 ms |
 
-At 10M notes a single append costs ~41 ms amortised — about 480 notes per block
-interval — and building that history by append would take ~57 hours. **The
-tiered path cannot reach production volume until level 1 grows by extension
-instead of rebuild.** That is an mq fix, not a chain fix, and it is the most
-valuable thing this sketch turned up.
+Before, the growth was linear in the set size and building a ten-million-note
+history by append would have taken some 57 hours; a transaction touching four
+leaves would have cost 168 ms, capping the chain near **6 tx/s** at that size.
+After, the term is gone: `_propagate` opens a new group in place, and a level
+that outgrows the root hashes its stored value and folds a new level over the
+top, which is O(1) work at the moment of promotion. The same four-leaf
+transaction costs ~8 ms, or **~125 tx/s** on one Python core at ten million
+notes.
 
-**4. Until then, the crossover is exact.** Rebuilding costs `N x 4.1 us`;
+The fix is in `mq/ms6/core.py` and it is verified two ways: the roots of a
+grown tree and a one-pass build agree exactly, at every fan-out from 2 to 7 and
+across five levels of growth, and `mq/tests/test_sealtree.py` carries a tripwire
+that fails if an append ever calls `build` again.
+
+**4. The crossover is still exact.** Rebuilding costs `N x 4.1 us`;
 propagating costs 1.6 ms per touched leaf. So **rebuild when a block touches more
 than N/390 leaves, propagate otherwise** — 256 touches at 100k notes, 25,600 at
 10M. Which says incremental is right at large N, which is precisely where
@@ -300,7 +315,8 @@ the hardening untouched.
 
 | item | why it is open |
 |---|---|
-| The quadratic append | Measured and understood, not fixed. It is the ceiling on how large the ledger can grow, so it comes before everything else in this document. |
+| ~~The quadratic append~~ | **Closed.** `_SealTree` now grows by extension at every level. What remains is the flat ~1.4 ms per touched leaf, which is Python-interpreter-bound rather than algorithmic — the same wall `mq.md` reached on `matvec`. |
+| The flat fold cost | ~1.4 ms per touched leaf caps a single node near 125 tx/s at ten million notes. That is an implementation ceiling, not a design one, and it is where a C or gmpy2 inner loop would pay. |
 | Nullifiers never shrink | The one class-A term with no bound: correctness needs every nullifier ever, forever — 27 MB/day at 10 tx/s. Epoch-scoped nullifiers with note expiry would bound it and would change the note format. |
 | Snapshot cadence | An era is 2,187 blocks and a snapshot is a full state copy. The cost of keeping them against the cost of not having them is unmeasured. |
 | Archive incentives | Someone must hold 505 GB/day at 10 tx/s or from-genesis verification quietly stops being possible. That is economics, and the design leaves it blank. |
