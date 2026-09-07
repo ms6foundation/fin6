@@ -277,7 +277,151 @@ mechanism that does not exist yet. That is the finding: the launch risk of this
 design is not concentrated at t=0, it is concentrated in the two assumptions that
 t=0 makes permanent.
 
-## 10. What this adds to `chain/`
+## 10. Starting at one tier
+
+The proposal: launch with 7 nodes named in the document, run only the supreme
+grid, and start the three-tier ceremony when the network grows. Yes — with three
+amendments, and one dependency that turns out to be the interesting part.
+
+### 7 is the right number
+
+```
+n = 3f + 1  with f = 2   ->   n = 7
+quorum = ceil(2n/3) = 5  =    2f + 1
+```
+
+Seven is exactly the smallest roster that tolerates two Byzantine faults, and
+the register's 2/3 rule lands on 5 without adjustment. Seated: the leader alone
+in front, one row of five, one row of one — diameter 3, so six rounds per
+ceremony under the `2 × diameter` schedule.
+
+The apprenticeship does not apply, and already does not: `GridRegister.genesis`
+seats the founding cohort as attesters with `consecutive = attend_threshold`.
+That is §03's waiver, used exactly as intended.
+
+### Collapse the tiers, do not skip them
+
+`run_tiered_epoch` today refuses fewer than two grids and points at
+`chain.ceremony.run_epoch` — part one's single-grid path, which emits a `Block`
+rather than a `NetworkBlock`. Taking that route means the chain's first blocks
+have a different header, no `registers_root`, no `super_root`, and the move to
+three tiers is a **change of block format in the middle of history**. Every
+archive, snapshot and verifier would have to know both, forever.
+
+So one grid runs one ceremony and emits a `NetworkBlock` whose `supers` holds a
+single `SuperBlock` holding a single `CeremonyBlock`. The hierarchy degenerates;
+the format does not. The 3→2 collapse already works exactly this way — "the
+supreme tier collapses onto it, exactly as the sizing rule says it should" — and
+this extends the same rule to 2→1. Growth then changes how many ceremonies run,
+not what the chain looks like.
+
+### Put the tier count in the header
+
+At one tier there is one quorum certificate and the inner blocks are structural
+bookkeeping. Nothing in a `NetworkBlock` says so, which means a future reader
+cannot distinguish a legitimately degenerate block from a forged one whose inner
+certificates were stripped. `TieredEpochResult` already computes `tiers`; it
+needs to be in `NetworkBlockHeader`, and therefore signed, so that **how much
+independent verification stands behind a block is part of what the block says
+about itself.**
+
+### The one grid does the local tier's job
+
+It verifies every transaction, which is the local role, so the natural policy is
+`mpcith` — 62 KB and the fastest of the three — rather than `ssh3` at 295 KB
+because the grid is called supreme.
+
+But at genesis there is a better option that stops being available later: with
+seven nodes and low volume, check **all three**. Verification diversity is
+affordable exactly when throughput is lowest, which is the opposite of when the
+per-tier policy was designed for. So one-tier mode verifies in all three systems
+and relaxes to the per-tier policy at the transition.
+
+### Name the first leader, not the leader
+
+`Grid.seat` rerolls leadership every ceremony from the epoch seed. A permanently
+named supreme leader would be the only standing privilege in a design that has
+none, and the fault machinery — equivocation detection, view change, the
+`leader_eligible` rule — all assume leaders rotate. So the document names the
+first view seed (or equivalently the first leader) and rotation takes over at
+epoch 2.
+
+### What a seven-node launch costs, in hardening terms
+
+The turn pool is only as distributed as the roster, so §04's holder map over
+seven slices is 14.3% each:
+
+| colluding | share | rewrite ceiling | wall clock |
+|---|---|---|---|
+| 1 of 7 | 14.3% | 312 blocks | 1.7 h |
+| **2 of 7** — the fault bound | **28.6%** | **625 blocks** | **3.4 h** |
+| 3 of 7 | 42.9% | 937 blocks | 5.1 h |
+
+An adversary *within* the fault tolerance can rewrite about three and a half
+hours of history. That is not an argument against launching with seven; it is
+the number that belongs beside the decision, and it improves as operators join
+and the pool redistributes at each rollover.
+
+### The dependency: a new grid cannot start
+
+This is where the plan meets a rule from part two that has never been reconciled
+with it.
+
+New nodes join as apprentices. A second grid has to come from somewhere, and
+there are two sources: split an existing grid, which is not implemented, or
+create an empty one and deal newcomers into it. But `locality.py` is explicit
+that relocating restarts the counter, and `register.py` is explicit that a grid
+of pure apprentices can never reach quorum and so can never run the ceremony
+that would promote anyone.
+
+**A newly created grid is deadlocked.** Not slowly — permanently. Its members'
+counters can only be raised by ceremonies that its own lack of attesters
+prevents. And note this is not the duration problem §03 measured: the gate being
+13.2 minutes does not help, because the 40 ceremonies never happen at all.
+
+Three ways out, all changes to part two rather than to this document:
+
+| option | what it is |
+|---|---|
+| split preserves standing on both sides | presumably why split was designed as split: a grid divides and both halves keep their attesters |
+| a founding cohort keeps its standing when moved | every new grid is a small genesis — a named cohort, a scheduled epoch, a record in the block |
+| standing is portable at a discount | carry over, say, half the counter; weakens the "capturing a grid costs 40 ceremonies per node" argument that locality rests on |
+
+The second is the honest one given this document's frame. **Genesis is not a
+single event.** Every new grid repeats it in miniature, with the same waiver, the
+same trusted cohort, and the same decay — so the mechanism deserves the same
+treatment as genesis, with named cohorts and a scheduled epoch recorded in a
+block, rather than living as an exception inside a constructor.
+
+### The partition moves with the tiers
+
+`nf mod K` routes a transaction to its grid and K is the number of live grids, so
+K changes at the transition. A transaction's partition is computed at inclusion
+rather than baked in at build, so the effect is re-routing rather than
+invalidation — but every node must change K at the same block, or two grids will
+both believe they own a nullifier. So K′ is announced in a block and takes effect
+a fixed number of blocks later, and mempools re-gossip across the boundary.
+
+### The sequence
+
+```
+document      7 nodes, K=1, tiers=1, first view seed,
+              era 0 holder map over 7 slices
+
+epochs 1..n   one grid, one ceremony, one certificate
+              NetworkBlock{ tiers=1, supers=[ super[ ceremony ] ] }
+
+              newcomers admitted as apprentices, promoted after 40 ceremonies
+
+epoch T       announced at T-M: a founding cohort moves into grid 1,
+              K becomes 2, tiers becomes 2
+
+later         more grids -> tiers 3, and the policy relaxes to one
+              proof system per tier
+```
+
+
+## 11. What this adds to `chain/`
 
 | module | change |
 |---|---|
@@ -291,9 +435,10 @@ t=0 makes permanent.
 | `hardening/draw.py` | block 1 draws against the genesis digest |
 | `locality.py` | topology seed from commit-reveal rather than a caller's string |
 | `store/db.py` | store the document; refuse to open a store whose `chain_id` differs |
-| `tiers.py` | `bootstrap_world` becomes a genesis loader, and the test fixture becomes a genesis generator |
+| `tiers.py` | `bootstrap_world` becomes a genesis loader; the test fixture becomes a genesis generator; `run_tiered_epoch` collapses to one tier instead of refusing (§10) |
+| `tiered.py` | `NetworkBlockHeader` carries `tiers`, so the depth of verification behind a block is signed |
 
-## 11. Open items
+## 12. Open items
 
 | item | why it is open |
 |---|---|
@@ -302,6 +447,8 @@ t=0 makes permanent.
 | Reveal withholding | Commit-reveal turns grinding into withholding, which needs a timeout rule and a way to record who did not reveal. |
 | Ratification threshold | The document declares its own threshold, which is circular; something has to say how many founders are enough, and that something is governance, not code. |
 | Key custody at the holders | §4 stops one party holding every turn. It says nothing about how a holder keeps its own slice, which is where the high-water mark from part four applies. |
+| A new grid cannot start | The deadlock in §10: relocating restarts the counter, and a grid of pure apprentices never reaches quorum. Blocks the growth half of the one-tier launch, and is a change to part two. |
+| Scheduling the partition change | K moves when the tier count moves. The announce-then-effect rule is stated in §10 and not designed. |
 | Genesis for a network that already exists | Adding an operator, retiring one, or changing a parameter is a governance event with no design at all yet. Genesis is the easy end of that problem. |
 
 ## Rendered version
