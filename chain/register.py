@@ -189,6 +189,42 @@ class GridRegister:
                          [self.grid_id, self.epoch] +
                          [r.as_tuple() for _, r in sorted(self.members.items())])
 
+    # ── persistence ──────────────────────────────────────────────────────────
+
+    def dump(self) -> dict:
+        """Canonical enough to store, complete enough to restore.
+
+        `as_tuple` is what the root commits to and keeps only the *number* of
+        faults; a store has to keep the epochs themselves, and the miss counters
+        too, or a restored node would forgive an absence the network did not.
+        """
+        return {
+            "grid_id": self.grid_id, "epoch": self.epoch,
+            "attend_threshold": self.attend_threshold,
+            "forgiveness": self.forgiveness,
+            "members": [
+                (r.node_id, r.joined_epoch, r.standing, r.consecutive,
+                 r.total_attended, r.last_seen_epoch, r.led_count,
+                 list(r.faults))
+                for _, r in sorted(self.members.items())],
+            "misses": sorted(self._misses.items()),
+        }
+
+    @classmethod
+    def load(cls, dump: dict) -> "GridRegister":
+        out = cls(dump["grid_id"], epoch=dump["epoch"],
+                  attend_threshold=dump["attend_threshold"],
+                  forgiveness=dump["forgiveness"])
+        for (nid, joined, standing, consecutive, total, last_seen, led,
+             faults) in dump["members"]:
+            out.members[nid] = MemberRecord(
+                node_id=nid, joined_epoch=joined, standing=standing,
+                consecutive=consecutive, total_attended=total,
+                last_seen_epoch=last_seen, led_count=led,
+                faults=tuple(faults))
+        out._misses = dict(dump["misses"])
+        return out
+
     def clone(self) -> "GridRegister":
         out = GridRegister(self.grid_id, self.epoch, self.attend_threshold,
                            self.forgiveness)

@@ -269,6 +269,32 @@ class ChainState:
                 return False, f"output {cm[:14]}… already exists"
         return True, "ok"
 
+    # ── persistence ──────────────────────────────────────────────────────────
+
+    def dump(self):
+        """Everything a store needs to reproduce this state exactly."""
+        utxo_values, utxo_dead = self.utxo.dump()
+        nf_values, _ = self.nullifiers.dump()
+        return {"chain_id": self.chain_id, "height": self.height,
+                "tip": self.tip, "burned_fees": self.burned_fees,
+                "utxo": utxo_values, "utxo_dead": utxo_dead,
+                "nullifiers": nf_values}
+
+    @classmethod
+    def load(cls, params: ChainParams, dump) -> "ChainState":
+        out = cls.__new__(cls)
+        out.params = params
+        out.chain_id = dump["chain_id"]
+        out.utxo = SealAccumulator.load("utxo", dump["utxo"],
+                                        dump.get("utxo_dead", ()),
+                                        d=params.seal_d)
+        out.nullifiers = SealAccumulator.load("nf", dump["nullifiers"],
+                                              d=params.seal_d)
+        out.height = dump["height"]
+        out.tip = dump["tip"]
+        out.burned_fees = dump["burned_fees"]
+        return out
+
     # ── copying ──────────────────────────────────────────────────────────────
 
     def copy(self) -> "ChainState":

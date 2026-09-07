@@ -30,6 +30,7 @@ from .state import ChainState, UtxoDelta, merge_deltas
 from .tiered import (GENESIS_NETWORK, CeremonyBlock, CeremonyBlockHeader,
                      NetworkBlock, NetworkBlockHeader, SuperBlock,
                      SuperBlockHeader, registers_root)
+from .store import undo
 from .trustlist import TrustList
 
 
@@ -81,9 +82,24 @@ class TierWorld:
     # ── advancing ────────────────────────────────────────────────────────────
 
     def apply_network_block(self, block: NetworkBlock):
-        """Every node applies the finalised block; every register takes its roll."""
+        """Every node applies the finalised block; every register takes its roll.
+
+        This is the epoch's only durable moment.  Phases L and S produced real
+        signed objects, but nothing below tier 2 touches the ledger, so a node
+        with a store treats the whole epoch as a journal and commits once, here.
+        A crash anywhere earlier costs the epoch and nothing else.
+        """
         deltas = [c.delta for c in block.ceremony_blocks()]
         merged, _ = merge_deltas(deltas)
+        touched = sorted({c.header.grid_id for c in block.ceremony_blocks()
+                          if c.roll is not None and c.roll.epoch >= 0})
+        # Captured before anything moves: an undo record is a photograph of the
+        # state the block is about to replace.
+        pre = [self.registers[g] for g in touched]
+        records = {nid: undo.capture(node.state, merged,
+                                     height=block.header.height,
+                                     block_hash=block.hash(), registers=pre)
+                   for nid, node in self.nodes.items() if node.store}
         for node in self.nodes.values():
             node.state.apply_delta(merged)
             node.state.height = block.header.height
@@ -98,6 +114,47 @@ class TierWorld:
         self.tip = block.hash()
         self.rolls = dict(self.pending_rolls)
         self.pending_rolls = {}
+        for nid, record in records.items():
+            node = self.nodes[nid]
+            node.store.commit(block=block, delta=merged, state=node.state,
+                              undo=record,
+                              registers={g: self.registers[g] for g in touched})
+
+    # ── persistence ──────────────────────────────────────────────────────────
+
+    def persist(self, store, node_ids=None):
+        """Give one or more nodes a store, writing genesis if it is empty.
+
+        The world simulates many nodes in one process; a store belongs to one
+        operator, so which nodes get one is the caller's choice and usually one.
+        """
+        ids = list(node_ids or [sorted(self.nodes)[0]])
+        if store.is_empty():
+            store.initialise(self.nodes[ids[0]].state)
+            store.save_registers(self.registers)
+        for nid in ids:
+            self.nodes[nid].store = store
+        return store
+
+    def restore_from(self, store):
+        """Replace every node's ledger and the registers with what is on disk.
+
+        The mempools, the trust lists and the topology are not restored: the
+        first two are rebuilt by watching the network, and the third is derived
+        from the seed.  Losing them costs an epoch, which is why none of them
+        is worth an fsync.
+        """
+        state = store.load_state(self.params)
+        for node in self.nodes.values():
+            node.state = state.copy()
+            node.mempool.clear()
+            node._verified.clear()
+            node._reserved_nf.clear()
+            node._reserved_cm.clear()
+        self.registers = store.load_registers()
+        self.height = state.height
+        self.tip = state.tip
+        return self
 
 
 def bootstrap_world(node_regions: dict, endowments: dict, params: ChainParams,

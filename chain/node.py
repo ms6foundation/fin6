@@ -27,11 +27,16 @@ def tx_fingerprint(tx: Transaction) -> str:
 
 class Node:
     def __init__(self, node_id: str, signer: Signer, params: ChainParams,
-                 state: ChainState):
+                 state: ChainState, store=None):
         self.id = node_id
         self.signer = signer
         self.params = params
         self.state = state
+        # A node with a store survives a restart; one without is a simulation.
+        # The mempool deliberately stays in memory either way — it is rebuilt
+        # by gossip within an epoch, and a restored mempool is a way to
+        # re-admit transactions the chain has since invalidated.
+        self.store = store
         self.mempool: dict = {}
         self._verified: dict = {}          # txid -> fingerprint
         # Reservations held by mempool transactions.  Without these two, a node

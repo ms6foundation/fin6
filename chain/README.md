@@ -10,6 +10,7 @@ python3 -m chain.demo            # one grid: transfers, ceremony, Byzantine lead
 python3 -m chain.demo_tiers      # many grids: register, partitions, three phases
 python3 -m chain.demo_hardening  # consensus through to hardened network history
 python3 -m chain.demo_archive    # what an archive costs, and where it goes
+python3 -m chain.demo_persistence # stop the chain, start it again
 python3 -m chain.tests.run_all   # 135 tests, ~20 s
 ```
 
@@ -51,8 +52,13 @@ Both are run from the repository root (the same place `examples/` imports
 | `demo_hardening.py` | the full pipeline through to history |
 | **storage** | |
 | `store/codec.py` | canonical binary encoding — interning, hex packing, vector packing |
+| `store/db.py` | the SQLite store: one commit per network block, `load_state`, `rollback` |
+| `store/undo.py` | undo records, LIFO rollback, retention from the fork ceiling |
+| `store/snapshot.py` | ranged export/import, roots checked against a header |
+| `store/high_water.py` | the fsync-before-signing guard for turn spending |
 | `store/archive.py` | append-only segments: retention profiles, opaque/structured sections, digests |
 | `demo_archive.py` | what an archive costs, measured |
+| `demo_persistence.py` | restart, rollback, snapshot, the signing guard |
 
 ---
 
@@ -368,6 +374,57 @@ they are not what makes the history true.
 `test_archive.py` holds the tripwires — that a `COMPACT` archive verifies and
 says plainly which proof it dropped, that a flipped bit is refused rather than
 served, and that no section is ever stored larger than it arrived.
+
+---
+
+
+## Surviving a restart
+
+`docs/persistence_design.md` has the reasoning; this is what the code does.
+
+**One commit point.** Phases L and S produce real signed objects, but nothing
+below tier 2 touches the ledger, so `apply_network_block` is the epoch's only
+durable moment: deltas, registers, roots, tip and the undo record go down in one
+`BEGIN IMMEDIATE` transaction. A crash anywhere earlier costs the epoch and
+nothing else, because everything the journal held can be re-gathered from peers.
+
+**The store persists the set, not the tree.** `SealAccumulator.dump()` is the
+ordered values and the dead bits; `load()` rebuilds the seal tree in one pass at
+4.1 µs a leaf. That is also why startup is a rebuild rather than a replay —
+replaying blocks would re-verify every proof the chain ever carried, which is
+about five orders of magnitude more work. The same change made `clone()` a
+one-pass build, which matters more than it sounds: `check_block` clones the state
+for every block, and at 4,000 notes that went from 5.6 s to 0.021 s.
+
+**Undo is bounded, not best-effort.** A record is the inverse of what a block
+applied, and truncation is legitimate only because the accumulator is
+append-only and undo is strictly last-in-first-out — so `rollback` refuses
+anything that is not the tip, and `truncate` independently refuses to drop a
+slot that was spent later. How deep to keep records is arithmetic rather than
+taste: the hardening layer bounds a rewrite at `attacker's unspent turns / w`,
+so `retention_depth(PRODUCTION, 1/3)` is 729 blocks, four hours, about 29 MB at
+10 tx/s.
+
+**Snapshots certify themselves.** A network block header already commits
+`utxo_root`, `nf_root` and `registers_root`, so `snapshot.load` folds what it
+was given and refuses it unless all three match the header it was told to expect
+— there is no way to skip that check, because the difference matters: snapshot
+sync trusts consensus, genesis sync trusts nobody and needs an archive node.
+
+**One write happens before the thing it protects.** Every other record here
+describes something that already happened; a turn's signature cannot, because
+signing a second anchor with one WOTS key publishes the key. `HighWater.claim`
+fsyncs the height *then* returns, so a crash wastes a turn instead of losing a
+key. The mark is a cache of what the chain already publishes — every spent turn
+appears in a hardened block — which is what lets a holder restored from
+yesterday's backup recover by `adopt`ing what it finds on chain rather than
+trusting its own file.
+
+**Not persisted, deliberately.** The three mempools, the verification cache, the
+trust lists. The first two are rebuilt by gossip inside an epoch and a restored
+mempool re-admits transactions the chain has since invalidated. The trust list is
+the interesting exception noted in the design — expensive to rebuild, harmless to
+corrupt — and it gets the cheapest durability there is, which for now is none.
 
 ---
 

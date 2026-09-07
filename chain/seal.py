@@ -68,6 +68,39 @@ class SealAccumulator:
         # changes, so the root moves and history stays addressable.
         self._tree.update_leaf(pos + 1, _leaf(self.label, f"{TOMBSTONE}:{value}"))
 
+    def unspend(self, value):
+        """Put a spent slot back.  Only a rollback has any business here."""
+        pos = self.index.get(value)
+        if pos is None:
+            raise KeyError(f"{self.label}: {value!r} is not present")
+        if pos not in self.dead:
+            raise ValueError(f"{self.label}: {value!r} is not spent")
+        self.dead.discard(pos)
+        self._tree.update_leaf(pos + 1, _leaf(self.label, value))
+
+    def truncate(self, count: int):
+        """Drop the last `count` values.
+
+        The only legitimate caller is an undo of the most recent block, which is
+        why this refuses to drop a spent slot: a value that something later
+        spent is not at the tail any more, so a request to remove it means the
+        undo is being applied out of order.
+        """
+        if not 0 <= count <= len(self.items):
+            raise ValueError(f"{self.label}: cannot drop {count} of "
+                             f"{len(self.items)}")
+        if not count:
+            return
+        cut = len(self.items) - count
+        for pos in range(cut, len(self.items)):
+            if pos in self.dead:
+                raise ValueError(
+                    f"{self.label}: {self.items[pos]!r} was spent after it was "
+                    f"created; this undo is out of order")
+            del self.index[self.items[pos]]
+        del self.items[cut:]
+        self._rebuild()
+
     def __contains__(self, value) -> bool:
         pos = self.index.get(value)
         return pos is not None and pos not in self.dead
@@ -85,18 +118,57 @@ class SealAccumulator:
     def live(self) -> list:
         return [v for i, v in enumerate(self.items) if i not in self.dead]
 
-    def clone(self) -> "SealAccumulator":
-        out = SealAccumulator(self.label, self.d, self.chunk_size, self.mod,
-                              self.sbs)
-        for value in self.items:
-            out.items.append(value)
-            out.index[value] = len(out.items) - 1
-            out._tree.append_leaf(_leaf(out.label, value))
-        for pos in sorted(self.dead):
-            out.dead.add(pos)
-            out._tree.update_leaf(
-                pos + 1, _leaf(out.label, f"{TOMBSTONE}:{self.items[pos]}"))
+    # ── persistence ──────────────────────────────────────────────────────────
+
+    def dump(self):
+        """The whole logical state: the ordered values and which are spent.
+
+        Deliberately not the tree.  Rebuilding it costs 4.1 us a leaf, so
+        storing internal structure would couple the ledger format to an mq
+        implementation detail to save a few seconds once per restart.
+        """
+        return list(self.items), sorted(self.dead)
+
+    @classmethod
+    def load(cls, label: str, values, dead=(), d: int = DEFAULT_D,
+             chunk_size: int = DEFAULT_CHUNK, mod: int = P,
+             sbs: int = DEFAULT_SBS) -> "SealAccumulator":
+        """Rebuild from a dump in one pass.
+
+        One pass, not a replay of appends: a batch build is ~350x cheaper per
+        leaf than folding them in one at a time, and the result is the same root
+        either way.
+        """
+        out = cls(label, d, chunk_size, mod, sbs)
+        out.items = list(values)
+        out.index = {v: i for i, v in enumerate(out.items)}
+        if len(out.index) != len(out.items):
+            raise ValueError(f"{label}: duplicate value in the dump")
+        out.dead = set(dead)
+        for pos in out.dead:
+            if not 0 <= pos < len(out.items):
+                raise ValueError(f"{label}: dead slot {pos} is out of range")
+        out._rebuild()
         return out
+
+    def _rebuild(self):
+        leaves = [_domain_leaf(self.label)]
+        for i, value in enumerate(self.items):
+            leaves.append(_leaf(self.label, f"{TOMBSTONE}:{value}"
+                                if i in self.dead else value))
+        self._tree = _SealTree(leaves, self._x, self.chunk_size, self.d,
+                               self.mod, self.sbs)
+
+    def clone(self) -> "SealAccumulator":
+        """A copy that shares nothing.
+
+        Built in one pass for the same reason `load` is: `check_block` clones
+        the state to apply a block speculatively, so a clone that folded leaves
+        one at a time would put the set size into the cost of validating every
+        block.
+        """
+        return SealAccumulator.load(self.label, self.items, self.dead, self.d,
+                                    self.chunk_size, self.mod, self.sbs)
 
     def __repr__(self):
         return (f"SealAccumulator({self.label}, live={len(self)}, "

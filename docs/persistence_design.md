@@ -4,9 +4,16 @@ How the chain survives a restart. Follows `private_chain_design.md`,
 `tiered_ceremony_design.md` and `hardening_design.md`, all implemented in
 `chain/`.
 
+> **Status.** Written and tested since this was a sketch: the codec and the
+> archive segment (§8), the accumulator's dump/load, the SQLite store and its
+> single commit point (§3, §7), undo and rollback (§5), self-certifying
+> snapshots (§6), and the signing high-water mark (§9). `python3 -m
+> chain.demo_persistence` stops a chain and starts it again. What is still
+> sketch: multi-process access, snapshot cadence, and everything in §12.
+
 ## 0. What survives a restart today
 
-Nothing. Every object in `chain/` is a live Python value: `ChainState` holds two
+Nothing did, when this was written. Every object in `chain/` is a live Python value: `ChainState` holds two
 `SealAccumulator`s in memory, `Node` holds a dict mempool, `TierWorld` holds the
 grid registers, `NetworkHistory` holds every branch it has ever seen, and `Era`
 rebuilds a 131,072-leaf tree in its constructor. The demos bootstrap a world, run
@@ -367,17 +374,18 @@ best-effort.
 
 | module | change |
 |---|---|
-| `store/codec.py` | **written** — canonical binary encoding of every object; the same codec the wire needs |
-| `store/db.py` | *new* — schema, migrations, the single-writer transaction |
-| `store/archive.py` | **written** — append-only segments, retention profiles, opaque/structured sections, digests, prune by unlink |
-| `store/snapshot.py` | *new* — export/import, range digests, root check against a header |
-| `store/undo.py` | *new* — undo records, LIFO rollback, ceiling-driven retention |
-| `store/high_water.py` | *new* — the fsync-first signing guard |
-| `chain/seal.py` | `SealAccumulator.dump()` / `.load(values, dead)`; nothing else moves |
-| `chain/state.py` | `ChainState.open(store)`; `apply_delta` returns its undo record |
-| `chain/register.py` | `load`/`dump` — `MemberRecord.as_tuple` is already canonical |
+| `store/codec.py` | canonical binary encoding of every object; the same codec the wire needs |
+| `store/db.py` | the SQLite schema, `BEGIN IMMEDIATE` per block, `load_state`, `rollback` |
+| `store/archive.py` | append-only segments, retention profiles, opaque/structured sections, digests, prune by unlink |
+| `store/snapshot.py` | ranged export/import, per-chunk digests, roots checked against a header |
+| `store/undo.py` | undo records, LIFO rollback, ceiling-driven retention |
+| `store/high_water.py` | the fsync-first signing guard |
+| `chain/seal.py` | `dump()` / `load(values, dead)`, and `unspend` / `truncate` for the undo path — `clone()` now builds in one pass too |
+| `chain/state.py` | `ChainState.dump()` / `.load(params, dump)` |
+| `chain/register.py` | `dump()` / `load()` — with the faults and miss counters `as_tuple` leaves out |
 | `chain/node.py` | takes a store; the mempool stays in memory |
-| `chain/hardening/history.py` | branches and spent turns move into the store |
+| `chain/tiers.py` | `persist()`, `restore_from()`, and the single commit inside `apply_network_block` |
+| `chain/hardening/history.py` | *still open* — branches and spent turns have tables (`hardened`, `spent_turn`) but nothing writes them from the fork-choice path yet |
 | `mq/ms6/core.py` | `_SealTree.append_leaf` must extend level 1 instead of rebuilding (§4.3) |
 
 Nothing in `ceremony.py` changes. The ceremony moves signatures around and has no
@@ -391,7 +399,7 @@ the hardening untouched.
 | ~~The quadratic append~~ | **Closed.** `_SealTree` now grows by extension at every level. What remains is the flat ~1.4 ms per touched leaf, which is Python-interpreter-bound rather than algorithmic — the same wall `mq.md` reached on `matvec`. |
 | The flat fold cost | ~1.4 ms per touched leaf caps a single node near 125 tx/s at ten million notes. That is an implementation ceiling, not a design one, and it is where a C or gmpy2 inner loop would pay. |
 | Nullifiers never shrink | The one class-A term with no bound: correctness needs every nullifier ever, forever — 27 MB/day at 10 tx/s. Epoch-scoped nullifiers with note expiry would bound it and would change the note format. |
-| Snapshot cadence | An era is 2,187 blocks and a snapshot is a full state copy. The cost of keeping them against the cost of not having them is unmeasured. |
+| Snapshot cadence | Export and import work; *when* to take one does not exist. An era is 2,187 blocks and a snapshot is a full state copy, and the cost of keeping them against the cost of not having them is still unmeasured. |
 | Archive incentives | Retention brings a fully verifying archive from 505 GB/day to 56 GB/day at 10 tx/s, which makes the role affordable but does not make it anyone's job. Still economics, still blank. |
 | Fsync honesty | The high-water guard is only as good as the platform's fsync; on consumer SSDs with volatile write caches it is not a guarantee. A deployment that holds turns has to say what hardware it means. |
 | Multi-process access | One writer is assumed. SQLite WAL gives an RPC reader MVCC, but the accumulator lives in the writer's memory and is not shared. |

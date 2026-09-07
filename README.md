@@ -28,6 +28,7 @@ python3 -m chain.demo             # one grid: transfers, ceremony, Byzantine lea
 python3 -m chain.demo_tiers       # many grids: registers, partitions, three phases
 python3 -m chain.demo_hardening   # consensus through to hardened history
 python3 -m chain.demo_archive     # what an archive costs, and where it goes
+python3 -m chain.demo_persistence # stop the chain, start it again
 python3 -m chain.tests.run_all    # 135 tests, ~20 s
 ```
 
@@ -138,12 +139,14 @@ smallest and the fastest). All three reject each other's proofs, which is what
 makes the per-tier diversity real, and every proof is checked by the independent
 `vs6` verifier as well as the prover's own.
 
-**Storage is partly built.** `chain/store/` has the canonical binary codec and
-the archive segment — retention profiles, opaque/structured sections, per-record
-digests. Keeping one proof per transaction instead of three makes a fully
-verifying archive 8.5x smaller, 505 GB/day down to 56 GB/day at 10 tx/s. The
-rest of the persistence layer — the index, snapshots, undo, the signing
-high-water mark — is sketched in `docs/persistence_design.md` and not written.
+**The chain is persistent.** `chain/store/` holds a canonical binary codec, a
+SQLite store that commits once per network block, undo records and rollback,
+self-certifying snapshots, the fsync-before-signing guard for turn spending, and
+the archive segment. A node stops and restarts with the same roots, tip and
+registers, and keeps going. Retention makes a fully verifying archive 8.5x
+smaller — 505 GB/day down to 56 GB/day at 10 tx/s — by keeping one proof per
+transaction rather than three. What is not wired: hardened history still lives
+in memory, and there is no snapshot schedule.
 
 **Not built:** grid split and merge, cross-partition transactions, reorg
 rollback, real transport. The ceremony is a synchronous
@@ -172,7 +175,7 @@ simulation with no clock.
 - [`docs/private_chain_design.md`](docs/private_chain_design.md) — the ledger and the single-grid ceremony
 - [`docs/tiered_ceremony_design.md`](docs/tiered_ceremony_design.md) — many grids, registers, trust, per-tier proofs
 - [`docs/hardening_design.md`](docs/hardening_design.md) — moving blocks into network history
-- [`docs/persistence_design.md`](docs/persistence_design.md) — what survives a restart, and what may be thrown away *(the archive is built; the rest is a sketch)*
+- [`docs/persistence_design.md`](docs/persistence_design.md) — what survives a restart, and what may be thrown away
 - [`chain/README.md`](chain/README.md) — implementation notes, measured costs, and what the code changed about the design
 
 ## License
