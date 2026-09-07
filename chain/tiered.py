@@ -134,11 +134,25 @@ class NetworkBlockHeader:
     nf_root: int
     super_root: int
     registers_root: int
+    tiers: int = 3
+    """How many ceremonies stand behind this block.
+
+    Three is the full hierarchy: a local grid agreed the transactions, a super
+    grid agreed the bundle, a supreme grid agreed the roots, and each carries
+    the certificates of the tier below.  Below the sizing thresholds the tiers
+    collapse onto each other, and at one tier there is a single certificate on
+    this block with none on the blocks nested inside it.
+
+    That difference has to be *signed*, not inferred.  Otherwise a reader
+    cannot tell a legitimately degenerate block from a forged one whose inner
+    certificates were stripped out — the two look identical.
+    """
 
     def hash(self) -> str:
         return "nb:" + h_hex("network-header", self.height, self.epoch,
                              self.chain_id, self.prev_hash, self.utxo_root,
-                             self.nf_root, self.super_root, self.registers_root)
+                             self.nf_root, self.super_root,
+                             self.registers_root, self.tiers)
 
 
 @dataclass(eq=False)

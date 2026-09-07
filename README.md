@@ -29,6 +29,7 @@ python3 -m chain.demo_tiers       # many grids: registers, partitions, three pha
 python3 -m chain.demo_hardening   # consensus through to hardened history
 python3 -m chain.demo_archive     # what an archive costs, and where it goes
 python3 -m chain.demo_persistence # stop the chain, start it again
+python3 -m chain.demo_genesis     # launch the seven-node network from its config
 python3 -m chain.tests.run_all    # 135 tests, ~20 s
 ```
 
@@ -148,8 +149,16 @@ smaller — 505 GB/day down to 56 GB/day at 10 tx/s — by keeping one proof per
 transaction rather than three. What is not wired: hardened history still lives
 in memory, and there is no snapshot schedule.
 
-**Not built:** grid split and merge, cross-partition transactions, reorg
-rollback, real transport. The ceremony is a synchronous
+**A network can be launched.** `config/genesis-7.json` is a ratified seven-node
+genesis — the smallest roster that tolerates two Byzantine faults — whose hash
+*is* the chain id, so every attestation, proposal and proof binds to that exact
+setup. With one grid the hierarchy collapses to a single ceremony that still
+emits an ordinary `NetworkBlock`, with `tiers` in the signed header saying how
+much independent verification stands behind it.
+
+**Not built:** grid split and merge, so a network cannot yet grow past one grid;
+cross-partition transactions; reorg rollback beyond the undo ceiling; real
+transport. The ceremony is a synchronous
 simulation with no clock.
 
 ## Security
@@ -176,7 +185,7 @@ simulation with no clock.
 - [`docs/tiered_ceremony_design.md`](docs/tiered_ceremony_design.md) — many grids, registers, trust, per-tier proofs
 - [`docs/hardening_design.md`](docs/hardening_design.md) — moving blocks into network history
 - [`docs/persistence_design.md`](docs/persistence_design.md) — what survives a restart, and what may be thrown away
-- [`docs/genesis_design.md`](docs/genesis_design.md) — what a new network must be trusted about, and for how long *(sketch; not implemented)*
+- [`docs/genesis_design.md`](docs/genesis_design.md) — what a new network must be trusted about, and for how long *(the one-tier launch is built; the rest is a sketch)*
 - [`chain/README.md`](chain/README.md) — implementation notes, measured costs, and what the code changed about the design
 
 ## License

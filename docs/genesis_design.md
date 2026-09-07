@@ -4,6 +4,13 @@ How a fin6 network starts, and what it has to be trusted about when it does.
 Follows `private_chain_design.md`, `tiered_ceremony_design.md`,
 `hardening_design.md` and `persistence_design.md`, all implemented in `chain/`.
 
+> **Status.** Two pieces of §10 are built: the one-tier collapse, and a genesis
+> document whose hash is the chain id. `config/genesis-7.json` is a ratified
+> seven-node launch, and `python3 -m chain.demo_genesis` boots it and runs the
+> chain. Still sketch: the genesis mint (§2), era 0 from contributed leaves
+> (§4), the commit-reveal seed (§5), and the mechanism a second grid would need
+> to start (§10, and the reason the network cannot yet grow past one tier).
+
 ## 0. Six trusted setups, in four files
 
 Each layer named its own trusted setup honestly and then moved on. Nobody has
@@ -299,9 +306,9 @@ The apprenticeship does not apply, and already does not: `GridRegister.genesis`
 seats the founding cohort as attesters with `consecutive = attend_threshold`.
 That is §03's waiver, used exactly as intended.
 
-### Collapse the tiers, do not skip them
+### Collapse the tiers, do not skip them  *(built)*
 
-`run_tiered_epoch` today refuses fewer than two grids and points at
+`run_tiered_epoch` used to refuse fewer than two grids and points at
 `chain.ceremony.run_epoch` — part one's single-grid path, which emits a `Block`
 rather than a `NetworkBlock`. Taking that route means the chain's first blocks
 have a different header, no `registers_root`, no `super_root`, and the move to
@@ -309,21 +316,22 @@ three tiers is a **change of block format in the middle of history**. Every
 archive, snapshot and verifier would have to know both, forever.
 
 So one grid runs one ceremony and emits a `NetworkBlock` whose `supers` holds a
-single `SuperBlock` holding a single `CeremonyBlock`. The hierarchy degenerates;
+single `SuperBlock` holding a single `CeremonyBlock` — which is what
+`SoloWorkload` now does. The hierarchy degenerates;
 the format does not. The 3→2 collapse already works exactly this way — "the
 supreme tier collapses onto it, exactly as the sizing rule says it should" — and
 this extends the same rule to 2→1. Growth then changes how many ceremonies run,
 not what the chain looks like.
 
-### Put the tier count in the header
+### Put the tier count in the header  *(built)*
 
 At one tier there is one quorum certificate and the inner blocks are structural
 bookkeeping. Nothing in a `NetworkBlock` says so, which means a future reader
 cannot distinguish a legitimately degenerate block from a forged one whose inner
-certificates were stripped. `TieredEpochResult` already computes `tiers`; it
-needs to be in `NetworkBlockHeader`, and therefore signed, so that **how much
-independent verification stands behind a block is part of what the block says
-about itself.**
+certificates were stripped. `TieredEpochResult` already computed `tiers`; it is now in
+`NetworkBlockHeader` and therefore signed, so that **how much independent
+verification stands behind a block is part of what the block says about
+itself.**
 
 ### The one grid does the local tier's job
 
@@ -401,6 +409,25 @@ rather than baked in at build, so the effect is re-routing rather than
 invalidation — but every node must change K at the same block, or two grids will
 both believe they own a nullifier. So K′ is announced in a block and takes effect
 a fixed number of blocks later, and mempools re-gossip across the boundary.
+
+### The document, as built
+
+`chain/genesis.py` carries the document and `config/genesis-7.json` is a
+ratified instance of it: seven nodes, quorum 5, `tiers = 1`, `K = 1`, a
+turn-holder map with one slice each, and seven signatures over the digest. The
+identity is derived, never stored — a file that has been edited since it was
+signed is refused on load rather than at some later verification step.
+
+One detail the encoding forced, and it is the right answer anyway: the cadence
+is stored as `epoch_millis`, an integer. The document is hashed, so a float that
+round-trips differently on two builds would be a chain split; `store/codec.py`
+has no encoding for a float, which is what surfaced it.
+
+`verify()` returns `(ok, problems, caveats)`. The caveats are the parts of this
+document the code has not reached — the supply is issued rather than minted, era
+0 is a holder map rather than contributed leaves, the seed is a value rather
+than a reveal — reported every time rather than passed over, so nobody mistakes
+silence for a check.
 
 ### The sequence
 

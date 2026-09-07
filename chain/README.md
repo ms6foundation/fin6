@@ -11,6 +11,7 @@ python3 -m chain.demo_tiers      # many grids: register, partitions, three phase
 python3 -m chain.demo_hardening  # consensus through to hardened network history
 python3 -m chain.demo_archive    # what an archive costs, and where it goes
 python3 -m chain.demo_persistence # stop the chain, start it again
+python3 -m chain.demo_genesis   # launch the seven-node network from its config
 python3 -m chain.tests.run_all   # 135 tests, ~20 s
 ```
 
@@ -35,6 +36,7 @@ Both are run from the repository root (the same place `examples/` imports
 | `node.py` | a validating node: mempool, block production, attestation |
 | `network.py` | bootstrapping a test network; wallets |
 | `demo.py` | the single-grid walkthrough |
+| `genesis.py` | the genesis document: `chain_id = H(document)`, ratification, booting |
 | **tiered path** | |
 | `proofs.py` | proof backends over `mq/`: `ssh5`, `ssh3`, `mpcith` — all three real |
 | `register.py` | `GridRegister` — attendance as rooted state, not opinion |
@@ -43,6 +45,7 @@ Both are run from the repository root (the same place `examples/` imports
 | `tiered.py` | `CeremonyBlock` / `SuperBlock` / `NetworkBlock` |
 | `tiers.py` | the three-phase epoch scheduler and per-tier workloads |
 | `demo_tiers.py` | the tiered walkthrough |
+| `demo_genesis.py` | launching the seven-node network |
 | **hardening (phase H)** | |
 | `hardening/wots.py` | Winternitz one-time signatures — hash-based, post-quantum |
 | `hardening/pool.py` | the era: 70,000 single-use turns in a Merkle tree |

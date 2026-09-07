@@ -159,7 +159,7 @@ class TierWorld:
 
 def bootstrap_world(node_regions: dict, endowments: dict, params: ChainParams,
                     seed: str = "genesis", asset: str = "USD",
-                    newcomers: dict | None = None):
+                    newcomers: dict | None = None, signers: dict | None = None):
     """Build a tiered network: topology, genesis registers, wallets, nodes.
 
     The founding cohort of every grid starts as attesters — it has to, since a
@@ -185,8 +185,12 @@ def bootstrap_world(node_regions: dict, endowments: dict, params: ChainParams,
     genesis.height = 0
     genesis.tip = GENESIS_NETWORK
 
-    nodes = {nid: Node(nid, Signer.from_seed(f"validator:{nid}"), params,
-                       genesis.copy())
+    def signer_for(nid):
+        # A launched network hands each node its own key; the seeded default is
+        # for demos and tests, where reproducibility is the point.
+        return (signers or {}).get(nid) or Signer.from_seed(f"validator:{nid}")
+
+    nodes = {nid: Node(nid, signer_for(nid), params, genesis.copy())
              for nid in node_regions}
     registers = {
         gid: GridRegister.genesis(gid, topology.members(gid),
@@ -201,8 +205,7 @@ def bootstrap_world(node_regions: dict, endowments: dict, params: ChainParams,
     for nid, region in sorted((newcomers or {}).items()):
         gid = topology.assign_newcomer(nid, region, seed)
         registers[gid].admit(nid)
-        nodes[nid] = Node(nid, Signer.from_seed(f"validator:{nid}"), params,
-                          genesis.copy())
+        nodes[nid] = Node(nid, signer_for(nid), params, genesis.copy())
         world.trust[nid] = TrustList(nid)
     return world, wallets
 
@@ -368,17 +371,110 @@ class SuperWorkload:
         return True, "ok"
 
 
+class SoloWorkload:
+    """All three tiers at once, because there is only one grid.
+
+    One grid means there is nothing to aggregate and no sibling to collide
+    with, so the super and supreme tiers would be the same seats doing the same
+    work twice more.  The tempting shortcut is to run part one's single-grid
+    ceremony instead — but that emits a `Block`, not a `NetworkBlock`, so the
+    chain would carry two incompatible kinds of history and the move to three
+    tiers would be a format change in the middle of it.  Every archive,
+    snapshot and verifier would have to know both, forever.
+
+    So the hierarchy degenerates and the format does not.  One ceremony emits
+    the full nesting — a NetworkBlock over a SuperBlock over the CeremonyBlock
+    — and the quorum certificate lands on the network block, because that is
+    the object the seats actually agreed.  The inner blocks carry none, and
+    `tiers=1` in the header is what says so out loud.
+    """
+
+    name = "solo"
+
+    def __init__(self, world: TierWorld, grid_id: str, epoch: int, backend: str):
+        self.world = world
+        self.grid_id = grid_id
+        self.epoch = epoch
+        self.local = LocalWorkload(world, grid_id, epoch, backend)
+
+    @property
+    def super_id(self) -> str:
+        return f"solo-{self.grid_id}"
+
+    def _wrap(self, node: Node, child: CeremonyBlock):
+        """Nest one ceremony block up to a network block, roots and all."""
+        sup = SuperBlock(header=None, children=(child,))
+        sup = SuperBlock(
+            header=SuperBlockHeader(
+                super_id=self.super_id, epoch=self.epoch,
+                chain_id=node.chain_id, prev_network_hash=self.world.tip,
+                child_root=sup.compute_child_root(),
+                dropped_root=sup.compute_dropped_root()),
+            children=(child,))
+        merged, _ = merge_deltas([child.delta])
+        shadow = node.state.copy()
+        ok, why = shadow.can_apply_delta(merged)
+        if not ok:
+            return None, None, why
+        shadow.apply_delta(merged)
+        block = NetworkBlock(header=None, supers=(sup,))
+        header = NetworkBlockHeader(
+            height=self.world.height + 1, epoch=self.epoch,
+            chain_id=node.chain_id, prev_hash=self.world.tip,
+            utxo_root=shadow.utxo.root, nf_root=shadow.nullifiers.root,
+            super_root=block.compute_super_root(),
+            registers_root=registers_root(
+                {self.grid_id: child.header.register_root}),
+            tiers=1)
+        return NetworkBlock(header=header, supers=(sup,)), shadow, "ok"
+
+    def build(self, leader: Node, meta, limit=None) -> NetworkBlock:
+        child = self.local.build(leader, meta, limit)
+        block, _, why = self._wrap(leader, child)
+        if block is None:
+            raise RuntimeError(f"solo leader cannot apply the epoch: {why}")
+        return block
+
+    def validate(self, node: Node, block: NetworkBlock):
+        h = block.header
+        if h.tiers != 1:
+            return False, f"header claims {h.tiers} tiers, this epoch ran 1"
+        if len(block.supers) != 1 or len(block.supers[0].children) != 1:
+            return False, ("a one-tier block wraps exactly one grid; this one "
+                           f"wraps {sum(1 for _ in block.ceremony_blocks())}")
+        if block.dropped:
+            return False, "nothing can be dropped when there is one grid"
+        child = block.supers[0].children[0]
+        if child.quorum_cert is not None:
+            return False, ("the inner blocks of a one-tier block carry no "
+                           "certificate; the network block carries it")
+
+        # The seats verify the transactions themselves, exactly as they would
+        # in a local ceremony — the collapse changes who signs, never who checks.
+        ok, why = self.local.validate(node, child)
+        if not ok:
+            return False, why
+
+        expected, _, why = self._wrap(node, child)
+        if expected is None:
+            return False, f"epoch does not apply: {why}"
+        if expected.header != h:
+            return False, "the header does not match the block it wraps"
+        return True, "ok"
+
+
 class SupremeWorkload:
     """Tier 2.  The only tier that can compute the global roots."""
 
     name = "supreme"
 
     def __init__(self, world: TierWorld, supers: dict, epoch: int,
-                 owner_of: dict):
+                 owner_of: dict, tiers: int = 3):
         self.world = world
         self.supers = dict(supers)          # super_id -> SuperBlock
         self.epoch = epoch
         self.owner_of = dict(owner_of)
+        self.tiers = tiers
 
     def _apply(self, state: ChainState, supers):
         deltas = [c.delta for s in supers for c in s.children]
@@ -405,7 +501,7 @@ class SupremeWorkload:
             chain_id=leader.chain_id, prev_hash=self.world.tip,
             utxo_root=shadow.utxo.root, nf_root=shadow.nullifiers.root,
             super_root=block.compute_super_root(),
-            registers_root=registers_root(roots))
+            registers_root=registers_root(roots), tiers=self.tiers)
         return NetworkBlock(header=header, supers=tuple(ordered),
                             dropped=tuple(f"{i}:{w}" for i, w in dropped))
 
@@ -419,6 +515,9 @@ class SupremeWorkload:
             return False, f"height {h.height} does not follow {self.world.height}"
         if h.super_root != block.compute_super_root():
             return False, "super_root does not match the super blocks"
+        if h.tiers != self.tiers:
+            return False, (f"header claims {h.tiers} tiers, this epoch ran "
+                           f"{self.tiers}")
 
         for sup in block.supers:
             if sup.quorum_cert is None:
@@ -502,9 +601,15 @@ class TieredEpochResult:
             "tiers": self.tiers,
             "transactions": (sum(1 for _ in self.block.transactions())
                              if self.block else 0),
-            "ceremonies": (len(self.local.ceremonies) + len(self.supers.ceremonies)
+            # At one tier the same ceremony is both the local one and the
+            # supreme one, so counting each phase would report it twice.
+            "ceremonies": (1 if self.tiers == 1 else
+                           len(self.local.ceremonies)
+                           + len(self.supers.ceremonies)
                            + (1 if self.supreme else 0)),
             "directed_messages": (
+                (self.supreme.directed_messages if self.supreme else 0)
+                if self.tiers == 1 else
                 sum(r.directed_messages for r in self.local.ceremonies.values())
                 + sum(r.directed_messages for r in self.supers.ceremonies.values())
                 + (self.supreme.directed_messages if self.supreme else 0)),
@@ -516,6 +621,54 @@ class TieredEpochResult:
                 f"— {self.reason}")
 
 
+def _run_solo_epoch(world: TierWorld, epoch: int, base_seed: str,
+                    behaviours: dict, tx_limit, rounds) -> TieredEpochResult:
+    """One grid, one ceremony, one certificate — and a network block all the
+    same.  See SoloWorkload for why this is a collapse rather than a shortcut."""
+    params = world.params
+    gid = world.topology.grid_ids()[0]
+    reg = world.registers[gid]
+    members = world.grid_members(gid)
+    attesters = [n for n in members if reg.standing_of(n) == Standing.ATTESTER]
+    empty = PhaseResult(tier="local")
+    if len(members) < 2 or not attesters:
+        empty.skipped[gid] = (f"{len(members)} seated, {len(attesters)} "
+                              f"attesters — cannot form a grid")
+        return TieredEpochResult(epoch, "aborted", "the only grid cannot seat",
+                                 1, empty, PhaseResult(tier="super"))
+
+    standing = {n: reg.standing_of(n) for n in members}
+    seed = h_hex("view", base_seed, epoch, gid, 0)
+    grid = Grid.seat(members, params.row_size, seed, standing=standing)
+    # The single grid is doing the local tier's job — it verifies every
+    # transaction — so it uses the local tier's proof system, not the supreme
+    # tier's, whatever the block it ends up emitting is called.
+    ceremony = Ceremony(
+        grid, {n: world.nodes[n] for n in members}, params,
+        height=epoch, epoch=epoch, rounds=rounds,
+        quorum=reg.quorum(params.quorum_num, params.quorum_den),
+        workload=SoloWorkload(world, gid, epoch, params.backend_for("local")),
+        counting=set(attesters), grid_id=gid)
+    result = ceremony.run(behaviours.get(grid.leader, HonestLeader()),
+                          limit=tx_limit)
+
+    local = PhaseResult(tier="local")
+    local.ceremonies[gid] = result
+    world.pending_rolls[gid] = result.roll
+    atts = ({a.node_id: a for a in result.quorum_cert.attestations}
+            if result.quorum_cert else {})
+    head = result.block.hash() if result.block else None
+    for nid in grid.seats:
+        world.trust[nid].observe(result.roll, head, atts)
+
+    if not result.finalised:
+        return TieredEpochResult(epoch, "aborted", f"the only grid: {result.reason}",
+                                 1, local, PhaseResult(tier="super"), result)
+    local.blocks[gid] = result.block.supers[0].children[0]
+    return TieredEpochResult(epoch, "finalised", "ok", 1, local,
+                             PhaseResult(tier="super"), result, result.block)
+
+
 def run_tiered_epoch(world: TierWorld, epoch: int, base_seed: str,
                      behaviours: dict | None = None, tx_limit=None,
                      rounds: int | None = None) -> TieredEpochResult:
@@ -524,10 +677,8 @@ def run_tiered_epoch(world: TierWorld, epoch: int, base_seed: str,
     behaviours = behaviours or {}
     topo = world.topology
     if len(topo.grid_ids()) < 2:
-        raise ValueError(
-            "the tiered path needs at least two grids; with one grid there is "
-            "nothing to aggregate — use chain.ceremony.run_epoch, which is the "
-            "one-tier case and computes the roots directly")
+        return _run_solo_epoch(world, epoch, base_seed, behaviours, tx_limit,
+                               rounds)
 
     # ── Phase L ──────────────────────────────────────────────────────────────
     local = PhaseResult(tier="local")
@@ -614,7 +765,8 @@ def run_tiered_epoch(world: TierWorld, epoch: int, base_seed: str,
         grid, {n: world.nodes[n] for n in supreme_members}, params,
         height=epoch, epoch=epoch, rounds=rounds,
         quorum=params.quorum_size(len(supreme_members)),
-        workload=SupremeWorkload(world, supers.blocks, epoch, super_led_by),
+        workload=SupremeWorkload(world, supers.blocks, epoch, super_led_by,
+                                 tiers=tiers),
         grid_id="supreme")
     supreme = ceremony.run(behaviours.get(grid.leader, HonestLeader()))
 

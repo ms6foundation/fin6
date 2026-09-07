@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "network": "fin6-genesis-7",
+  "params": {
+    "attend_threshold": 40,
+    "default_backend": "ssh5",
+    "forgiveness": 0,
+    "grid_size": 7,
+    "n_note": 8,
+    "name": "demo",
+    "note_folds": 4,
+    "proof_backends": [
+      "mpcith",
+      "ssh5",
+      "ssh3"
+    ],
+    "proof_policy": [
+      [
+        "local",
+        "mpcith"
+      ],
+      [
+        "super",
+        "ssh5"
+      ],
+      [
+        "supreme",
+        "ssh3"
+      ]
+    ],
+    "quorum_den": 3,
+    "quorum_num": 2,
+    "range_bits": 12,
+    "row_size": 5,
+    "seal_d": 8,
+    "security_bits": 80,
+    "zk_rounds": 80
+  },
+  "hardening": {
+    "difficulty_bits": 20,
+    "era_seconds": 43200,
+    "name": "production",
+    "threshold_den": 3,
+    "threshold_num": 2,
+    "tree_height": 17,
+    "turns": 70000,
+    "width": 32
+  },
+  "tiers": 1,
+  "n_partitions": 1,
+  "first_seed": "261277ffb91793027d23b8302c32ca8df318a9ab2fe38adaa36cf4abf7763216",
+  "effective_time": "1970-01-01T00:00:00Z",
+  "epoch_millis": 19749,
+  "nodes": [
+    {
+      "id": "fin6-n01",
+      "region": "genesis",
+      "public_hex": "9ba437cb84b80a6f4ee2372f1eea596c5a41e2bc635a5e6da06d1da71222110f"
+    },
+    {
+      "id": "fin6-n02",
+      "region": "genesis",
+      "public_hex": "95b6274797ebe001b4befe82d22aa421772d4a756fb90b0049efea899efe16c0"
+    },
+    {
+      "id": "fin6-n03",
+      "region": "genesis",
+      "public_hex": "a9fc643b89663c711bdafdbd836d1d50d6d4f0a44c9be412d25ef63b5e17da5a"
+    },
+    {
+      "id": "fin6-n04",
+      "region": "genesis",
+      "public_hex": "3f491be7585a13a427e090a32a52da9fdeb3f913f7a8ba77a6f4fb2ff7e25633"
+    },
+    {
+      "id": "fin6-n05",
+      "region": "genesis",
+      "public_hex": "6e5fe98748835de9fb9c6d304865eb4a3b76186bcedef69237758f482d9bdd05"
+    },
+    {
+      "id": "fin6-n06",
+      "region": "genesis",
+      "public_hex": "e42f4338797401948d0cd4b0ecdce721d716c6dc2ea43b9a41daac9b1a7c1afd"
+    },
+    {
+      "id": "fin6-n07",
+      "region": "genesis",
+      "public_hex": "89863e5a370c4030fd829649c0ddb30396a2ae9372c8179104988ea8a2491233"
+    }
+  ],
+  "turn_holders": [
+    "fin6-n01",
+    "fin6-n02",
+    "fin6-n03",
+    "fin6-n04",
+    "fin6-n05",
+    "fin6-n06",
+    "fin6-n07"
+  ],
+  "supply": {
+    "treasury": [
+      1000,
+      900,
+      800,
+      700,
+      600
+    ]
+  },
+  "declared_total": 4000,
+  "ratification_threshold": 5,
+  "ratifications": [
+    {
+      "node_id": "fin6-n01",
+      "signature": "97821a6c29be24dfcbfbf4536aa8b1c772def4acd20708e624b5ec98e72ac1309924440822c8f1f4093ee77b294032eb8b3bc8ebcdd292957a671755514b3f0a"
+    },
+    {
+      "node_id": "fin6-n02",
+      "signature": "e415eae216d24b3d7cb2335ec4c9de98a236fafb3ecf2762e6a914acd440795ad2b56719bff6f191681ceb1d180b1a2212abdd7101215d1ac9482a45a5103a01"
+    },
+    {
+      "node_id": "fin6-n03",
+      "signature": "c7759e80d5239cfbfc7f8f2986938bc553bdb9bbd9005fa9f4cb812a84dbc2713f2c8f6abe5add30b3884b9646bb77664cdbd62f05a18f3f3f01ccba748aac0a"
+    },
+    {
+      "node_id": "fin6-n04",
+      "signature": "703cb8a5181d89b982dde209be2c3640544a6c4ca3aa559b415aed3dac867e8087cc2bf9de4160e662022a617aaccd0e97058e6493c7daa538281d5d483b1d00"
+    },
+    {
+      "node_id": "fin6-n05",
+      "signature": "c87a9eb7a84ea3e15ad7e91403c878d0f3baa282eaec67f749c113ecea42f2d5d076e7ab439047576affc64bb115a3b149fcc26aece1e7b54c62848926202b08"
+    },
+    {
+      "node_id": "fin6-n06",
+      "signature": "d529f54136cc244fb6bb0c4e3d49ee278b6a653b1b75f06943431dce3d7625bffd88070c47e828ec0f89cdc6e1ef7d1d04ad363f32562021b254d47c4f085103"
+    },
+    {
+      "node_id": "fin6-n07",
+      "signature": "3091c5ec73e7b66e7b5d7fd94cf4a55fbe5ce04bc6c75817afb4cfe3a1a30f2b0957813234868281810f2bf983f524ed33e0b23e344438f77eecc0f9987bf008"
+    }
+  ],
+  "chain_id": "fin6:837db2cb6b7cb72371654dd00d3121331e2b7dd0395858d587eeb0538d97888c"
+}

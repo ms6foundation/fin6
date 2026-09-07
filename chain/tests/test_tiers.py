@@ -333,15 +333,21 @@ def test_three_tiers_when_the_roster_is_large_enough():
     assert r.finalised and r.tiers == 3
 
 
-def test_the_single_grid_case_is_refused_and_points_at_the_one_tier_path():
+def test_the_single_grid_case_collapses_to_one_tier():
+    """One grid used to be refused.  It now degenerates instead — same block
+    format, one ceremony, one certificate, and a header that says so."""
     regions = {f"n{i:02d}": "eu" for i in range(4)}          # one region, one grid
     w, wallets = bootstrap_world(
         regions, {"alice": [1000], "bob": []},
         dataclasses.replace(PARAMS, grid_size=100))
     assert len(w.topology.grid_ids()) == 1
-    try:
-        run_tiered_epoch(w, epoch=1, base_seed="s")
-    except ValueError as exc:
-        assert "run_epoch" in str(exc)
-        return
-    raise AssertionError("a one-grid topology should not run the tiered path")
+    result = run_tiered_epoch(w, epoch=1, base_seed="s")
+    assert result.finalised, result.reason
+    assert result.tiers == 1
+    block = result.block
+    assert block.header.tiers == 1
+    assert len(block.supers) == 1 and len(block.supers[0].children) == 1
+    assert block.quorum_cert is not None, "the network block is what was agreed"
+    assert block.supers[0].quorum_cert is None
+    assert block.supers[0].children[0].quorum_cert is None
+    assert result.stats()["ceremonies"] == 1, "one ceremony, counted once"
