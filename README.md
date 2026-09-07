@@ -194,6 +194,7 @@ simulation with no clock.
 - [`docs/hardening_design.md`](docs/hardening_design.md) — moving blocks into network history
 - [`docs/persistence_design.md`](docs/persistence_design.md) — what survives a restart, and what may be thrown away
 - [`docs/genesis_design.md`](docs/genesis_design.md) — what a new network must be trusted about, and for how long *(the one-tier launch is built; the rest is a sketch)*
+- [`docs/testnet_design.md`](docs/testnet_design.md) — running it for real: seven processes, a wire, a clock *(sketch; not implemented)*
 - [`chain/README.md`](chain/README.md) — implementation notes, measured costs, and what the code changed about the design
 
 ## License
