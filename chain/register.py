@@ -54,12 +54,18 @@ class MemberRecord:
     last_seen_epoch: int = -1
     led_count: int = 0
     faults: tuple = ()
+    #: The grid this member's standing was carried over from, when it was moved
+    #: to found a new one.  Empty for everyone who earned it here.  Committed
+    #: in the root deliberately: carrying standing across grids is a waiver of
+    #: the rule that relocating restarts the counter, and a waiver that is not
+    #: visible in the state is a waiver nobody can audit.
+    founded_from: str = ""
 
     def as_tuple(self):
         """Canonical serialisation — what the root commits to."""
         return (self.node_id, self.joined_epoch, self.standing,
                 self.consecutive, self.total_attended, self.last_seen_epoch,
-                self.led_count, len(self.faults))
+                self.led_count, len(self.faults), self.founded_from)
 
     def counts(self) -> bool:
         return self.standing == Standing.ATTESTER
@@ -158,6 +164,49 @@ class GridRegister:
         self.epoch = roll.epoch + 1
         return self.root()
 
+    # ── founding a grid ──────────────────────────────────────────────────────
+
+    def release(self, node_ids) -> list:
+        """Take members out, records and all.  Used only to found a grid.
+
+        Refuses anything but an attester in good standing: an apprentice would
+        arrive at the new grid unable to vote, and a suspended member would
+        arrive with its suspension laundered into a fresh register.
+        """
+        moving = []
+        for nid in sorted(node_ids):
+            rec = self.members.get(nid)
+            if rec is None:
+                raise ValueError(f"{nid} is not in {self.grid_id}")
+            if rec.standing != Standing.ATTESTER:
+                raise ValueError(f"{nid} is {rec.standing}, not an attester — "
+                                 f"only attesters can found a grid")
+            if rec.faults:
+                raise ValueError(f"{nid} carries a fault and cannot found")
+            moving.append(rec)
+        for rec in moving:
+            del self.members[rec.node_id]
+            self._misses.pop(rec.node_id, None)
+        return moving
+
+    @classmethod
+    def found(cls, grid_id: str, records, donor_id: str, epoch: int,
+              attend_threshold: int = 40, forgiveness: int = 0):
+        """A new grid, founded by a cohort that keeps what it earned.
+
+        This is the same waiver `genesis` uses, applied again: a grid of pure
+        apprentices can never reach quorum, so it can never run the ceremony
+        that would promote anyone, so a grid created from newcomers alone is
+        deadlocked permanently rather than slowly.  Every new grid is therefore
+        a small genesis, and — like genesis — it is only honest if it is
+        recorded.  `founded_from` is that record, and it is in the root.
+        """
+        reg = cls(grid_id, epoch=epoch, attend_threshold=attend_threshold,
+                  forgiveness=forgiveness)
+        for rec in records:
+            reg.members[rec.node_id] = replace(rec, founded_from=donor_id)
+        return reg
+
     # ── views ────────────────────────────────────────────────────────────────
 
     def standing_of(self, node_id: str) -> str:
@@ -205,7 +254,7 @@ class GridRegister:
             "members": [
                 (r.node_id, r.joined_epoch, r.standing, r.consecutive,
                  r.total_attended, r.last_seen_epoch, r.led_count,
-                 list(r.faults))
+                 list(r.faults), r.founded_from)
                 for _, r in sorted(self.members.items())],
             "misses": sorted(self._misses.items()),
         }
@@ -216,12 +265,12 @@ class GridRegister:
                   attend_threshold=dump["attend_threshold"],
                   forgiveness=dump["forgiveness"])
         for (nid, joined, standing, consecutive, total, last_seen, led,
-             faults) in dump["members"]:
+             faults, founded_from) in dump["members"]:
             out.members[nid] = MemberRecord(
                 node_id=nid, joined_epoch=joined, standing=standing,
                 consecutive=consecutive, total_attended=total,
                 last_seen_epoch=last_seen, led_count=led,
-                faults=tuple(faults))
+                faults=tuple(faults), founded_from=founded_from)
         out._misses = dict(dump["misses"])
         return out
 

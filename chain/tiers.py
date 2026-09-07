@@ -17,7 +17,7 @@ the supreme tier collapses onto it.  Otherwise all three run.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .block import CeremonyMeta
 from .ceremony import Ceremony, Grid, HonestLeader
@@ -28,8 +28,8 @@ from .params import ChainParams
 from .register import AttendanceRoll, GridRegister, Standing
 from .state import ChainState, UtxoDelta, merge_deltas
 from .tiered import (GENESIS_NETWORK, CeremonyBlock, CeremonyBlockHeader,
-                     NetworkBlock, NetworkBlockHeader, SuperBlock,
-                     SuperBlockHeader, registers_root)
+                     GridFounding, NetworkBlock, NetworkBlockHeader, SuperBlock,
+                     SuperBlockHeader, foundings_root, registers_root)
 from .store import undo
 from .trustlist import TrustList
 
@@ -110,15 +110,89 @@ class TierWorld:
             reg = self.registers[child.header.grid_id]
             if child.roll is not None and child.roll.epoch >= 0:
                 reg.apply(child.roll)
+        for founding in block.foundings:
+            self._found_grid(founding)
         self.height = block.header.height
         self.tip = block.hash()
         self.rolls = dict(self.pending_rolls)
         self.pending_rolls = {}
+        if block.foundings:
+            self.reroute_mempools()
         for nid, record in records.items():
             node = self.nodes[nid]
             node.store.commit(block=block, delta=merged, state=node.state,
                               undo=record,
                               registers={g: self.registers[g] for g in touched})
+
+    # ── growing ──────────────────────────────────────────────────────────────
+
+    def _found_grid(self, founding):
+        """Apply one founding: move the cohort, records intact.
+
+        After the rolls, not before — the cohort was chosen from the state the
+        epoch started in, and the epoch's own attendance still belongs to the
+        grid it was earned in.
+        """
+        donor = self.registers[founding.donor_id]
+        movers = donor.release(founding.cohort)
+        self.registers[founding.grid_id] = GridRegister.found(
+            founding.grid_id, movers, founding.donor_id, epoch=donor.epoch,
+            attend_threshold=self.params.attend_threshold,
+            forgiveness=self.params.forgiveness)
+        self.topology.found_grid(founding.donor_id, founding.grid_id,
+                                 founding.cohort)
+        # The roll this epoch just produced still names the movers as seats of
+        # the donor grid, and a register admits anyone a roll names — so
+        # without this the cohort would be re-admitted to the grid it just
+        # left, as apprentices, and exist in two registers at once.  Trimming
+        # costs the movers credit for the ceremony they spent in a grid they
+        # were leaving, which is the right way round: every node performs the
+        # same trim, so the roots still agree.
+        roll = self.pending_rolls.get(founding.donor_id)
+        if roll is not None:
+            gone = set(founding.cohort)
+            self.pending_rolls[founding.donor_id] = replace(
+                roll,
+                seated=tuple(n for n in roll.seated if n not in gone),
+                attended=tuple(n for n in roll.attended if n not in gone))
+
+    def reroute_mempools(self):
+        """K moved, so every pending transaction has a new home.
+
+        `nf mod K` is the routing rule and K is the number of grids, so a
+        founding re-homes everything in flight — not just what crosses the new
+        boundary.  On a real network this is re-gossip; here it is one pass,
+        and transactions that no longer belong anywhere reachable are dropped
+        rather than left to sit in a mempool that will never include them.
+        """
+        pending = {}
+        for node in self.nodes.values():
+            for txid, tx in node.mempool.items():
+                pending.setdefault(txid, tx)
+            for txid in list(node.mempool):
+                node._evict(txid)
+        rerouted = 0
+        for tx in pending.values():
+            ok, _, _ = self.submit(tx)
+            rerouted += ok
+        return rerouted, len(pending)
+
+    def admit(self, node_id: str, region: str, signer=None):
+        """A node joins after genesis: seated by the seed, apprentice at zero.
+
+        Which grid it lands in is `H(tip, node_id)`, not its own choice — free
+        choice of grid is how an adversary funnels its nodes into one.
+        """
+        if node_id in self.nodes:
+            raise ValueError(f"{node_id} is already in the network")
+        gid = self.topology.assign_newcomer(node_id, region, self.tip)
+        self.registers[gid].admit(node_id)
+        template = self.nodes[sorted(self.nodes)[0]].state
+        self.nodes[node_id] = Node(
+            node_id, signer or Signer.from_seed(f"validator:{node_id}"),
+            self.params, template.copy())
+        self.trust[node_id] = TrustList(node_id)
+        return gid
 
     # ── persistence ──────────────────────────────────────────────────────────
 
@@ -213,6 +287,44 @@ def bootstrap_world(node_regions: dict, endowments: dict, params: ChainParams,
 # ═══════════════════════════════════════════════════════════════════════════════
 # Workloads — what each tier builds and checks
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def plan_foundings(world: "TierWorld", epoch: int) -> tuple:
+    """Which grid founds a child this epoch, and who moves.
+
+    Every input is committed state — grid membership, the register, and the
+    previous network block's hash — so the leader proposes nothing and every
+    seat derives the same answer.  Seeding the draw from the *previous* block
+    is the same trick the hardening committee uses: whoever assembles this
+    block cannot grind the roster it selects.
+
+    Two conditions, and the second is the one that keeps both sides alive:
+
+      * the donor is over size, by the rule `Topology.needs_split` already had;
+      * it has at least twice the cohort in unfaulted attesters, so the half
+        that stays can still reach its own quorum.
+
+    At most one founding an epoch.  K is the modulus in `nf mod K`, so every
+    founding re-homes every transaction in flight; doing two at once would
+    double that churn for no gain.
+    """
+    params = world.params
+    size = params.founding_cohort
+    for gid in world.topology.grid_ids():
+        if not world.topology.needs_split(gid, params.grid_size):
+            continue
+        reg = world.registers[gid]
+        seated = set(world.topology.members(gid))
+        eligible = [n for n in reg.attesters()
+                    if n in seated and not reg.members[n].faults]
+        if len(eligible) < 2 * size:
+            continue
+        new_id = world.topology.next_grid_id(world.topology.spec(gid).region)
+        ranked = sorted(eligible,
+                        key=lambda n: h_hex("found", world.tip, gid, new_id, n))
+        return (GridFounding(donor_id=gid, grid_id=new_id, epoch=epoch,
+                             cohort=tuple(sorted(ranked[:size]))),)
+    return ()
+
 
 class LocalWorkload:
     """Tier 0.  Produces a delta and a register root, never a ledger root."""
@@ -417,7 +529,8 @@ class SoloWorkload:
         if not ok:
             return None, None, why
         shadow.apply_delta(merged)
-        block = NetworkBlock(header=None, supers=(sup,))
+        foundings = plan_foundings(self.world, self.epoch)
+        block = NetworkBlock(header=None, supers=(sup,), foundings=foundings)
         header = NetworkBlockHeader(
             height=self.world.height + 1, epoch=self.epoch,
             chain_id=node.chain_id, prev_hash=self.world.tip,
@@ -425,8 +538,9 @@ class SoloWorkload:
             super_root=block.compute_super_root(),
             registers_root=registers_root(
                 {self.grid_id: child.header.register_root}),
-            tiers=1)
-        return NetworkBlock(header=header, supers=(sup,)), shadow, "ok"
+            tiers=1, foundings_root=block.compute_foundings_root())
+        return NetworkBlock(header=header, supers=(sup,),
+                            foundings=foundings), shadow, "ok"
 
     def build(self, leader: Node, meta, limit=None) -> NetworkBlock:
         child = self.local.build(leader, meta, limit)
@@ -452,6 +566,10 @@ class SoloWorkload:
         # The seats verify the transactions themselves, exactly as they would
         # in a local ceremony — the collapse changes who signs, never who checks.
         ok, why = self.local.validate(node, child)
+        if not ok:
+            return False, why
+
+        ok, why = _check_foundings(self.world, self.epoch, block)
         if not ok:
             return False, why
 
@@ -495,15 +613,19 @@ class SupremeWorkload:
             raise RuntimeError(f"supreme leader cannot apply the epoch: {why}")
         roots = {c.header.grid_id: c.header.register_root
                  for s in ordered for c in s.children}
-        block = NetworkBlock(header=None, supers=tuple(ordered))
+        foundings = plan_foundings(self.world, self.epoch)
+        block = NetworkBlock(header=None, supers=tuple(ordered),
+                             foundings=foundings)
         header = NetworkBlockHeader(
             height=self.world.height + 1, epoch=self.epoch,
             chain_id=leader.chain_id, prev_hash=self.world.tip,
             utxo_root=shadow.utxo.root, nf_root=shadow.nullifiers.root,
             super_root=block.compute_super_root(),
-            registers_root=registers_root(roots), tiers=self.tiers)
+            registers_root=registers_root(roots), tiers=self.tiers,
+            foundings_root=block.compute_foundings_root())
         return NetworkBlock(header=header, supers=tuple(ordered),
-                            dropped=tuple(f"{i}:{w}" for i, w in dropped))
+                            dropped=tuple(f"{i}:{w}" for i, w in dropped),
+                            foundings=foundings)
 
     def validate(self, node: Node, block: NetworkBlock):
         h = block.header
@@ -518,6 +640,9 @@ class SupremeWorkload:
         if h.tiers != self.tiers:
             return False, (f"header claims {h.tiers} tiers, this epoch ran "
                            f"{self.tiers}")
+        ok, why = _check_foundings(self.world, self.epoch, block)
+        if not ok:
+            return False, why
 
         for sup in block.supers:
             if sup.quorum_cert is None:
@@ -621,11 +746,44 @@ class TieredEpochResult:
                 f"— {self.reason}")
 
 
+def _check_epoch(world: "TierWorld", epoch: int):
+    """The tiered path advances the epoch number and the height together.
+
+    Every ceremony is constructed with `height=epoch` while the network block
+    takes `world.height + 1`, so a caller that skips an epoch produces
+    attestations over one height and a proposal over another — and the symptom
+    is a ceremony that mysteriously never sees a proposal.  Say so instead.
+    """
+    if epoch != world.height + 1:
+        raise ValueError(
+            f"epoch {epoch} does not follow height {world.height}: the tiered "
+            f"path advances them together, so the next epoch is "
+            f"{world.height + 1}")
+
+
+def _check_foundings(world: "TierWorld", epoch: int, block: NetworkBlock):
+    """Every seat re-derives the founding and refuses anything else.
+
+    There is nothing to negotiate here — the plan is a function of state every
+    seat already holds — so a leader that proposes a different cohort is not
+    exercising discretion, it is lying about the state.
+    """
+    if block.header.foundings_root != block.compute_foundings_root():
+        return False, "foundings_root does not match the block"
+    expected = plan_foundings(world, epoch)
+    if tuple(f.digest() for f in block.foundings) != \
+            tuple(f.digest() for f in expected):
+        return False, ("the founding in this block is not the one the state "
+                       "calls for")
+    return True, "ok"
+
+
 def _run_solo_epoch(world: TierWorld, epoch: int, base_seed: str,
                     behaviours: dict, tx_limit, rounds) -> TieredEpochResult:
     """One grid, one ceremony, one certificate — and a network block all the
     same.  See SoloWorkload for why this is a collapse rather than a shortcut."""
     params = world.params
+    _check_epoch(world, epoch)
     gid = world.topology.grid_ids()[0]
     reg = world.registers[gid]
     members = world.grid_members(gid)
@@ -676,6 +834,7 @@ def run_tiered_epoch(world: TierWorld, epoch: int, base_seed: str,
     params = world.params
     behaviours = behaviours or {}
     topo = world.topology
+    _check_epoch(world, epoch)
     if len(topo.grid_ids()) < 2:
         return _run_solo_epoch(world, epoch, base_seed, behaviours, tx_limit,
                                rounds)

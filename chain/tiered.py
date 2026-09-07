@@ -24,6 +24,35 @@ from .state import UtxoDelta
 GENESIS_NETWORK = "net:genesis"
 
 
+@dataclass(frozen=True)
+class GridFounding:
+    """A new grid, and the cohort that carried its standing across.
+
+    Deterministic from committed state — which grid is over size, and which of
+    its attesters the previous block's hash selects — so the leader proposes
+    nothing here and every seat re-derives the same record.  It is carried in
+    the block and committed in the header anyway, because a grid being founded
+    is a governance event: it should be visible in the archive rather than
+    inferred from two register roots changing at once.
+    """
+    donor_id: str
+    grid_id: str
+    epoch: int
+    cohort: tuple = ()
+
+    def digest(self) -> str:
+        return h_hex("founding", self.donor_id, self.grid_id, self.epoch,
+                     sorted(self.cohort))
+
+    def __repr__(self):
+        return (f"GridFounding({self.donor_id} -> {self.grid_id}, "
+                f"{len(self.cohort)} founders)")
+
+
+def foundings_root(foundings) -> int:
+    return seal_root("foundings", [f.digest() for f in foundings])
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Tier 0
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -135,6 +164,7 @@ class NetworkBlockHeader:
     super_root: int
     registers_root: int
     tiers: int = 3
+    foundings_root: int = 0
     """How many ceremonies stand behind this block.
 
     Three is the full hierarchy: a local grid agreed the transactions, a super
@@ -152,7 +182,8 @@ class NetworkBlockHeader:
         return "nb:" + h_hex("network-header", self.height, self.epoch,
                              self.chain_id, self.prev_hash, self.utxo_root,
                              self.nf_root, self.super_root,
-                             self.registers_root, self.tiers)
+                             self.registers_root, self.tiers,
+                             self.foundings_root)
 
 
 @dataclass(eq=False)
@@ -160,10 +191,14 @@ class NetworkBlock:
     header: NetworkBlockHeader
     supers: tuple = ()
     dropped: tuple = ()
+    foundings: tuple = ()
     quorum_cert: object = field(default=None, repr=False)
 
     def compute_super_root(self) -> int:
         return seal_root("network-supers", [s.hash() for s in self.supers])
+
+    def compute_foundings_root(self) -> int:
+        return foundings_root(self.foundings)
 
     def hash(self) -> str:
         return self.header.hash()

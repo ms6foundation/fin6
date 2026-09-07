@@ -41,7 +41,7 @@ Both are run from the repository root (the same place `examples/` imports
 | `proofs.py` | proof backends over `mq/`: `ssh5`, `ssh3`, `mpcith` — all three real |
 | `register.py` | `GridRegister` — attendance as rooted state, not opinion |
 | `trustlist.py` | each node's private view; structurally barred from quorum |
-| `locality.py` | persistent grids, seeded enrolment, nullifier partitioning |
+| `locality.py` | persistent grids, seeded enrolment, nullifier partitioning, founding a grid |
 | `tiered.py` | `CeremonyBlock` / `SuperBlock` / `NetworkBlock` |
 | `tiers.py` | the three-phase epoch scheduler and per-tier workloads |
 | `demo_tiers.py` | the tiered walkthrough |

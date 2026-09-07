@@ -49,7 +49,12 @@ class ChainParams:
     default_backend: str = "ssh5"         # what a bare verify_transaction checks
 
     # ── standing ──────────────────────────────────────────────────────────────
-    attend_threshold: int = 40            # consecutive ceremonies to become an attester
+    attend_threshold: int = 40
+    # A new grid needs attesters on day one or it can never run the ceremony
+    # that would promote anyone.  `founding_cohort` is how many move across
+    # with their standing intact; 4 is the smallest that still tolerates one
+    # fault (n = 3f+1 at f = 1, quorum 3).
+    founding_cohort: int = 4            # consecutive ceremonies to become an attester
     forgiveness: int = 0                  # absences tolerated before the counter resets
 
     # ── consensus ─────────────────────────────────────────────────────────────

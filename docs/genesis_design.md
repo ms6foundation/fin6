@@ -7,9 +7,10 @@ Follows `private_chain_design.md`, `tiered_ceremony_design.md`,
 > **Status.** Two pieces of §10 are built: the one-tier collapse, and a genesis
 > document whose hash is the chain id. `config/genesis-7.json` is a ratified
 > seven-node launch, and `python3 -m chain.demo_genesis` boots it and runs the
-> chain. Still sketch: the genesis mint (§2), era 0 from contributed leaves
-> (§4), the commit-reveal seed (§5), and the mechanism a second grid would need
-> to start (§10, and the reason the network cannot yet grow past one tier).
+> chain — and it grows: a grid that is over size founds a child, and the
+> cohort that moves keeps its standing, so the new grid can reach quorum on
+> day one. Still sketch: the genesis mint (§2), era 0 from contributed leaves
+> (§4), and the commit-reveal seed (§5).
 
 ## 0. Six trusted setups, in four files
 
@@ -370,45 +371,76 @@ hours of history. That is not an argument against launching with seven; it is
 the number that belongs beside the decision, and it improves as operators join
 and the pool redistributes at each rollover.
 
-### The dependency: a new grid cannot start
-
-This is where the plan meets a rule from part two that has never been reconciled
-with it.
+### The dependency: a new grid could not start  *(fixed)*
 
 New nodes join as apprentices. A second grid has to come from somewhere, and
-there are two sources: split an existing grid, which is not implemented, or
+there were two sources: split an existing grid, which is not implemented, or
 create an empty one and deal newcomers into it. But `locality.py` is explicit
 that relocating restarts the counter, and `register.py` is explicit that a grid
 of pure apprentices can never reach quorum and so can never run the ceremony
 that would promote anyone.
 
-**A newly created grid is deadlocked.** Not slowly — permanently. Its members'
-counters can only be raised by ceremonies that its own lack of attesters
-prevents. And note this is not the duration problem §03 measured: the gate being
-13.2 minutes does not help, because the 40 ceremonies never happen at all.
+**A newly created grid was deadlocked.** Not slowly — permanently. Its members'
+counters could only be raised by ceremonies that its own lack of attesters
+prevented, and the gate being 13.2 minutes did not help, because the 40
+ceremonies never happened at all.
 
-Three ways out, all changes to part two rather than to this document:
+The chosen way out is the one this document's frame implies. **Genesis is not a
+single event** — every new grid repeats it in miniature, with the same waiver
+and the same cohort of already-trusted nodes — so a founding cohort moves
+across and keeps what it earned:
 
-| option | what it is |
-|---|---|
-| split preserves standing on both sides | presumably why split was designed as split: a grid divides and both halves keep their attesters |
-| a founding cohort keeps its standing when moved | every new grid is a small genesis — a named cohort, a scheduled epoch, a record in the block |
-| standing is portable at a discount | carry over, say, half the counter; weakens the "capturing a grid costs 40 ceremonies per node" argument that locality rests on |
+```
+trigger    the donor is over size          Topology.needs_split
+           and has >= 2 x cohort in unfaulted attesters, so the half
+           that stays can still reach its own quorum
 
-The second is the honest one given this document's frame. **Genesis is not a
-single event.** Every new grid repeats it in miniature, with the same waiver, the
-same trusted cohort, and the same decay — so the mechanism deserves the same
-treatment as genesis, with named cohorts and a scheduled epoch recorded in a
-block, rather than living as an exception inside a constructor.
+draw       rank the eligible attesters by H(prev_network_hash, donor,
+           new_grid, node) and take the first `founding_cohort`
+
+move       the MemberRecord itself — standing, consecutive, total,
+           led_count — with founded_from set to the donor grid
+```
+
+Three properties are worth naming, because each closes a way this could have
+been abused.
+
+**Nobody chooses.** Every input is committed state — grid membership, the
+register, and the previous block's hash — so the leader proposes nothing and
+every seat re-derives the same record. Seeding from the *previous* block is the
+hardening committee's trick: whoever assembles this block cannot grind the
+roster it selects. A block naming a different cohort is not a leader exercising
+discretion, it is a leader lying about state every seat holds, and
+`_check_foundings` refuses it.
+
+**The waiver is in the root.** `MemberRecord.founded_from` is part of
+`as_tuple()`, so it is committed in the register root and travels up in every
+block. Carrying standing across grids is a waiver of the rule that relocating
+restarts the counter, and a waiver nobody can see is a waiver nobody can audit.
+
+**Only unfaulted attesters move.** An apprentice would arrive unable to vote,
+and a suspended member would arrive with its suspension laundered into a fresh
+register. `GridRegister.release` refuses both.
+
+One wrinkle the implementation found: the roll produced by the founding epoch
+still names the movers as seats of the grid they are leaving, and a register
+admits anyone a roll names — so without trimming it, the cohort would be
+re-admitted to the donor as apprentices and exist in two registers at once. The
+trim costs the movers credit for one ceremony, spent in a grid they were
+leaving, and every node performs it identically so the roots still agree.
 
 ### The partition moves with the tiers
 
 `nf mod K` routes a transaction to its grid and K is the number of live grids, so
-K changes at the transition. A transaction's partition is computed at inclusion
-rather than baked in at build, so the effect is re-routing rather than
-invalidation — but every node must change K at the same block, or two grids will
-both believe they own a nullifier. So K′ is announced in a block and takes effect
-a fixed number of blocks later, and mempools re-gossip across the boundary.
+K changes the moment a grid is founded — and because K is the *modulus*, every
+transaction in flight is re-homed, not just the ones near the new boundary. A
+transaction's partition is computed at inclusion rather than baked in at build,
+so the effect is re-routing rather than invalidation, and since the founding is
+carried in the block, every node changes K at the same height. `reroute_mempools`
+is the one-pass version of the re-gossip a real network would do.
+
+At most one founding an epoch, for the same reason: each one re-homes
+everything, and doing two at once doubles that churn for no gain.
 
 ### The document, as built
 
@@ -474,8 +506,9 @@ later         more grids -> tiers 3, and the policy relaxes to one
 | Reveal withholding | Commit-reveal turns grinding into withholding, which needs a timeout rule and a way to record who did not reveal. |
 | Ratification threshold | The document declares its own threshold, which is circular; something has to say how many founders are enough, and that something is governance, not code. |
 | Key custody at the holders | §4 stops one party holding every turn. It says nothing about how a holder keeps its own slice, which is where the high-water mark from part four applies. |
-| A new grid cannot start | The deadlock in §10: relocating restarts the counter, and a grid of pure apprentices never reaches quorum. Blocks the growth half of the one-tier launch, and is a change to part two. |
-| Scheduling the partition change | K moves when the tier count moves. The announce-then-effect rule is stated in §10 and not designed. |
+| ~~A new grid cannot start~~ | **Closed.** A founding cohort moves with its standing, drawn deterministically from committed state and recorded in the register root. What is still open is the *other* direction: grids never merge, so a network that shrinks keeps grids it cannot fill. |
+| The founding trigger is a size rule | `needs_split` fires on membership, not on load or latency, and the cohort size is a constant. Neither is wrong; neither has been tuned against anything. |
+| No announce-then-effect window | A founding takes effect at the block that carries it, so mempools re-route in one step. A scheduled window would let nodes prepare, at the cost of a rule about what happens in between. |
 | Genesis for a network that already exists | Adding an operator, retiring one, or changing a parameter is a governance event with no design at all yet. Genesis is the easy end of that problem. |
 
 ## Rendered version

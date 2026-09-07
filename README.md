@@ -156,7 +156,15 @@ setup. With one grid the hierarchy collapses to a single ceremony that still
 emits an ordinary `NetworkBlock`, with `tiers` in the signed header saying how
 much independent verification stands behind it.
 
-**Not built:** grid split and merge, so a network cannot yet grow past one grid;
+**And it grows.** A grid that is over size founds a child, and the cohort that
+moves keeps the standing it earned — otherwise a grid of pure apprentices could
+never reach quorum, and so could never run the ceremony that would promote
+anyone. The cohort is drawn deterministically from committed state and seeded by
+the previous block, so no leader chooses it, and `founded_from` sits in the
+register root so the waiver is auditable. Seven nodes at one tier become two
+grids and two tiers without changing block format.
+
+**Not built:** grid merge, so a network that shrinks keeps grids it cannot fill;
 cross-partition transactions; reorg rollback beyond the undo ceiling; real
 transport. The ceremony is a synchronous
 simulation with no clock.

@@ -18,7 +18,7 @@ MODULES = ["test_notes", "test_transaction", "test_state", "test_grid",
            # storage
            "test_archive", "test_persistence",
            # genesis
-           "test_genesis",
+           "test_genesis", "test_growth",
            # hardening
            "test_hardening"]
 

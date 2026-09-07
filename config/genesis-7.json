@@ -5,6 +5,7 @@
     "attend_threshold": 40,
     "default_backend": "ssh5",
     "forgiveness": 0,
+    "founding_cohort": 4,
     "grid_size": 7,
     "n_note": 8,
     "name": "demo",
@@ -111,32 +112,32 @@
   "ratifications": [
     {
       "node_id": "fin6-n01",
-      "signature": "97821a6c29be24dfcbfbf4536aa8b1c772def4acd20708e624b5ec98e72ac1309924440822c8f1f4093ee77b294032eb8b3bc8ebcdd292957a671755514b3f0a"
+      "signature": "1de0e084c507988979a5944b8d466e23647c4a2573ddb12d74c5e2e9e5efe1553de9e2194c69a2b3bd4dac697cd6c5feff3e561afacd47c7a454104fa9edbb01"
     },
     {
       "node_id": "fin6-n02",
-      "signature": "e415eae216d24b3d7cb2335ec4c9de98a236fafb3ecf2762e6a914acd440795ad2b56719bff6f191681ceb1d180b1a2212abdd7101215d1ac9482a45a5103a01"
+      "signature": "f4d12d89b254b5f138140d71c2a1343d79e1424c470ea561d4d92155294ca19348a379df9992ed27655ffab987ad5fe163071324ed3d6c2533b0e8d143827106"
     },
     {
       "node_id": "fin6-n03",
-      "signature": "c7759e80d5239cfbfc7f8f2986938bc553bdb9bbd9005fa9f4cb812a84dbc2713f2c8f6abe5add30b3884b9646bb77664cdbd62f05a18f3f3f01ccba748aac0a"
+      "signature": "9be38f7ec1f395ccc2f0daa6c48faa4334e2603334163fa522438d237be6f6a261313fb6ea6dc03be0be86d6e1f256f611fabf0091116d04c1080f1a09a3e205"
     },
     {
       "node_id": "fin6-n04",
-      "signature": "703cb8a5181d89b982dde209be2c3640544a6c4ca3aa559b415aed3dac867e8087cc2bf9de4160e662022a617aaccd0e97058e6493c7daa538281d5d483b1d00"
+      "signature": "6d63eb9e7b425e823f1cbe5bf1a3c1ef0bdf222857f15a72f1aebae46f0e3212a9d46054e85d82d4bb0d66e703778a5f1ddbfdaa8810e7848ef99d0e430b9a0e"
     },
     {
       "node_id": "fin6-n05",
-      "signature": "c87a9eb7a84ea3e15ad7e91403c878d0f3baa282eaec67f749c113ecea42f2d5d076e7ab439047576affc64bb115a3b149fcc26aece1e7b54c62848926202b08"
+      "signature": "c93403f7915325f2999f773ca86b9eaaa48064565a9f054fcb52dc6f42db22a7180f94ddeaa5cfcf3abe087bcb5b2cd9206ea29c7b7fa942ca13425991d5180b"
     },
     {
       "node_id": "fin6-n06",
-      "signature": "d529f54136cc244fb6bb0c4e3d49ee278b6a653b1b75f06943431dce3d7625bffd88070c47e828ec0f89cdc6e1ef7d1d04ad363f32562021b254d47c4f085103"
+      "signature": "c9942bfa91fffac593b7bb2d999e0491edf5be20aa4c8b44476afc3a5d065f6eec71f3d099372802276d00801d6099571e0e2525f755b0386feb926d982b280a"
     },
     {
       "node_id": "fin6-n07",
-      "signature": "3091c5ec73e7b66e7b5d7fd94cf4a55fbe5ce04bc6c75817afb4cfe3a1a30f2b0957813234868281810f2bf983f524ed33e0b23e344438f77eecc0f9987bf008"
+      "signature": "620b24769ccbc9c6f81cf080f57270f04fb121180db84889c9840581efdb4437485c6f41966887a0995279c5f6a64db0370d6ebf7735f55ae3637ab92ba83108"
     }
   ],
-  "chain_id": "fin6:837db2cb6b7cb72371654dd00d3121331e2b7dd0395858d587eeb0538d97888c"
+  "chain_id": "fin6:3dfbdca9bb7e097fa6ec58895200f39371ede5f837bd3e0c3b565b2a9b1de8fc"
 }

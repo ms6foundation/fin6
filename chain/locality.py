@@ -80,6 +80,38 @@ class Topology:
         self._members[gid].append(node_id)
         return gid
 
+    def found_grid(self, donor_id: str, new_grid_id: str, movers) -> GridSpec:
+        """Add a grid and move a cohort into it.
+
+        The new grid takes the next free index, so existing grids keep theirs.
+        That does *not* make the repartition small — K is the modulus in
+        `nf mod K`, so every transaction's home moves when K moves — but it
+        does mean a grid's identity never silently becomes a different
+        partition.
+        """
+        if new_grid_id in self.grids:
+            raise ValueError(f"{new_grid_id} already exists")
+        donor = self.grids[donor_id]
+        spec = GridSpec(grid_id=new_grid_id, region=donor.region,
+                        index=len(self.grids))
+        self.grids[new_grid_id] = spec
+        self._members[new_grid_id] = []
+        for nid in sorted(movers):
+            if self.assignment.get(nid) != donor_id:
+                raise ValueError(f"{nid} is not in {donor_id}")
+            self.assignment[nid] = new_grid_id
+            self._members[donor_id].remove(nid)
+            self._members[new_grid_id].append(nid)
+        return spec
+
+    def next_grid_id(self, region: str) -> str:
+        """The next name in this region's series, stable given the topology."""
+        used = {g.grid_id for g in self.grids.values() if g.region == region}
+        i = 0
+        while f"{region}-{i}" in used:
+            i += 1
+        return f"{region}-{i}"
+
     # ── views ────────────────────────────────────────────────────────────────
 
     def grids_in(self, region: str) -> list:

@@ -7,6 +7,7 @@ chain will use later.
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 import tempfile
 import time
@@ -127,13 +128,69 @@ def main():
           f"each 12-hour rollover{OFF}")
 
     rule("6. growing out of one tier")
-    print(f"  {WARN}not yet possible.{OFF} A second grid has to come from a split, "
-          f"which is not implemented,")
-    print(f"  or from creating an empty one — but relocating restarts the "
-          f"attendance counter and a")
-    print(f"  grid of pure apprentices never reaches quorum, so a new grid is "
-          f"deadlocked. See")
-    print(f"  docs/genesis_design.md §10; the fix is a change to part two.")
+    print(f"  a grid founds a child once it is over size and has twice the "
+          f"cohort in attesters.")
+    print(f"  The cohort keeps what it earned — otherwise a grid of pure "
+          f"apprentices could never")
+    print(f"  reach quorum, and so could never run the ceremony that would "
+          f"promote anyone.\n")
+
+    # A faster gate, so the walkthrough does not need 40 ceremonies per joiner.
+    quick = dataclasses.replace(world.params, attend_threshold=2)
+    world.params = quick
+    for node in world.nodes.values():
+        node.params = quick
+    for reg in world.registers.values():
+        reg.attend_threshold = 2
+    joined = [f"fin6-m{i:02d}" for i in range(1, 9)]
+    for nid in joined:
+        world.admit(nid, doc.nodes[0].region)
+    print(f"  {len(joined)} nodes join as apprentices "
+          f"{DIM}(gate lowered to 2 ceremonies for the walkthrough){OFF}")
+    print(f"  {world.topology}\n")
+
+    founded = None
+    while world.height < 12 and founded is None:
+        epoch = world.height + 1
+        tx, _ = transfer(wallets["treasury"], wallets["treasury"], 50 + epoch, 1,
+                         world.params)
+        world.submit(tx)
+        result = run_tiered_epoch(world, epoch=epoch, base_seed=doc.first_seed)
+        if not result.finalised:
+            raise SystemExit(f"epoch {epoch}: {result.reason}")
+        block = result.block
+        world.apply_network_block(block)
+        if block.foundings:
+            founded = block.foundings[0]
+            print(f"  epoch {epoch}: {GREEN}{founded}{OFF}")
+            print(f"           K {1} -> {world.topology.n_partitions}, "
+                  f"every transaction in flight re-homed")
+        else:
+            reg = world.registers[world.topology.grid_ids()[0]]
+            print(f"  epoch {epoch}: {len(reg.attesters())} attesters, "
+                  f"{len(reg.apprentices())} apprentices "
+                  f"{DIM}(needs {2 * world.params.founding_cohort} to found){OFF}")
+
+    for _ in range(2):
+        epoch = world.height + 1
+        result = run_tiered_epoch(world, epoch=epoch, base_seed=doc.first_seed)
+        world.apply_network_block(result.block)
+        print(f"  epoch {epoch}: tiers={result.tiers}  "
+              f"grids={len(world.topology.grid_ids())}  "
+              f"ceremonies={result.stats()['ceremonies']}")
+
+    print()
+    for gid in world.topology.grid_ids():
+        reg = world.registers[gid]
+        origin = {m.founded_from for m in reg.members.values()} - {""}
+        note = (f"{CYAN}founded from {sorted(origin)[0]}{OFF}" if origin
+                else f"{DIM}genesis cohort{OFF}")
+        print(f"    {gid:<12} {len(reg.attesters())} attesters, "
+              f"{len(reg.apprentices())} apprentices, quorum "
+              f"{reg.quorum(2, 3)}   {note}")
+    print(f"{DIM}    'founded from' is in the register root: carrying standing "
+          f"across grids is a waiver, and a waiver nobody can see is one "
+          f"nobody can audit{OFF}")
 
     store.close()
     print(f"\n{CYAN}store under {workdir}{OFF}")
