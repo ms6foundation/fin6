@@ -176,6 +176,7 @@ simulation with no clock.
 - [`docs/tiered_ceremony_design.md`](docs/tiered_ceremony_design.md) — many grids, registers, trust, per-tier proofs
 - [`docs/hardening_design.md`](docs/hardening_design.md) — moving blocks into network history
 - [`docs/persistence_design.md`](docs/persistence_design.md) — what survives a restart, and what may be thrown away
+- [`docs/genesis_design.md`](docs/genesis_design.md) — what a new network must be trusted about, and for how long *(sketch; not implemented)*
 - [`chain/README.md`](chain/README.md) — implementation notes, measured costs, and what the code changed about the design
 
 ## License
