@@ -164,6 +164,7 @@ simulation with no clock.
 - [`docs/private_chain_design.md`](docs/private_chain_design.md) — the ledger and the single-grid ceremony
 - [`docs/tiered_ceremony_design.md`](docs/tiered_ceremony_design.md) — many grids, registers, trust, per-tier proofs
 - [`docs/hardening_design.md`](docs/hardening_design.md) — moving blocks into network history
+- [`docs/persistence_design.md`](docs/persistence_design.md) — what survives a restart, and what may be thrown away *(sketch; not implemented)*
 - [`chain/README.md`](chain/README.md) — implementation notes, measured costs, and what the code changed about the design
 
 ## License
