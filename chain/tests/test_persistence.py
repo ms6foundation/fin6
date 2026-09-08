@@ -407,13 +407,22 @@ def test_a_corrupt_mark_refuses_to_be_used():
 
 
 class _FakeBlock:
-    """Just enough of a network block for the store to write a header row."""
+    """Just enough of a network block for the store to write a header row.
+
+    A real header rather than a stand-in, because the store now keeps the whole
+    encoded header and the codec only speaks the types the chain declares.
+    """
 
     def __init__(self, height):
-        self.header = dataclasses.make_dataclass(
-            "H", ["height", "prev_hash", "epoch", "utxo_root", "nf_root",
-                  "super_root", "registers_root"])(
-            height, f"nb:{height - 1}", height, 1, 2, 3, 4)
+        from ..tiered import NetworkBlockHeader
+        self.header = NetworkBlockHeader(
+            height=height, epoch=height, chain_id="fin6:" + "ab" * 32,
+            prev_hash=f"nb:{height - 1}", utxo_root=1, nf_root=2,
+            super_root=3, registers_root=4)
+        self.quorum_cert = None
+
+    def transactions(self):
+        return ()
 
     def hash(self):
         return f"nb:{self.header.height}"

@@ -1,6 +1,6 @@
 # The query interface and the light client
 
-*Part eight. Design only — nothing here is implemented except where §0 says so.*
+*Part eight. Sketched, then built — see §13 for what changed on contact.*
 
 Part seven built a wallet and ended on an admission: `Client.sync` believes what
 a node tells it about its own money. That is not a small gap. A wallet that
@@ -314,14 +314,87 @@ part seven relied on, for the same reason.
 
 | item | why it is open |
 |---|---|
-| Two more roots is a format change | `witness_root` and `history_root` change every header hash and every root above them. Same argument as the ciphertext in part seven: cheap before a real genesis, expensive after — and this is the second time that argument has come up, which suggests doing both at once. |
-| `getoutputs` has no cursor | The reply is capped only by `MAX_FRAME` (8 MB ≈ 26,000 outputs, measured at 323 B each). A client asking from height 0 on a real chain gets a frame the protocol refuses to send. The interface is unusable before it is insecure, which is the easier bug to fix and the more embarrassing one to ship. |
-| The output index lives in RAM | `NodeProcess._index` appends every output and nullifier to a Python list, for ever. It is fine for a testnet and wrong for a node that serves clients; the index belongs in the store beside the archive. |
+| ~~Two more roots is a format change~~ | **Done**, both at once as argued. Measured at 68 bytes of header between them. |
+| The register a certificate is checked against is one roll late | The roll of an epoch is applied before `register_root` is taken, so the register under `registers_root` is one step ahead of the seats that signed the block. Membership survives a roll and standing does not, so a client's quorum figure can be wrong by one across a founding. Found while building, not while sketching. |
+| *(was)* Two more roots is a format change | `witness_root` and `history_root` change every header hash and every root above them. Same argument as the ciphertext in part seven: cheap before a real genesis, expensive after — and this is the second time that argument has come up, which suggests doing both at once. |
+| ~~`getoutputs` has no cursor~~ | **Fixed.** A page now ends on a height boundary and names where to resume; `Client.sync` follows the cursor to the tip. |
+| ~~The output index lives in RAM~~ | **Fixed**, and more cheaply than expected: the outputs a wallet scans *are* the UTXO rows, so `utxo` grew a `height` and a `sealed` column and the separate index disappeared rather than moving. |
 | Aggregate-count witnesses | §5 argues they are unsound and does not prove it. Worth an hour from someone who wants to be sure, because if the relaxation *is* binding, the second tree is unnecessary. |
 | Completeness of a scan | Inclusion proofs answer "is this note live"; nothing answers "have I been shown every output in this range". A commitment to the per-block output *count*, checked against the range served, is most of the fix, and it is not designed. |
 | Fuzzy message detection | §9's third row is the only honest answer to the scanning problem and is a design of its own. |
 | Point-query linkability | `inclusion(cm)` identifies a note to the node serving it. Decoys and position ranges help; nothing is specified. |
 | What a client does with two tips | §7 says weight decides. Nothing implements the comparison, and "the client asked two nodes and they disagreed" has no code path at all. |
+
+## 13. What was built
+
+Everything in §11 except the two things §09 and §07 said were designs of their
+own — detection tags and the adjudicating client. `light.py` follows the
+register; weighing two tips is still not implemented and still the honest answer
+when two nodes disagree.
+
+Four things changed on contact with the code.
+
+**The witness tree is fixed-height, not `log₂ n` deep.** The sketch said "a thin
+binary Merkle tree" and did not think about the fact that this tree takes
+*updates*: spending a note rewrites its leaf. A tree whose shape depends on how
+many leaves it holds reshapes on every append, so an update would cost a
+rebuild. A fixed height of 32 keeps the shape constant, makes an update 32
+hashes, and costs nothing for the empty part because every all-empty subtree at
+a level has the same digest. The proof pays 32 siblings instead of ⌈log₂ n⌉ —
+except that the ones above the occupied prefix are all that same default, so a
+one-bit-per-level bitmap takes it back down:
+
+| UTXO leaves | siblings sent | proof | verify | update |
+|---|---|---|---|---|
+| 1,000 | 10 | 328 B | 19.4 µs | 22.7 µs |
+| 50,000 | 16 | **520 B** | 19.6 µs | 23.3 µs |
+| 1,000,000 | 20 | 648 B | 19.4 µs | 23.0 µs |
+
+Better than the 768 bytes the sketch promised. The verification figure is worse:
+19 µs, not 7 µs, because the sketch priced a bare `sha256` pair and forgot the
+interpreter around it. Against the seal tree's 7.9 ms for the same statement it
+is still four hundred times faster, which is the comparison that mattered.
+
+**A root can be recomputed for any earlier prefix.** A header at height *H*
+commits the spine of blocks 1…*H*−1, so by the time anyone asks, the tree has
+moved on — and the sketch did not notice. Keeping a lagging copy would have
+been the obvious fix; it is not needed. In a fixed-height tree the root and the
+path for any earlier cut come out of the live tree in `height` steps: a subtree
+wholly below the cut is the node already stored, one wholly above it is that
+level's default, and exactly one per level straddles, which is the node the
+prefix walk is computing anyway. `WitnessTree.root_at` and `path_at`.
+
+**Ancestry is cheaper than promised.** A day's spine at the production cadence
+is 4,375 blocks and proves in 424 bytes; a year's is 1.6 M and proves in 680.
+With the tip header (187 B for the header alone, 68 of that the two new roots)
+and a seven-seat certificate (1,072 B), a client that has been away for any
+length of time is caught up in about **1.9 KB** — against the ~3 KB estimated,
+and against 371 MB of walking.
+
+**The output index did not need to move; it needed to stop existing.** §12
+recorded that `NodeProcess._index` grows a Python list for ever and said the
+index belongs in the store. It belongs in the store the ledger already keeps: an
+output *is* a UTXO row, so `utxo` grew `height` and `sealed` columns and the
+second copy went away. The node serves clients from a read-only connection on
+the same database, which is what WAL is for.
+
+### What a client checks now
+
+`test_a_light_client_proves_a_balance_on_a_running_network` runs the claim
+across four node processes: follow the tip, check the certificate against a
+register recomputed from its own records, prove a note live under the trusted
+`witness_root`, go away for several blocks and come back on one path. Then it
+puts four lies to the same client and asserts each is refused — a missing
+certificate, an altered header, a register that does not recompute, and a
+missing ancestry proof — plus a fifth on the note itself: a path that opens
+perfectly well to somebody *else's* leaf. That last one is the check worth
+naming, because a spent note's tombstone path also opens perfectly well, and a
+client that verified the path without checking what it opened to would call a
+spent note live.
+
+The client reports **two numbers, never one**: proved and unproved. The
+distinction is the only thing it has that a wallet does not, and collapsing it
+into a single balance would give the answer back to the node.
 
 ## Rendered version
 

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from .crypto import h_hex
 from .locality import tx_partition
 from .params import ChainParams
-from .seal import SealAccumulator
+from .seal import HeaderHistory, SealAccumulator
 from .transaction import Transaction, verify_transaction
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -105,9 +105,24 @@ class ChainState:
         self.chain_id = chain_id or params.chain_id
         self.utxo = SealAccumulator("utxo", d=params.seal_d)
         self.nullifiers = SealAccumulator("nf", d=params.seal_d)
+        self.history = HeaderHistory()
         self.height = -1
         self.tip = "genesis"
         self.burned_fees = 0
+
+    def record_block(self, height: int, block_hash: str):
+        """Move the tip, and put the block into the spine.
+
+        The spine is what makes a client's ancestry check one path instead of a
+        walk, and it has to be part of the state every node keeps rather than an
+        index some nodes happen to build — the root of it is in the header.
+        """
+        if len(self.history) != height - 1:
+            raise ValueError(f"spine holds {len(self.history)} blocks; cannot "
+                             f"record height {height}")
+        self.history.append(block_hash)
+        self.height = height
+        self.tip = block_hash
 
     # ── issuance (genesis only) ──────────────────────────────────────────────
 
@@ -278,7 +293,7 @@ class ChainState:
         return {"chain_id": self.chain_id, "height": self.height,
                 "tip": self.tip, "burned_fees": self.burned_fees,
                 "utxo": utxo_values, "utxo_dead": utxo_dead,
-                "nullifiers": nf_values}
+                "nullifiers": nf_values, "history": self.history.dump()}
 
     @classmethod
     def load(cls, params: ChainParams, dump) -> "ChainState":
@@ -290,6 +305,7 @@ class ChainState:
                                         d=params.seal_d)
         out.nullifiers = SealAccumulator.load("nf", dump["nullifiers"],
                                               d=params.seal_d)
+        out.history = HeaderHistory(dump.get("history", ()))
         out.height = dump["height"]
         out.tip = dump["tip"]
         out.burned_fees = dump["burned_fees"]
@@ -303,6 +319,7 @@ class ChainState:
         out.chain_id = self.chain_id
         out.utxo = self.utxo.clone()
         out.nullifiers = self.nullifiers.clone()
+        out.history = self.history.clone()
         out.height = self.height
         out.tip = self.tip
         out.burned_fees = self.burned_fees

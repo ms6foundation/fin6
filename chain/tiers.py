@@ -106,8 +106,7 @@ class TierWorld:
                    for nid, node in self.nodes.items() if node.store}
         for node in self.nodes.values():
             node.state.apply_delta(merged)
-            node.state.height = block.header.height
-            node.state.tip = block.hash()
+            node.state.record_block(block.header.height, block.hash())
             for tx in block.transactions():
                 node._evict(tx.txid)
         for child in block.ceremony_blocks():
@@ -564,7 +563,9 @@ class SoloWorkload:
             super_root=block.compute_super_root(),
             registers_root=registers_root(
                 {self.grid_id: child.header.register_root}),
-            tiers=1, foundings_root=block.compute_foundings_root())
+            tiers=1, foundings_root=block.compute_foundings_root(),
+            witness_root=shadow.utxo.witness_root,
+            history_root=shadow.history.root)
         return NetworkBlock(header=header, supers=(sup,),
                             foundings=foundings), shadow, "ok"
 
@@ -648,7 +649,9 @@ class SupremeWorkload:
             utxo_root=shadow.utxo.root, nf_root=shadow.nullifiers.root,
             super_root=block.compute_super_root(),
             registers_root=registers_root(roots), tiers=self.tiers,
-            foundings_root=block.compute_foundings_root())
+            foundings_root=block.compute_foundings_root(),
+            witness_root=shadow.utxo.witness_root,
+            history_root=shadow.history.root)
         return NetworkBlock(header=header, supers=tuple(ordered),
                             dropped=tuple(f"{i}:{w}" for i, w in dropped),
                             foundings=foundings)
@@ -689,6 +692,10 @@ class SupremeWorkload:
             return False, "utxo_root does not match the applied epoch"
         if shadow.nullifiers.root != h.nf_root:
             return False, "nf_root does not match the applied epoch"
+        if shadow.utxo.witness_root != h.witness_root:
+            return False, "witness_root does not match the applied epoch"
+        if shadow.history.root != h.history_root:
+            return False, "history_root does not match the spine"
 
         roots = {c.header.grid_id: c.header.register_root
                  for s in block.supers for c in s.children}

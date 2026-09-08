@@ -21,11 +21,17 @@ MAX_FRAME = 8 << 20          # 8 MB: a block of ~100 transactions with one proof
 KINDS = ("hello", "tx", "env", "getblock", "block",
          # what a client — a wallet — may ask a node
          "status", "status_reply", "getoutputs", "outputs_reply",
-         "txstatus", "txstatus_reply", "submit_reply")
+         "txstatus", "txstatus_reply", "submit_reply",
+         # what a light client may ask: the spine, and proofs against it
+         "params", "params_reply", "tip", "tip_reply",
+         "headers", "headers_reply", "ancestry", "ancestry_reply",
+         "inclusion", "inclusion_reply", "register", "register_reply")
 
 #: Requests a node answers on the asking connection, without the asker ever
 #: having been a peer.  A wallet is not a validator and never becomes one.
-CLIENT_KINDS = frozenset({"status", "getoutputs", "txstatus"})
+CLIENT_KINDS = frozenset({"status", "getoutputs", "txstatus",
+                          "params", "tip", "headers", "ancestry",
+                          "inclusion", "register"})
 
 
 class FrameError(Exception):

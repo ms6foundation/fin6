@@ -33,22 +33,34 @@ from ..state import ChainState
 from . import codec
 from .undo import UndoRecord, apply_undo
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = (
     "CREATE TABLE IF NOT EXISTS meta("
     "  key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    # `height` and `sealed` are here for the reader, not the ledger: an output
+    # is exactly the row a scanning wallet wants, so the UTXO table is the
+    # output index and there is no second copy to keep in step.  Part eight
+    # found the alternative — an unbounded list in the node's memory — which is
+    # fine for a testnet and wrong for anything that stays up.
     "CREATE TABLE IF NOT EXISTS utxo("
     "  pos INTEGER PRIMARY KEY, cm TEXT NOT NULL UNIQUE,"
-    "  dead INTEGER NOT NULL DEFAULT 0)",
+    "  dead INTEGER NOT NULL DEFAULT 0, height INTEGER, sealed BLOB)",
     "CREATE TABLE IF NOT EXISTS nullifier("
-    "  pos INTEGER PRIMARY KEY, nf TEXT NOT NULL UNIQUE)",
+    "  pos INTEGER PRIMARY KEY, nf TEXT NOT NULL UNIQUE, height INTEGER)",
+    "CREATE TABLE IF NOT EXISTS txblock("
+    "  txid TEXT PRIMARY KEY, height INTEGER NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS utxo_height ON utxo(height)",
+    "CREATE INDEX IF NOT EXISTS nullifier_height ON nullifier(height)",
     "CREATE TABLE IF NOT EXISTS grid_register("
     "  grid_id TEXT PRIMARY KEY, blob BLOB NOT NULL)",
+    # `blob` is the whole header, canonically encoded.  The columns beside it
+    # are for looking at; the blob is what a client is served, because a header
+    # a node has reassembled from columns is a header a node could get wrong.
     "CREATE TABLE IF NOT EXISTS netblock("
     "  height INTEGER PRIMARY KEY, hash TEXT NOT NULL UNIQUE, prev TEXT,"
     "  epoch INTEGER, utxo_root TEXT, nf_root TEXT, super_root TEXT,"
-    "  registers_root TEXT)",
+    "  registers_root TEXT, blob BLOB, cert BLOB)",
     "CREATE TABLE IF NOT EXISTS hardened("
     "  block_hash TEXT PRIMARY KEY, height INTEGER, prev TEXT, era_id INTEGER,"
     "  weight TEXT, cumulative TEXT, spent_root TEXT)",
@@ -73,13 +85,25 @@ class ChainStore:
     consensus, and there is only supposed to be one.
     """
 
-    def __init__(self, path, *, undo_depth: int = 729):
+    def __init__(self, path, *, undo_depth: int = 729,
+                 read_only: bool = False):
+        """`read_only` opens a second connection for serving clients.
+
+        The epoch loop writes and the mesh's reader thread reads, so they get
+        separate connections: WAL lets a reader see a consistent snapshot while
+        a write is in flight, which is the property that keeps answering a
+        wallet off the critical path of agreeing a block.
+        """
         self.path = str(path)
         self.undo_depth = undo_depth
-        self.db = sqlite3.connect(self.path)
+        self.read_only = read_only
+        self.db = sqlite3.connect(self.path, check_same_thread=not read_only)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.execute("PRAGMA foreign_keys=ON")
+        if read_only:
+            self.db.execute("PRAGMA query_only=ON")
+            return
         for stmt in SCHEMA:
             self.db.execute(stmt)
         got = self.get_meta("schema_version")
@@ -165,17 +189,65 @@ class ChainStore:
             if pos != len(nfs):
                 raise StoreError(f"nullifier positions jump at {pos}")
             nfs.append(nf)
+        # The spine comes back from the block table in height order, the same
+        # one pass everything else here uses.
+        spine = [row[1] for row in self.db.execute(
+            "SELECT height,hash FROM netblock ORDER BY height")]
         return ChainState.load(params, {
             "chain_id": self.get_meta("chain_id"),
             "height": int(self.get_meta("height", -1)),
             "tip": self.get_meta("tip", "genesis"),
             "burned_fees": int(self.get_meta("burned_fees", 0)),
-            "utxo": utxo, "utxo_dead": dead, "nullifiers": nfs})
+            "utxo": utxo, "utxo_dead": dead, "nullifiers": nfs,
+            "history": spine})
 
     def load_registers(self) -> dict:
         return {gid: GridRegister.load(codec.decode(blob))
                 for gid, blob in self.db.execute(
                     "SELECT grid_id, blob FROM grid_register")}
+
+    def headers(self, since: int = 1, to: int | None = None, limit: int = 512):
+        """Whole headers, with the certificate that finalised each, in height
+        order.  Bounded: a client asking for everything gets a page and a
+        promise, not a frame the protocol refuses to send."""
+        rows = self.db.execute(
+            "SELECT height,blob,cert FROM netblock WHERE height>=? AND height<=? "
+            "ORDER BY height LIMIT ?",
+            (int(since), int(to) if to is not None else 1 << 62, int(limit) + 1)
+        ).fetchall()
+        more = len(rows) > limit
+        out = []
+        for height, blob, cert in rows[:limit]:
+            if blob is None:
+                continue
+            out.append((height, codec.decode(blob),
+                        codec.decode(cert) if cert else None))
+        return out, more
+
+    # ── what a wallet reads ──────────────────────────────────────────────────
+
+    def outputs(self, since: int = 0, to: int | None = None,
+                limit: int = 8000):
+        """(height, cm, sealed) in height order, cut on a height boundary.
+
+        Cut on a boundary because a client resumes at the first height it has
+        not been shown *completely*; a page that ends inside a height and says
+        so by offset would skip an output the moment two pages disagree about
+        where they stopped.
+        """
+        end = int(to) if to is not None else 1 << 62
+        rows = self.db.execute(
+            "SELECT height,cm,sealed FROM utxo WHERE height>=? AND height<=? "
+            "ORDER BY height,pos", (int(since), end)).fetchall()
+        nfs = self.db.execute(
+            "SELECT height,nf FROM nullifier WHERE height>=? AND height<=? "
+            "ORDER BY height,pos", (int(since), end)).fetchall()
+        return _cut_on_height(rows, nfs, int(since), int(limit))
+
+    def tx_height(self, txid: str):
+        row = self.db.execute("SELECT height FROM txblock WHERE txid=?",
+                              (txid,)).fetchone()
+        return row[0] if row else None
 
     def block_headers(self):
         return list(self.db.execute(
@@ -203,20 +275,29 @@ class ChainStore:
                     "UPDATE utxo SET dead=1 WHERE cm=? AND dead=0", (cm,))
                 if cur.rowcount != 1:
                     raise StoreError(f"{cm[:14]}… was not an unspent note")
+            sealed = _sealed_openings(block)
             pos = self._count("utxo")
             self.db.executemany(
-                "INSERT INTO utxo(pos,cm,dead) VALUES(?,?,0)",
-                [(pos + i, cm) for i, cm in enumerate(delta.created)])
+                "INSERT INTO utxo(pos,cm,dead,height,sealed) VALUES(?,?,0,?,?)",
+                [(pos + i, cm, header.height, sealed.get(cm))
+                 for i, cm in enumerate(delta.created)])
             pos = self._count("nullifier")
             self.db.executemany(
-                "INSERT INTO nullifier(pos,nf) VALUES(?,?)",
-                [(pos + i, nf) for i, nf in enumerate(delta.nullifiers)])
+                "INSERT INTO nullifier(pos,nf,height) VALUES(?,?,?)",
+                [(pos + i, nf, header.height)
+                 for i, nf in enumerate(delta.nullifiers)])
+            self.db.executemany(
+                "INSERT OR REPLACE INTO txblock(txid,height) VALUES(?,?)",
+                [(tx.txid, header.height) for tx in block.transactions()])
             self.db.execute(
                 "INSERT INTO netblock(height,hash,prev,epoch,utxo_root,nf_root,"
-                "super_root,registers_root) VALUES(?,?,?,?,?,?,?,?)",
+                "super_root,registers_root,blob,cert) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (header.height, block.hash(), header.prev_hash, header.epoch,
                  str(header.utxo_root), str(header.nf_root),
-                 str(header.super_root), str(header.registers_root)))
+                 str(header.super_root), str(header.registers_root),
+                 codec.encode(header),
+                 codec.encode(block.quorum_cert) if block.quorum_cert else None))
             if registers:
                 self._put_registers(registers)
             self.db.execute("INSERT INTO undo(height,blob) VALUES(?,?)",
@@ -280,6 +361,7 @@ class ChainStore:
                                 tuple(record.nullifiers))
             for cm in record.unspend:
                 self.db.execute("UPDATE utxo SET dead=0 WHERE cm=?", (cm,))
+            self.db.execute("DELETE FROM txblock WHERE height=?", (height,))
             self.db.execute("DELETE FROM netblock WHERE height=?", (height,))
             self.db.execute("DELETE FROM undo WHERE height=?", (height,))
             if record.registers:
@@ -380,3 +462,34 @@ def _undo_load(d: dict) -> UndoRecord:
         created=tuple(d["created"]), nullifiers=tuple(d["nullifiers"]),
         fees=d["fees"], prev_utxo_root=d["prev_utxo_root"],
         prev_nf_root=d["prev_nf_root"], registers=tuple(d["registers"]))
+
+
+def _sealed_openings(block) -> dict:
+    """cm -> the opening sealed to its recipient, for every output in a block."""
+    out = {}
+    for tx in block.transactions():
+        blobs = list(tx.output_notes) + [None] * len(tx.output_cms)
+        for cm, blob in zip(tx.output_cms, blobs):
+            out[cm] = blob or None
+    return out
+
+
+def _cut_on_height(outputs, nullifiers, since: int, limit: int):
+    """Take whole heights until the page is full.  Returns (outs, nfs, next).
+
+    A single height that does not fit on its own is served whole anyway: half a
+    height is worse than a large frame, because the client cannot tell that it
+    got half.
+    """
+    if len(outputs) <= limit and len(nullifiers) <= limit:
+        return list(outputs), list(nullifiers), None
+    heights = sorted({h for h, *_ in outputs} | {h for h, _ in nullifiers})
+    cut = heights[0] if heights else since
+    for candidate in heights:
+        n_out = sum(1 for h, *_ in outputs if h <= candidate)
+        n_nf = sum(1 for h, _ in nullifiers if h <= candidate)
+        if max(n_out, n_nf) > limit and candidate != heights[0]:
+            break
+        cut = candidate
+    return ([r for r in outputs if r[0] <= cut],
+            [r for r in nullifiers if r[0] <= cut], cut + 1)

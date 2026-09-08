@@ -15,7 +15,7 @@ hardened into history by a finite pool of single-use turns.
 |---|---|
 | `mq/` | the MQ-hardened batched commitment — `ms6` (prover) and `vs6` (independent verifier) |
 | `examples/` | account-based ledger and sanctions-screening demos built on `mq/` |
-| `chain/` | the private chain: ~10,900 lines, 268 tests |
+| `chain/` | the private chain: ~11,600 lines, 281 tests |
 | `docs/` | the eight design sketches the chain was built from |
 
 ## Quick start
@@ -31,6 +31,7 @@ python3 -m chain.demo_archive     # what an archive costs, and where it goes
 python3 -m chain.demo_persistence # stop the chain, start it again
 python3 -m chain.demo_genesis     # launch the seven-node network from its config
 python3 -m chain.demo_wallet      # pay a stranger across seven node processes
+python3 -m chain.demo_light       # prove a balance instead of being told it
 
 # and a real network of seven processes, over TCP:
 python3 -m chain.cli genesis new /tmp/fin6-testnet --nodes 7
@@ -47,7 +48,11 @@ python3 -m chain.cli wallet send    /tmp/fin6-testnet --name treasury \
 python3 -m chain.cli wallet sync    /tmp/fin6-testnet --name bob
 python3 -m chain.cli wallet balance /tmp/fin6-testnet --name bob
 
-python3 -m chain.tests.run_all    # 268 tests, ~55 s
+# and a client that checks rather than believes:
+python3 -m chain.cli light sync   /tmp/fin6-testnet
+python3 -m chain.cli light verify /tmp/fin6-testnet --name bob
+
+python3 -m chain.tests.run_all    # 281 tests, ~70 s
 ```
 
 ```python
@@ -221,7 +226,7 @@ simulation with no clock.
 - [`docs/genesis_design.md`](docs/genesis_design.md) — what a new network must be trusted about, and for how long *(the one-tier launch is built; the rest is a sketch)*
 - [`docs/testnet_design.md`](docs/testnet_design.md) — running it for real: seven processes, a wire, a clock *(built, through stage 2)*
 - [`docs/wallet_design.md`](docs/wallet_design.md) — how a user holds money, spends it, and finds out they were paid *(built)*
-- [`docs/light_client_design.md`](docs/light_client_design.md) — the query interface, and what a client can check for itself *(sketch; not implemented)*
+- [`docs/light_client_design.md`](docs/light_client_design.md) — the query interface, and what a client can check for itself *(built, except the adjudicating client)*
 - [`chain/README.md`](chain/README.md) — implementation notes, measured costs, and what the code changed about the design
 
 ## License

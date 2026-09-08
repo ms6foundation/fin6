@@ -12,7 +12,7 @@ python3 -m chain.demo_hardening  # consensus through to hardened network history
 python3 -m chain.demo_archive    # what an archive costs, and where it goes
 python3 -m chain.demo_persistence # stop the chain, start it again
 python3 -m chain.demo_genesis   # launch the seven-node network from its config
-python3 -m chain.tests.run_all   # 268 tests, ~55 s
+python3 -m chain.tests.run_all   # 281 tests, ~70 s
 ```
 
 Both are run from the repository root (the same place `examples/` imports
@@ -29,7 +29,7 @@ Both are run from the repository root (the same place `examples/` imports
 | `notes.py` | the note (this chain's UTXO), its MQ commitment, its nullifier form |
 | `txsystem.py` | `TxSystem` — the per-transaction MQ map |
 | `transaction.py` | build / prove / verify a spend |
-| `seal.py` | deterministic seal-tree root and the append-and-tombstone accumulator |
+| `seal.py` | the seal-tree root, the append-and-tombstone accumulator, the witness tree and the header spine |
 | `state.py` | `ChainState`: UTXO set, nullifier set, block application |
 | `block.py` | block, header, and the signed consensus objects |
 | `ceremony.py` | `Grid`, `Envelope`, `Ceremony`, leader behaviours, view change |
@@ -60,12 +60,14 @@ Both are run from the repository root (the same place `examples/` imports
 | `net/clock.py` | the epoch, computed from the genesis document |
 | `net/node.py` | the node process and its epoch loop |
 | `net/supervisor.py` | lay out, start, break and inspect a testnet |
-| `net/client.py` | what a wallet may ask a node: `status`, `outputs`, `txstatus`, `submit` |
+| `net/client.py` | what a client may ask: `status`, `outputs`, `txstatus`, `submit`, and the light client's `params`, `tip`, `headers`, `ancestry`, `inclusion`, `register` |
 | **the wallet** | |
 | `keys.py` | one seed → a spend key and a viewing key; the checksummed address |
 | `wallet.py` | the note cache: scan, reconcile, select, send |
 | `demo_wallet.py` | pay a stranger across seven node processes |
-| `cli.py` | `fin6 genesis new` / `net up` / `net status` / `wallet …` / `tx send` |
+| `light.py` | the following client: verifies the tip, its ancestry, and its own notes |
+| `demo_light.py` | prove a balance instead of being told it |
+| `cli.py` | `fin6 genesis new` / `net up` / `net status` / `wallet …` / `light …` / `tx send` |
 | **storage** | |
 | `store/codec.py` | canonical binary encoding — interning, hex packing, vector packing |
 | `store/db.py` | the SQLite store: one commit per network block, `load_state`, `rollback` |

@@ -2,6 +2,7 @@
 
     fin6 genesis new  testnet/ --nodes 7 --preset local
     fin6 net up       testnet/
+    fin6 light sync   testnet/                              # follow, verified
     fin6 net status   testnet/
     fin6 net kill     testnet/ fin6-n03
     fin6 tx send      testnet/ --from treasury --to treasury --amount 100
@@ -241,6 +242,54 @@ def cmd_wallet_import_genesis(args):
     return 0
 
 
+# ── the light client ─────────────────────────────────────────────────────────
+
+def _light_path(root):
+    return os.path.join(os.path.abspath(root), "light.json")
+
+
+def cmd_light_sync(args):
+    """Take one verified step along the spine."""
+    from .light import LightClient
+    root, net_cfg, doc = sv.load(args.root)
+    client, target = _client_for(root, net_cfg, doc, args.node)
+    light = LightClient.load(_light_path(root), doc, client)
+    was = light.trusted.height
+    step = light.follow()
+    light.save(_light_path(root))
+    print(f"followed {target} to height {step['height']}")
+    print(f"  tip       {step['tip'][:26]}…")
+    print(f"  checked   {step['attestations']} attestations against "
+          f"{step['grids']} verified register(s)")
+    if step["ancestry"]:
+        print(f"  ancestry  {step['ancestry']} block(s) skipped, one path, "
+              f"from height {was}")
+    else:
+        print("  ancestry  nothing to prove — first sight of this chain")
+    return 0
+
+
+def cmd_light_verify(args):
+    """Prove every note a wallet believes it holds."""
+    from .light import LightClient
+    root, net_cfg, doc = sv.load(args.root)
+    params = doc.chain_params()
+    wallet, _ = _open_wallet(root, args.name, doc, params)
+    client, target = _client_for(root, net_cfg, doc, args.node)
+    light = LightClient.load(_light_path(root), doc, client)
+    light.follow()
+    light.save(_light_path(root))
+    proved, unproved, checks = light.verified_balance(wallet)
+    print(f"{args.name} against {target}, at height {light.trusted.height}")
+    for c in checks:
+        mark = "proved  " if c.proved else "UNPROVED"
+        print(f"  {mark} {c.value:>8}  {c.cm[:22]}…  {c.reason}")
+    print(f"  proved   {proved}")
+    if unproved:
+        print(f"  unproved {unproved}  — this client will not count these")
+    return 0 if not unproved else 1
+
+
 def cmd_net_kill(args):
     print("`kill` needs the supervisor that started the nodes; run it from a "
           "python session holding the Testnet, or stop `net up`.",
@@ -303,6 +352,14 @@ def main(argv=None):
     wi.add_argument("root"); wi.add_argument("--holder", default="treasury")
     wi.add_argument("--name", default="treasury")
     wi.set_defaults(fn=cmd_wallet_import_genesis)
+
+    li = sub.add_parser("light").add_subparsers(dest="cmd", required=True)
+    lsy = li.add_parser("sync", help="follow the spine, verified")
+    lsy.add_argument("root"); lsy.add_argument("--node", default=None)
+    lsy.set_defaults(fn=cmd_light_sync)
+    lv = li.add_parser("verify", help="prove every note a wallet holds")
+    lv.add_argument("root"); lv.add_argument("--name", required=True)
+    lv.add_argument("--node", default=None); lv.set_defaults(fn=cmd_light_verify)
 
     t = sub.add_parser("tx").add_subparsers(dest="cmd", required=True)
     send = t.add_parser("send")

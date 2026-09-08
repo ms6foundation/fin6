@@ -98,6 +98,7 @@ def apply_undo(state, record: UndoRecord):
     for cm in record.unspend:
         state.utxo.unspend(cm)
     state.burned_fees -= record.fees
+    state.history.truncate_to(record.prev_height)
     state.height = record.prev_height
     state.tip = record.prev_tip
     if state.utxo.root != record.prev_utxo_root:

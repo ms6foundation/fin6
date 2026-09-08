@@ -81,6 +81,40 @@ class Client:
     def txstatus(self, txid: str) -> dict:
         return self._ask("txstatus", {"txid": txid}, expect="txstatus_reply")
 
+    # ── what a light client asks ─────────────────────────────────────────────
+
+    def params(self) -> dict:
+        """The genesis document.  Everything else is checked against this."""
+        return self._ask("params", expect="params_reply")["genesis"]
+
+    def tip(self) -> dict:
+        """The tip header and the certificate that finalised it."""
+        return self._ask("tip", expect="tip_reply")
+
+    def headers(self, since: int = 1, to: int | None = None,
+                limit: int | None = None) -> dict:
+        payload = {"from": int(since)}
+        if to is not None:
+            payload["to"] = int(to)
+        if limit is not None:
+            payload["limit"] = int(limit)
+        return self._ask("headers", payload, expect="headers_reply")
+
+    def ancestry(self, height: int, under: int | None = None) -> dict:
+        """A path showing the block at `height` is under a later header's spine."""
+        payload = {"height": int(height)}
+        if under is not None:
+            payload["under"] = int(under)
+        return self._ask("ancestry", payload, expect="ancestry_reply")
+
+    def inclusion(self, cm: str) -> dict:
+        """A proof that one note is live — the answer part seven could not give."""
+        return self._ask("inclusion", {"cm": cm}, expect="inclusion_reply")
+
+    def register(self, grid_id: str | None = None) -> dict:
+        payload = {} if grid_id is None else {"grid_id": grid_id}
+        return self._ask("register", payload, expect="register_reply")
+
     def submit(self, tx):
         """Hand a transaction to the network.
 
@@ -101,9 +135,20 @@ class Client:
         between two syncs must be seen before it is marked gone, or the wallet
         never learns it existed and cannot explain its own balance.
         """
-        answer = self.outputs(since=wallet.scanned_to + 1)
-        found = wallet.scan(tuple(map(tuple, answer["outputs"])))
-        spent = wallet.reconcile([nf for _, nf in answer["nullifiers"]])
-        wallet.scanned_to = max(wallet.scanned_to, int(answer["height"]))
-        return {"height": answer["height"], "found": found, "spent": spent,
-                "balance": wallet.balance()}
+        found, spent, pages = 0, 0, 0
+        since = wallet.scanned_to + 1
+        while True:
+            answer = self.outputs(since=since)
+            found += wallet.scan(tuple(map(tuple, answer["outputs"])))
+            spent += wallet.reconcile([nf for _, nf in answer["nullifiers"]])
+            wallet.scanned_to = max(wallet.scanned_to, int(answer["height"]))
+            pages += 1
+            # A page ends on a height boundary and says where to resume, so a
+            # wallet that stops here and comes back tomorrow is not missing the
+            # second half of a block it thinks it has read.
+            nxt = answer.get("next_from")
+            if nxt is None:
+                break
+            since = int(nxt)
+        return {"height": wallet.scanned_to, "found": found, "spent": spent,
+                "pages": pages, "balance": wallet.balance()}

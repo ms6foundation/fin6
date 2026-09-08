@@ -84,13 +84,13 @@ class NodeProcess:
                          log=self.log, on_request=self.answer)
         self.seat: Seat | None = None
         self.bodies: dict = {}
-        # What a wallet needs and a validator does not: every output the chain
-        # has produced, and every nullifier it has published, in height order.
-        # Append-only, so the reader thread can serve a slice while the epoch
-        # loop is appending to the end.
-        self.outputs: list = []            # (height, cm, sealed opening)
-        self.spent: list = []              # (height, nullifier)
-        self.tx_height: dict = {}          # txid -> height
+        # What a wallet needs and a validator does not — every output the chain
+        # has produced and every nullifier it has published — lives in the
+        # store, not in this process.  It is the same rows the ledger already
+        # keeps, read back with their heights, so there is no second index to
+        # grow without bound or to fall out of step after a restart.
+        self.reader = ChainStore(os.path.join(self.dir, "chain.db"),
+                                 read_only=True)
         self.stop = threading.Event()
         self.epochs_run = 0
         self.last_reason = "not started"
@@ -123,24 +123,38 @@ class NodeProcess:
             "behaviour": self.behaviour,
         }
 
+    #: A page of outputs is capped so the reply cannot outgrow a frame.  At the
+    #: measured 323 bytes an output row, 8,000 of them is about 2.6 MB against
+    #: an 8 MB ceiling, which leaves room for the nullifiers beside them.
+    OUTPUT_PAGE = 8000
+    HEADER_PAGE = 512
+
     def answer(self, msg):
         """Serve one client request.  Read-only, and never blocks the epoch."""
         kind, payload = msg["kind"], msg["payload"] or {}
         if kind == "status":
             return "status_reply", self.status()
+
         if kind == "getoutputs":
             start = int(payload.get("from", 0))
             end = int(payload.get("to", 1 << 62))
+            limit = min(int(payload.get("limit", self.OUTPUT_PAGE)),
+                        self.OUTPUT_PAGE)
+            outs, nfs, next_from = self.reader.outputs(start, payload.get("to"),
+                                                       limit=limit)
+            scanned = (next_from - 1 if next_from is not None
+                       else min(end, self.world.height))
             return "outputs_reply", {
-                "height": self.world.height,
-                "outputs": [list(o) for o in self.outputs
-                            if start <= o[0] <= end],
-                "nullifiers": [list(n) for n in self.spent
-                               if start <= n[0] <= end],
+                "height": scanned,
+                "tip": self.world.height,
+                "outputs": [[h, cm, blob or b""] for h, cm, blob in outs],
+                "nullifiers": [list(n) for n in nfs],
+                "next_from": next_from,
             }
+
         if kind == "txstatus":
             txid = payload.get("txid")
-            height = self.tx_height.get(txid)
+            height = self.reader.tx_height(txid)
             if height is not None:
                 return "txstatus_reply", {"txid": txid, "state": "in_block",
                                           "height": height,
@@ -151,18 +165,66 @@ class NodeProcess:
                                           "tip": self.world.height}
             return "txstatus_reply", {"txid": txid, "state": "unknown",
                                       "height": None, "tip": self.world.height}
+
+        # ── the light client's four ──────────────────────────────────────────
+
+        if kind == "params":
+            return "params_reply", {"genesis": self.doc.to_json()}
+
+        if kind == "tip":
+            header, cert = self.tip_header()
+            return "tip_reply", {"height": self.world.height,
+                                 "header": header, "cert": cert}
+
+        if kind == "headers":
+            since = max(1, int(payload.get("from", 1)))
+            to = payload.get("to")
+            rows, more = self.reader.headers(
+                since, to, limit=min(int(payload.get("limit",
+                                                     self.HEADER_PAGE)),
+                                     self.HEADER_PAGE))
+            return "headers_reply", {
+                "height": self.world.height, "more": more,
+                "headers": [h for _, h, _ in rows],
+                "certs": [c for _, _, c in rows]}
+
+        if kind == "ancestry":
+            height = int(payload.get("height", 0))
+            under = payload.get("under")
+            proof = self.node.state.history.proof(
+                height, under=None if under is None else int(under))
+            return "ancestry_reply", {"proof": proof,
+                                      "tip": self.world.height}
+
+        if kind == "inclusion":
+            cm = payload.get("cm")
+            state = self.node.state
+            proof = state.utxo.witness_path(cm)
+            return "inclusion_reply", {
+                "cm": cm, "live": proof is not None, "proof": proof,
+                "leaf": state.utxo.witness_leaf(cm) if proof else None,
+                "height": state.height,
+                "witness_root": state.utxo.witness_root}
+
+        if kind == "register":
+            grid_id = payload.get("grid_id") or self.grid_id()
+            reg = self.world.registers.get(grid_id)
+            return "register_reply", {
+                "grid_id": grid_id,
+                "roots": {g: str(r.root())
+                          for g, r in self.world.registers.items()},
+                "dump": reg.dump() if reg else None,
+                "height": self.node.state.height}
+
         return None
 
-    def _index(self, block):
-        """Record what a wallet will come asking for."""
-        height = block.height
-        for tx in block.transactions():
-            self.tx_height[tx.txid] = height
-            sealed = list(tx.output_notes) + [b""] * len(tx.output_cms)
-            for cm, blob in zip(tx.output_cms, sealed):
-                self.outputs.append((height, cm, blob))
-            for nf in tx.nullifiers:
-                self.spent.append((height, nf))
+    def tip_header(self):
+        """The header at the tip and the certificate that finalised it."""
+        rows, _ = self.reader.headers(max(1, self.world.height), None, limit=1)
+        if not rows:
+            return None, None
+        _, header, cert = rows[0]
+        return header, cert
 
     def grid_id(self) -> str:
         return self.world.topology.grid_of(self.id)
@@ -257,7 +319,6 @@ class NodeProcess:
         block, cert = accepted
         self.world.pending_rolls[gid] = self.seat.roll(cert)
         self.world.apply_network_block(block)
-        self._index(block)
         self.epochs_run += 1
         self.last_reason = "ok"
         self.log(f"epoch {epoch}: height {block.height} "

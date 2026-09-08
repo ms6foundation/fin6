@@ -165,6 +165,15 @@ class NetworkBlockHeader:
     registers_root: int
     tiers: int = 3
     foundings_root: int = 0
+    #: The same UTXO set as `utxo_root`, in the shape an outsider can check.
+    #: The seal tree is cheap for a validator to keep current and expensive to
+    #: prove one leaf out of; this is the other half of that trade, and it is
+    #: what lets a wallet check that its own note is unspent (see
+    #: docs/light_client_design.md §3-4).
+    witness_root: str = ""
+    #: Every block strictly below this one, in a tree.  Turns "does this tip
+    #: descend from the header I saw last week" from a walk into a path.
+    history_root: str = ""
     """How many ceremonies stand behind this block.
 
     Three is the full hierarchy: a local grid agreed the transactions, a super
@@ -183,7 +192,8 @@ class NetworkBlockHeader:
                              self.chain_id, self.prev_hash, self.utxo_root,
                              self.nf_root, self.super_root,
                              self.registers_root, self.tiers,
-                             self.foundings_root)
+                             self.foundings_root, self.witness_root,
+                             self.history_root)
 
 
 @dataclass(eq=False)
