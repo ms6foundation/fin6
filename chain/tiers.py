@@ -21,7 +21,7 @@ from dataclasses import dataclass, field, replace
 
 from .block import CeremonyMeta
 from .ceremony import Ceremony, Grid, HonestLeader
-from .crypto import Signer, h_hex
+from .crypto import Signer, h_hex, h_field
 from .locality import Topology, tx_partition
 from .node import Node
 from .params import ChainParams
@@ -75,7 +75,11 @@ class TierWorld:
         backend = backend or self.params.backend_for("local")
         accepted = 0
         for nid in self.topology.members(grid_id):
-            ok, why = self.nodes[nid].submit(tx, backend=backend)
+            # A networked node holds only itself; its peers are elsewhere.
+            peer = self.nodes.get(nid)
+            if peer is None:
+                continue
+            ok, why = peer.submit(tx, backend=backend)
             accepted += ok
         return accepted > 0, f"{accepted} members admitted it", grid_id
 
@@ -233,7 +237,8 @@ class TierWorld:
 
 def bootstrap_world(node_regions: dict, endowments: dict, params: ChainParams,
                     seed: str = "genesis", asset: str = "USD",
-                    newcomers: dict | None = None, signers: dict | None = None):
+                    newcomers: dict | None = None, signers: dict | None = None,
+                    note_seed: str | None = None):
     """Build a tiered network: topology, genesis registers, wallets, nodes.
 
     The founding cohort of every grid starts as attesters — it has to, since a
@@ -250,10 +255,25 @@ def bootstrap_world(node_regions: dict, endowments: dict, params: ChainParams,
                             params=params)
                for name in endowments}
     genesis = ChainState(params)
-    for name, values in endowments.items():
+    for name, values in sorted(endowments.items()):
         w = wallets[name]
-        for value in values:
-            note = Note.create(value, w.public_hex, params, asset=asset)
+        for i, value in enumerate(values):
+            if note_seed is None:
+                note = Note.create(value, w.public_hex, params, asset=asset)
+            else:
+                # Deterministic issuance.  Without it every process computes a
+                # different genesis state from the same document, because the
+                # note randomness is drawn fresh — which one process can never
+                # notice and seven immediately do.  The openings are therefore
+                # derivable by anyone holding the document: fine for a testnet,
+                # and another reason the genesis mint of design §2 is the real
+                # answer.
+                note = Note.create(
+                    value, w.public_hex, params, asset=asset,
+                    rho=h_field("genesis-rho", note_seed, name, i),
+                    blinders=tuple(
+                        h_field("genesis-blind", note_seed, name, i, j)
+                        for j in range(params.note_blinders)))
             genesis.issue(note_id(note_vector(note, params)))
             w.receive(note)
     genesis.height = 0

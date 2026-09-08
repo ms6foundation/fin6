@@ -127,4 +127,14 @@ STRONG = ChainParams(
     row_size=8,
 )
 
-PRESETS = {p.name: p for p in (DEMO, STRONG, NO_MPCITH)}
+#: A testnet runs seven processes on one machine, so it spends its CPU on the
+#: transport rather than on proving the same statement three ways: one backend
+#: is 63 KB a transaction instead of 542 KB, and an attendance gate of 3 makes
+#: promotion and grid founding happen while someone is watching.
+LOCAL = ChainParams(name="local", proof_backends=("mpcith",),
+                    default_backend="mpcith",
+                    proof_policy=(("local", "mpcith"), ("super", "mpcith"),
+                                  ("supreme", "mpcith")),
+                    attend_threshold=3, grid_size=7, row_size=5)
+
+PRESETS = {p.name: p for p in (DEMO, STRONG, NO_MPCITH, LOCAL)}

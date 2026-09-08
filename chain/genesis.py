@@ -332,7 +332,7 @@ def boot(doc: GenesisDocument, *, keyring=dev_keyring, store=None,
     from .tiers import bootstrap_world
     world, wallets = bootstrap_world(
         doc.regions(), doc.supply, params, seed=doc.first_seed,
-        signers=signers)
+        signers=signers, note_seed=doc.digest())
 
     if len(world.topology.grid_ids()) != doc.n_partitions:
         raise GenesisError(

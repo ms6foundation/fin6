@@ -67,8 +67,17 @@ PRODUCTION = HardeningParams()
 # Ten-second blocks at the same era length, at half the hardening width.
 FAST = HardeningParams(name="fast", width=16)
 
+# Sized for a laptop.  Production's 2^17-leaf era tree costs 0.89 ms a leaf to
+# build — 117 s per node at boot and again at every rollover — which is not a
+# testnet, it is a coffee break.  This builds in 0.91 s, gives 5-second blocks
+# and a rollover every ten minutes, and puts the rewrite ceiling at 35 blocks
+# for an adversary holding two sevenths of the pool: a three-minute experiment
+# rather than a three-and-a-half-hour one.
+LOCAL = HardeningParams(name="local", turns=1_000, era_seconds=625, width=8,
+                        difficulty_bits=16, tree_height=10)
+
 # Small enough to build a tree and mine in a test.
 DEMO = HardeningParams(name="demo", turns=192, era_seconds=43_200, width=8,
                        difficulty_bits=10, tree_height=8)
 
-PRESETS = {p.name: p for p in (PRODUCTION, FAST, DEMO)}
+PRESETS = {p.name: p for p in (PRODUCTION, FAST, LOCAL, DEMO)}

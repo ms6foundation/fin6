@@ -4,6 +4,14 @@ How to run a real fin6 network on one machine. Follows the five design parts,
 all implemented in `chain/`, and is the first of them about *operating* the
 thing rather than deciding what it does.
 
+> **Status.** Stages 1 and 2 are built and stage 3's presets exist. `fin6
+> genesis new` lays out a testnet, `fin6 net up` starts seven processes, and
+> they reach agreement over loopback with identical roots; `fin6 tx send`
+> gossips a transaction into a block. Three things the simulation had hidden
+> turned up in the first hour of running it, and they are recorded in §11
+> rather than smoothed over. Not built: chaos automation, hardening on the
+> testnet, growth across processes, and more than one host.
+
 ## 0. What exists is not a testnet
 
 Everything in `chain/` runs in one process. `TierWorld` holds every node in a
@@ -240,14 +248,14 @@ on disagreement so a CI job can be a testnet run.
 
 ## 9. What to build, in order
 
-| stage | what | why first |
+| stage | what | state |
 |---|---|---|
-| 1 | frames, transport, node loop, `net up` / `status` — no hardening, one tier, seven nodes | this is the whole of what the simulation cannot test |
-| 2 | block fetch by hash, transaction gossip | without it stage 1 measures loopback |
-| 3 | hardening with `LOCAL` params | makes the rewrite ceiling a three-minute experiment |
-| 4 | chaos: kill, pause, partition, skew | the reason the testnet exists |
-| 5 | growth: admit nodes, watch a grid get founded, tiers go 1 → 2 → 3 | the part that has never run outside one process |
-| 6 | more than one host | changes nothing in the design and everything in the operations |
+| 1 | frames, transport, node loop, `net up` / `status` — no hardening, one tier, seven nodes | **built** |
+| 2 | block fetch by hash, transaction gossip | **built** |
+| 3 | hardening with `LOCAL` params | presets built, not wired into the node loop |
+| 4 | chaos: kill, pause, partition, skew | `Testnet.kill` and `pause` exist; nothing asserts what should follow |
+| 5 | growth: admit nodes, watch a grid get founded, tiers go 1 → 2 → 3 | not started — needs peer discovery |
+| 6 | more than one host | not started |
 
 Stage 1 is a few hundred lines. Stages 2 and 4 are where the findings will be.
 
@@ -255,17 +263,18 @@ Stage 1 is a few hundred lines. Stages 2 and 4 are where the findings will be.
 
 | module | change |
 |---|---|
-| `net/frame.py` | *new* — length-prefixed codec frames, one decoder, treated as a trust boundary |
-| `net/peer.py` | *new* — a connection, its send queue, and reconnection |
-| `net/gossip.py` | *new* — envelope exchange with neighbours, block fetch by hash, transaction flood |
-| `net/clock.py` | *new* — epoch from wall time, deadlines, deliberate skew |
-| `node/main.py` | *new* — the process: identity, store, scheduler, signal handling |
-| `net/supervisor.py` | *new* — `net up/down/status/kill/pause/partition` |
-| `cli.py` | *new* — `fin6 genesis` / `node` / `net` / `tx` |
-| `ceremony.py` | rounds become a deadline: gossip until quorum or time, rather than a fixed loop |
-| `block.py` | a proposal that can travel as a header plus a block hash |
-| `hardening/params.py` | a `LOCAL` preset |
-| `params.py` | a testnet preset: one backend, a small attendance gate |
+| `net/frame.py` | length-prefixed codec frames, one decoder, treated as a trust boundary |
+| `net/peer.py` | the mesh: dialling, accepting, one inbox, reconnection |
+| `net/seat.py` | one node's side of a ceremony — propose, absorb, react, decide |
+| `net/clock.py` | epoch from wall time, deadlines, deliberate skew |
+| `net/node.py` | the process: identity, store, epoch loop, gossip, block fetch |
+| `net/node_main.py` | `python3 -m chain.net.node_main DIR ID` |
+| `net/supervisor.py` | lay out, start, stop, kill, pause, and read the status of a testnet |
+| `cli.py` | `fin6 genesis new` / `net up` / `net status` / `tx send` |
+| `hardening/params.py` | the `LOCAL` preset |
+| `params.py` | the `LOCAL` chain preset: one backend, a small attendance gate |
+| `tiers.py` | `bootstrap_world(note_seed=…)` for reproducible genesis; `submit` tolerates a node that holds only itself |
+| `block.py` | *unchanged* — a proposal travels as a header because `net/seat.py` splits it, not because the object did |
 
 `state.py`, `tiered.py`, `register.py`, `store/` and `mq/` do not move. That is
 the useful summary of this document: **the consensus does not change to be
@@ -275,8 +284,13 @@ networked; only the parts that were pretending to be a network do.**
 
 | item | why it is open |
 |---|---|
-| The round loop is a contract | `2 x diameter` is currently the number of exchanges *and* the guarantee. Splitting them into "gossip until quorum, deadline at T" is a change to `ceremony.py` that the simulation cannot motivate and the testnet will. |
+| ~~The round loop is a contract~~ | **Done on the network path.** `net/seat.py` gossips until quorum or the deadline; `ceremony.py` keeps its lockstep loop for the simulation. Two implementations of one protocol is a debt, not a design. |
+| **The roll cannot be built from one view** | Found on the first networked run. `Ceremony._roll` builds the attendance roll from the *union* of every seat's view, which one process can do and a node cannot: seven views differ, so seven nodes wrote different rolls and rejected each other's block at epoch 2. The certificate is no better — each seat assembles its own. The fix is that the block at epoch e carries the certificate of e-1 and the roll is validated against it; until then the network path credits everyone seated in a ceremony that finalised, which is deterministic and measures the wrong thing. |
+| **The height is not the epoch** | The third one. An epoch whose leader is dead produces no block, so the clock advances and the chain does not — and a seat using one number for both then rejected the leader's proposal, the leader included, reporting "no proposal reached this seat". They are now separate: the epoch comes from the clock, the height from the chain, and a gap in epoch numbering is not a gap in the chain. |
+| **Deciding is not a reason to stop talking** | A seat that reached quorum first went quiet and took its attestation with it, leaving the seats one short stuck. Nodes now keep gossiping until the commit deadline. Worth a rule in the design, not just a fix in the loop. |
+| **Genesis was not reproducible** | Note randomness was drawn fresh per process, so seven nodes computed seven different genesis states from the same document. Now derived from the document digest — which makes every genesis opening public, and is one more argument for the mint of part five §2. |
 | No transport authentication | Content is signed, connections are not. A peer can flood, and nothing rate-limits it. Fine on loopback, not fine on stage 6. |
+| **A node that falls behind stays behind** | There is no catch-up: a node that misses an epoch cannot rejoin, because it has no way to fetch the block it missed. A `kill -9` at the fault bound leaves the network running on exactly its quorum, which is one straggler away from a stall. This is the largest missing piece and the next thing to build. |
 | No peer discovery | Peers come from the genesis roster and `net.toml`. A network that grows needs joiners to find seats, which is the operational half of the founding rule. |
 | View change over a real network | In process it is a retry loop with a fresh seed. With timeouts and partial delivery it is a protocol, and it is not designed. |
 | The lazy stamper, again | `lazy` is in the fault table because the testnet can *run* it, not because anything catches it. Still part three's open item. |

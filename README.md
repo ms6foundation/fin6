@@ -30,6 +30,12 @@ python3 -m chain.demo_hardening   # consensus through to hardened history
 python3 -m chain.demo_archive     # what an archive costs, and where it goes
 python3 -m chain.demo_persistence # stop the chain, start it again
 python3 -m chain.demo_genesis     # launch the seven-node network from its config
+
+# and a real network of seven processes, over TCP:
+python3 -m chain.cli genesis new /tmp/fin6-testnet --nodes 7
+python3 -m chain.cli net up       /tmp/fin6-testnet     # ctrl-c to stop
+python3 -m chain.cli net status   /tmp/fin6-testnet     # exits non-zero on disagreement
+python3 -m chain.cli tx send      /tmp/fin6-testnet --amount 100
 python3 -m chain.tests.run_all    # 135 tests, ~20 s
 ```
 
@@ -164,9 +170,17 @@ the previous block, so no leader chooses it, and `founded_from` sits in the
 register root so the waiver is auditable. Seven nodes at one tier become two
 grids and two tiers without changing block format.
 
+**It runs as a real network.** `chain/net/` is seven processes over TCP with
+framed messages, a clock each node derives from the genesis document, envelope
+gossip that carries block *hashes* rather than blocks, and block fetch by hash.
+They reach agreement with identical roots, and running it immediately found
+three things one process had hidden — the attendance roll cannot be built from
+one node's view, a seat that decides must keep talking, and genesis issuance was
+not reproducible across processes.
+
 **Not built:** grid merge, so a network that shrinks keeps grids it cannot fill;
-cross-partition transactions; reorg rollback beyond the undo ceiling; real
-transport. The ceremony is a synchronous
+cross-partition transactions; reorg rollback beyond the undo ceiling; catching
+up a node that has fallen behind; hardening on the testnet; more than one host. The ceremony is a synchronous
 simulation with no clock.
 
 ## Security
@@ -194,7 +208,7 @@ simulation with no clock.
 - [`docs/hardening_design.md`](docs/hardening_design.md) — moving blocks into network history
 - [`docs/persistence_design.md`](docs/persistence_design.md) — what survives a restart, and what may be thrown away
 - [`docs/genesis_design.md`](docs/genesis_design.md) — what a new network must be trusted about, and for how long *(the one-tier launch is built; the rest is a sketch)*
-- [`docs/testnet_design.md`](docs/testnet_design.md) — running it for real: seven processes, a wire, a clock *(sketch; not implemented)*
+- [`docs/testnet_design.md`](docs/testnet_design.md) — running it for real: seven processes, a wire, a clock *(built, through stage 2)*
 - [`chain/README.md`](chain/README.md) — implementation notes, measured costs, and what the code changed about the design
 
 ## License

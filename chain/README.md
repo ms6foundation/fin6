@@ -53,6 +53,14 @@ Both are run from the repository root (the same place `examples/` imports
 | `hardening/stamp.py` | the puzzle, the one-time signature, verification |
 | `hardening/history.py` | cumulative weight, spent turns, fork choice |
 | `demo_hardening.py` | the full pipeline through to history |
+| **the network** | |
+| `net/frame.py` | length-prefixed codec frames — the trust boundary |
+| `net/peer.py` | the TCP mesh: dialling, accepting, one inbox |
+| `net/seat.py` | one node's side of a ceremony, driven by messages |
+| `net/clock.py` | the epoch, computed from the genesis document |
+| `net/node.py` | the node process and its epoch loop |
+| `net/supervisor.py` | lay out, start, break and inspect a testnet |
+| `cli.py` | `fin6 genesis new` / `net up` / `net status` / `tx send` |
 | **storage** | |
 | `store/codec.py` | canonical binary encoding — interning, hex packing, vector packing |
 | `store/db.py` | the SQLite store: one commit per network block, `load_state`, `rollback` |
