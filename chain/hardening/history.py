@@ -130,8 +130,7 @@ class NetworkHistory:
         p = self.params
 
         drawn = draw_turns(self.spec, spent, height, prev_hash, p.width)
-        anchor = anchor_bytes(block.hash(), self.cumulative_at(prev_hash),
-                              self.spec.root)
+        anchor = anchor_bytes(block.hash(), height, self.spec.root)
 
         absent = set(absent)
         if participation < 1.0:
@@ -157,6 +156,52 @@ class NetworkHistory:
             spent_root=seal_root("turns", sorted(spent | set(drawn))),
             block=block)
 
+    def assemble(self, block, stamps, prev_hash: str | None = None):
+        """Build a hardened block from stamps that came from several places.
+
+        `harden` mines and assembles in one step, which is right for one
+        operator holding the whole pool and wrong for a network where each node
+        can only stamp its own turns.  On a network the stamps arrive
+        separately and somebody has to put them together; this does that, and
+        `check` then verifies the result exactly as if it had been mined here.
+
+        Stamps that are not on the draw, or that repeat a turn, are dropped
+        rather than refused — the assembler is combining what it was sent, and
+        a peer sending rubbish should cost the block nothing.
+        """
+        prev_hash = self.tip_hash if prev_hash is None else prev_hash
+        height = self.height_at(prev_hash) + 1
+        spent = self.spent_upto(prev_hash)
+        drawn = draw_turns(self.spec, spent, height, prev_hash,
+                           self.params.width)
+        allowed, seen, keep = set(drawn), set(), []
+        for stamp in sorted(stamps, key=lambda s: s.leaf_index):
+            if stamp.leaf_index in allowed and stamp.leaf_index not in seen:
+                seen.add(stamp.leaf_index)
+                keep.append(stamp)
+        weight = len(keep) * self.params.stamp_weight
+        return HardenedBlock(
+            block_hash=block.hash() if hasattr(block, "hash") else str(block),
+            height=height, prev_hash=prev_hash, era_id=self.spec.era_id,
+            drawn=tuple(drawn), stamps=tuple(keep), weight=weight,
+            cumulative=self.cumulative_at(prev_hash) + weight,
+            spent_root=seal_root("turns", sorted(spent | set(drawn))),
+            block=block if hasattr(block, "hash") else None)
+
+    def drawn_for(self, block_hash: str, prev_hash: str | None = None):
+        """Which turns this block's committee is — deterministic, so a node can
+        know what to expect before any stamp arrives."""
+        prev_hash = self.tip_hash if prev_hash is None else prev_hash
+        height = self.height_at(prev_hash) + 1
+        spent = self.spent_upto(prev_hash)
+        return draw_turns(self.spec, spent, height, prev_hash,
+                          self.params.width)
+
+    def anchor_for(self, block_hash: str, prev_hash: str | None = None):
+        prev_hash = self.tip_hash if prev_hash is None else prev_hash
+        return anchor_bytes(block_hash, self.height_at(prev_hash) + 1,
+                            self.spec.root)
+
     # ── accepting ────────────────────────────────────────────────────────────
 
     def check(self, hb: HardenedBlock):
@@ -178,8 +223,7 @@ class NetworkHistory:
             if idx in spent:
                 return False, f"turn {idx} was already spent on this branch"
 
-        anchor = anchor_bytes(hb.block_hash, self.cumulative_at(hb.prev_hash),
-                              self.spec.root)
+        anchor = anchor_bytes(hb.block_hash, hb.height, self.spec.root)
         seen = set()
         for stamp in hb.stamps:
             if stamp.leaf_index in seen:

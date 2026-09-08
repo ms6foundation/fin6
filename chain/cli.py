@@ -171,6 +171,18 @@ def cmd_wallet_sync(args):
     wallet, notes_path = _open_wallet(root, args.name, doc, params)
     client, target = _client_for(root, net_cfg, doc, args.node)
     before = wallet.balance()
+    if args.tags is not None:
+        result = client.scan_by_tag(wallet, bits=args.tags)
+        wallet.save(notes_path)
+        print(f"synced {args.name} against {target} to height "
+              f"{result['height']}, node-sorted at {result['bits']} bits")
+        print(f"  fetched {result['fetched']} of {result['scanned']} outputs "
+              f"({result['reduction']:.0f}x less to read)")
+        print(f"  found {result['found']} new note(s)")
+        print(f"  balance {before} -> {wallet.balance()}")
+        print("  the node now knows a set your outputs are hiding in; see "
+              "chain/notes.py detection_tag")
+        return 0
     result = client.sync(wallet)
     wallet.save(notes_path)
     print(f"synced {args.name} against {target} to height {result['height']}")
@@ -290,6 +302,35 @@ def cmd_light_verify(args):
     return 0 if not unproved else 1
 
 
+def cmd_light_adjudicate(args):
+    """Ask every node, check the work, and say what the work says."""
+    from .light import Adjudicator
+    root, net_cfg, doc = sv.load(args.root)
+    adj = Adjudicator(doc)
+    sources = {nid: _client(spec, doc)
+               for nid, spec in sorted(net_cfg["nodes"].items())}
+    verdict = adj.weigh(sources)
+    print(verdict["decision"])
+    for b in verdict["branches"]:
+        mark = "ok      " if b.ok else "REFUSED "
+        print(f"  {mark} {b.source:<12} h={b.height:<4} "
+              f"weight={b.cumulative:>12,}  {b.stamps} stamps"
+              + ("" if b.ok else f"  — {b.reason}"))
+    depth = adj.settled_depth(args.share)
+    print(f"  a holder of {args.share:.0%} of the pool could rewrite at most "
+          f"{depth} block(s)")
+    if not verdict["agree"] and verdict.get("winner"):
+        print(f"  heaviest  {verdict['winner'][:26]}… by "
+              f"{verdict['margin']:,}")
+    return 0 if verdict["agree"] else 1
+
+
+def _client(spec, doc):
+    from .net.client import Client
+    host, port = spec["listen"]
+    return Client(host, port, doc.chain_id)
+
+
 def cmd_net_kill(args):
     print("`kill` needs the supervisor that started the nodes; run it from a "
           "python session holding the Testnet, or stop `net up`.",
@@ -339,7 +380,10 @@ def main(argv=None):
     wa.add_argument("--name", required=True); wa.set_defaults(fn=cmd_wallet_address)
     ws = w.add_parser("sync", help="scan the chain for money")
     ws.add_argument("root"); ws.add_argument("--name", required=True)
-    ws.add_argument("--node", default=None); ws.set_defaults(fn=cmd_wallet_sync)
+    ws.add_argument("--node", default=None)
+    ws.add_argument("--tags", type=int, default=None, metavar="BITS",
+                    help="let the node sort the chain, at this precision")
+    ws.set_defaults(fn=cmd_wallet_sync)
     wb = w.add_parser("balance"); wb.add_argument("root")
     wb.add_argument("--name", required=True); wb.set_defaults(fn=cmd_wallet_balance)
     wsd = w.add_parser("send"); wsd.add_argument("root")
@@ -357,6 +401,11 @@ def main(argv=None):
     lsy = li.add_parser("sync", help="follow the spine, verified")
     lsy.add_argument("root"); lsy.add_argument("--node", default=None)
     lsy.set_defaults(fn=cmd_light_sync)
+    la = li.add_parser("adjudicate", help="weigh the nodes' branches")
+    la.add_argument("root")
+    la.add_argument("--share", type=float, default=1 / 3,
+                    help="attacker's share of the turn pool")
+    la.set_defaults(fn=cmd_light_adjudicate)
     lv = li.add_parser("verify", help="prove every note a wallet holds")
     lv.add_argument("root"); lv.add_argument("--name", required=True)
     lv.add_argument("--node", default=None); lv.set_defaults(fn=cmd_light_verify)

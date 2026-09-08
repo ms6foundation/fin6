@@ -237,8 +237,8 @@ ledger does not need to know that anyone is watching it.
 |---|---|
 | The ciphertext is a format change | Outputs grow a field, so `txid` and every root over it change. Cheap to do now, expensive once a chain exists — which is an argument for doing it before the first real genesis rather than after. |
 | `sbs` has two constituencies now | Update speed and proof size pull in opposite directions and the table in §7 has never been costed against real usage. |
-| Rate limiting | A submission costs 26 ms of verification and nothing meters it. A fee cannot be charged before the proof is checked, which is the wrong way round and needs a cheap admission test in front. |
-| Recovery without a scan | Restoring from seed means reading every output ever. Fine at 10 M, not fine at 10 B, and the fix (detection tags) trades a little linkability. |
+| ~~Rate limiting~~ | **Fixed in part eight.** A cheap admission test in front (2.1 µs against 25.5 ms — 12,000×) and a token bucket per source. Charging a fee for the work is still a design nobody has written. |
+| Recovery without a scan | **Improved in part eight**: detection tags let a node sort the chain at a precision the client chooses. The residual — binding that precision cryptographically rather than behaviourally — is part eight §14. |
 | Viewing keys and disclosure | Handing an auditor a viewing key grants *permanent* read access with no way to revoke or scope it. A permissioned financial chain probably wants scoped, expiring disclosure, and that is a design of its own. |
 | Multi-note spends | `transfer` spends exactly one note. `Wallet.select` already picks several and `Wallet.send` refuses loudly rather than building a statement it cannot prove; `TxSystem` supports k inputs and no code exercises it. |
 | What a client does when nodes disagree | `net status` exits non-zero; a wallet has no equivalent rule. Following the heaviest hardened chain is the answer, and nothing implements it. |

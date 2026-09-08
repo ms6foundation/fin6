@@ -26,11 +26,25 @@ class MiningFailed(Exception):
     """No nonce found inside the budget."""
 
 
-def anchor_bytes(block_hash: str, cumulative_weight: int, era_root: bytes) -> bytes:
+def anchor_bytes(block_hash: str, branch_height: int, era_root: bytes) -> bytes:
+    """What a turn signs: this block, at this depth, in this era.
+
+    The second field used to be the branch's accumulated weight, which read
+    well and could not survive contact with a network.  Weight is not canonical
+    until every stamp has arrived: a node that assembles a block with six
+    stamps and one that assembles the same block with eight disagree about the
+    weight, and therefore about the anchor of the *next* block, and their
+    stamps then verify nowhere.  Height is decided by consensus before any turn
+    is spent, so it is the same number everywhere.
+
+    Nothing is lost.  The branch is still bound, because `block_hash` commits
+    to the header and the header commits to its parent; and a turn still cannot
+    be moved to another block, because it is the block hash that is signed.
+    """
     d = hashlib.sha256()
     d.update(b"fin6-anchor")
     d.update(block_hash.encode())
-    d.update(cumulative_weight.to_bytes(16, "big"))
+    d.update(int(branch_height).to_bytes(16, "big"))
     d.update(era_root)
     return d.digest()
 

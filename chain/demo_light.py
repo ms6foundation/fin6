@@ -17,7 +17,7 @@ import time
 
 from .genesis import boot, load as load_genesis
 from .keys import WalletKeys
-from .light import LightClient, LightError
+from .light import Adjudicator, LightClient, LightError
 from .net import supervisor as sv
 from .net.client import Client, ClientError
 from .notes import note_id, note_vector
@@ -78,6 +78,11 @@ def main(root=None, nodes=4, base_port=7650):
                 f"{step['attestations']} attestations checked against "
                 f"{step['grids']} register(s) recomputed from their records")
 
+            counted = light.scan(bob)
+            say(f"── scanned to {counted['height']}: {counted['outputs']} "
+                f"outputs and {counted['nullifiers']} nullifiers, exactly what "
+                f"the headers say the range holds")
+
             proved, unproved, checks = light.verified_balance(bob)
             for c in checks:
                 proof = client.inclusion(c.cm)["proof"]
@@ -107,6 +112,30 @@ def main(root=None, nodes=4, base_port=7650):
                 f"{stale[0].reason}")
 
             client.sync(treasury)
+            # ── the node sorts the chain without being able to read it ────
+            twin = Wallet(bob.keys, params, chain_id=doc.chain_id, name="twin")
+            for bits in (24, 4, 1):
+                t = Wallet(bob.keys, params, chain_id=doc.chain_id)
+                r = client.scan_by_tag(t, bits=bits, since=0)
+                say(f"── tags at {bits:>2} bits: fetched {r['fetched']} of "
+                    f"{r['scanned']} outputs, found {r['found']}, "
+                    f"balance {t.balance()}")
+
+            # ── the appeal court ──────────────────────────────────────────
+            adj = Adjudicator(doc)
+            sources = {f"n{i:02d}": Client("127.0.0.1", base_port + i,
+                                           doc.chain_id)
+                       for i in range(nodes)}
+            verdict = adj.weigh(sources)
+            say(f"── {verdict['decision']}; "
+                f"{sum(1 for b in verdict['branches'] if b.ok)}/"
+                f"{len(verdict['branches'])} branches verified from their "
+                f"stamps")
+            for b in verdict["branches"][:2]:
+                say(f"     {b}")
+            say(f"── a third of the pool could rewrite at most "
+                f"{adj.settled_depth(1 / 3)} blocks")
+
             answer = client.inclusion(treasury.unspent()[0].cm)
             if answer.get("live"):
                 from .seal import verify_witness

@@ -29,7 +29,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
 from .crypto import Signer, h_bytes
 
 PREFIX = "fin6"
-ADDRESS_VERSION = 1
+ADDRESS_VERSION = 2
 CHECKSUM_BYTES = 4
 
 
@@ -51,13 +51,24 @@ def _unb32(text: str) -> bytes:
 
 @dataclass(frozen=True)
 class Address:
-    """Where money is sent.  Public, and safe to publish."""
+    """Where money is sent.  Public, and safe to publish.
+
+    Three keys, not two.  The third — the *detection* key — exists so that the
+    work of finding your money can be handed to somebody else without handing
+    them the ability to read it.  A sender tags each output with it; a node
+    given the detection secret can sort the chain's outputs into "possibly
+    yours" and "certainly not", and can do neither more nor less than that.
+    See `notes.detection_tag`, and §09 of the part-eight design for what it
+    costs in privacy.
+    """
     spend_hex: str
     view_hex: str
+    detect_hex: str = ""
 
     def payload(self) -> bytes:
         return (bytes([ADDRESS_VERSION]) + bytes.fromhex(self.spend_hex)
-                + bytes.fromhex(self.view_hex))
+                + bytes.fromhex(self.view_hex)
+                + bytes.fromhex(self.detect_hex))
 
     def encode(self) -> str:
         body = self.payload()
@@ -70,18 +81,22 @@ class Address:
         if not text.startswith(PREFIX):
             raise AddressError(f"an address starts with {PREFIX!r}")
         raw = _unb32(text[len(PREFIX):])
-        if len(raw) != 1 + 32 + 32 + CHECKSUM_BYTES:
-            raise AddressError(f"an address is {1 + 64 + CHECKSUM_BYTES} bytes, "
+        if len(raw) != 1 + 96 + CHECKSUM_BYTES:
+            raise AddressError(f"an address is {1 + 96 + CHECKSUM_BYTES} bytes, "
                                f"this decoded to {len(raw)}")
         body, check = raw[:-CHECKSUM_BYTES], raw[-CHECKSUM_BYTES:]
         if h_bytes("address", body)[:CHECKSUM_BYTES] != check:
             raise AddressError("checksum does not match — a typo, most likely")
         if body[0] != ADDRESS_VERSION:
             raise AddressError(f"address version {body[0]}")
-        return cls(spend_hex=body[1:33].hex(), view_hex=body[33:65].hex())
+        return cls(spend_hex=body[1:33].hex(), view_hex=body[33:65].hex(),
+                   detect_hex=body[65:97].hex())
 
     def view_key(self) -> X25519PublicKey:
         return X25519PublicKey.from_public_bytes(bytes.fromhex(self.view_hex))
+
+    def detect_key(self) -> X25519PublicKey:
+        return X25519PublicKey.from_public_bytes(bytes.fromhex(self.detect_hex))
 
     def short(self) -> str:
         text = self.encode()
@@ -94,7 +109,7 @@ class Address:
 class WalletKeys:
     """The secret.  Everything a wallet can do comes from here."""
 
-    __slots__ = ("seed", "signer", "_view")
+    __slots__ = ("seed", "signer", "_view", "_detect")
 
     def __init__(self, seed: bytes):
         if len(seed) < 16:
@@ -105,6 +120,12 @@ class WalletKeys:
         self.signer = Signer.from_seed("wallet-spend:" + self.seed.hex())
         self._view = X25519PrivateKey.from_private_bytes(
             h_bytes("wallet-view", self.seed))
+        # A third derivation, separate again, because the detection secret is
+        # the one a user may hand to an untrusted server.  Sharing it must not
+        # imply sharing the viewing key, or the tunable leak of §09 collapses
+        # into total disclosure.
+        self._detect = X25519PrivateKey.from_private_bytes(
+            h_bytes("wallet-detect", self.seed))
 
     # ── construction ─────────────────────────────────────────────────────────
 
@@ -132,14 +153,36 @@ class WalletKeys:
             format=serialization.PublicFormat.Raw).hex()
 
     @property
+    def detect_hex(self) -> str:
+        return self._detect.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw).hex()
+
+    @property
     def address(self) -> Address:
-        return Address(spend_hex=self.spend_hex, view_hex=self.view_hex)
+        return Address(spend_hex=self.spend_hex, view_hex=self.view_hex,
+                       detect_hex=self.detect_hex)
 
     # ── key agreement ────────────────────────────────────────────────────────
 
     def exchange(self, epk: bytes) -> bytes:
         """The shared secret with an output's ephemeral key."""
         return self._view.exchange(X25519PublicKey.from_public_bytes(epk))
+
+    def detect_exchange(self, epk: bytes) -> bytes:
+        return self._detect.exchange(X25519PublicKey.from_public_bytes(epk))
+
+    def detection_secret(self) -> str:
+        """The key a user hands to whoever does the scanning for them.
+
+        It grants the ability to *sort*, not to read: an output's opening is
+        still sealed to the viewing key.  What it costs is described honestly
+        in `notes.detection_tag`.
+        """
+        return self._detect.private_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PrivateFormat.Raw,
+            encryption_algorithm=serialization.NoEncryption()).hex()
 
     def viewing_secret(self) -> str:
         """The read-only half, for an auditor.  Grants sight of every note sent

@@ -12,7 +12,7 @@ python3 -m chain.demo_hardening  # consensus through to hardened network history
 python3 -m chain.demo_archive    # what an archive costs, and where it goes
 python3 -m chain.demo_persistence # stop the chain, start it again
 python3 -m chain.demo_genesis   # launch the seven-node network from its config
-python3 -m chain.tests.run_all   # 281 tests, ~70 s
+python3 -m chain.tests.run_all   # 304 tests, ~90 s
 ```
 
 Both are run from the repository root (the same place `examples/` imports
@@ -56,6 +56,7 @@ Both are run from the repository root (the same place `examples/` imports
 | **the network** | |
 | `net/frame.py` | length-prefixed codec frames — the trust boundary |
 | `net/peer.py` | the TCP mesh: dialling, accepting, one inbox |
+| `net/limits.py` | a token bucket per source, in front of everything |
 | `net/seat.py` | one node's side of a ceremony, driven by messages |
 | `net/clock.py` | the epoch, computed from the genesis document |
 | `net/node.py` | the node process and its epoch loop |
@@ -65,9 +66,9 @@ Both are run from the repository root (the same place `examples/` imports
 | `keys.py` | one seed → a spend key and a viewing key; the checksummed address |
 | `wallet.py` | the note cache: scan, reconcile, select, send |
 | `demo_wallet.py` | pay a stranger across seven node processes |
-| `light.py` | the following client: verifies the tip, its ancestry, and its own notes |
+| `light.py` | the following client, and the adjudicator that weighs two tips |
 | `demo_light.py` | prove a balance instead of being told it |
-| `cli.py` | `fin6 genesis new` / `net up` / `net status` / `wallet …` / `light …` / `tx send` |
+| `cli.py` | `fin6 genesis new` / `net up` / `net status` / `wallet …` / `light sync|verify|adjudicate` / `tx send` |
 | **storage** | |
 | `store/codec.py` | canonical binary encoding — interning, hex packing, vector packing |
 | `store/db.py` | the SQLite store: one commit per network block, `load_state`, `rollback` |

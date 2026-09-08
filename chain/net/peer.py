@@ -28,7 +28,7 @@ class Mesh:
     """Outbound dialling, inbound accepting, one inbox."""
 
     def __init__(self, node_id: str, chain_id: str, listen, peers: dict,
-                 inbox, log=None, on_request=None):
+                 inbox, log=None, on_request=None, limiter=None):
         self.node_id = node_id
         self.chain_id = chain_id
         self.host, self.port = listen
@@ -40,6 +40,8 @@ class Mesh:
         # epochs — which is most of the time, and exactly when someone wants to
         # know whether it is alive.
         self.on_request = on_request
+        self.limiter = limiter
+        self._last_refusal = ""
         self.out: dict = {}                      # peer_id -> socket we dialled
         self._locks: dict = {pid: threading.Lock() for pid in self.peers}
         self._stop = threading.Event()
@@ -123,15 +125,27 @@ class Mesh:
     def _accept_loop(self):
         while not self._stop.is_set():
             try:
-                conn, _ = self._server.accept()
+                conn, addr = self._server.accept()
             except (socket.timeout, OSError):
                 continue
             conn.settimeout(SOCKET_TIMEOUT)
-            self._spawn(self._read_loop, "read", conn)
+            self._spawn(self._read_loop, "read", conn, addr)
 
-    def _read_loop(self, conn):
+    def _afford(self, source, kind: str, seated: bool) -> bool:
+        if self.limiter is None:
+            return True
+        ok, why = self.limiter.check(source, kind, peer=seated)
+        if not ok:
+            self._last_refusal = why
+        return ok
+
+    def _read_loop(self, conn, addr=None):
         reader = Reader(self.chain_id)
         who = None
+        # The bucket is keyed by host, not by host and port: a new connection
+        # per request would otherwise buy a fresh budget every time, which is
+        # the first thing anybody flooding a node would try.
+        source = addr[0] if addr else "?"
         try:
             while not self._stop.is_set():
                 try:
@@ -146,6 +160,20 @@ class Mesh:
                     if msg["kind"] == "hello":
                         payload = msg["payload"] or {}
                         who = payload.get("node_id")
+                        continue
+                    seated = who is not None and who in self.peers
+                    # Two keyspaces, not one.  On a testnet — and behind any
+                    # shared address — a validator and a wallet arrive from the
+                    # same host, and keying on the host alone let the
+                    # validator's promotion hand its budget to everyone else
+                    # dialling from there.  A peer is metered under the name it
+                    # claims; everybody else under the address they came from.
+                    key = ("peer", who) if seated else ("client", source)
+                    if not self._afford(key, msg["kind"], seated):
+                        if msg["kind"] in CLIENT_KINDS:
+                            reply(conn, self.chain_id, "refused",
+                                  {"kind": msg["kind"],
+                                   "reason": self._last_refusal})
                         continue
                     if msg["kind"] in CLIENT_KINDS:
                         if self.on_request is not None:

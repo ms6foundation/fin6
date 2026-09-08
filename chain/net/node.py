@@ -28,11 +28,14 @@ import time
 from .. import genesis as genesis_mod
 from ..block import CeremonyMeta
 from ..ceremony import Grid
-from ..crypto import Signer, h_hex
+from ..crypto import Signer, h_bytes, h_hex
 from ..register import Standing
+from ..hardening.history import NetworkHistory
+from ..hardening.pool import Era
 from ..store.db import ChainStore
 from ..tiers import SoloWorkload, run_tiered_epoch
 from .clock import Clock
+from .limits import CLIENT_CAPACITY, CLIENT_RATE, Limiter
 from .peer import Mesh
 from .seat import Seat
 
@@ -79,9 +82,20 @@ class NodeProcess:
         self.inbox: queue.Queue = queue.Queue()
         peers = {nid: tuple(spec["listen"])
                  for nid, spec in self.config["nodes"].items() if nid != node_id}
+        # Metering lives at the wire, in front of everything: a request that
+        # cannot be afforded costs the node a dictionary lookup, not a proof.
+        # `limits` in net.json tightens or loosens the budget per node, which
+        # is how the supervisor gets to point a flood at one of them and watch
+        # what it does.  Left out, a node uses the defaults, which are set so
+        # that an ordinary wallet never meets them.
+        limits = self.settings.get("limits") or {}
+        self.limiter = Limiter(
+            capacity=limits.get("capacity", CLIENT_CAPACITY),
+            rate=limits.get("rate", CLIENT_RATE))
         self.mesh = Mesh(node_id, self.doc.chain_id,
                          tuple(self.settings["listen"]), peers, self.inbox,
-                         log=self.log, on_request=self.answer)
+                         log=self.log, on_request=self.answer,
+                         limiter=self.limiter)
         self.seat: Seat | None = None
         self.bodies: dict = {}
         # What a wallet needs and a validator does not — every output the chain
@@ -91,6 +105,26 @@ class NodeProcess:
         # grow without bound or to fall out of step after a restart.
         self.reader = ChainStore(os.path.join(self.dir, "chain.db"),
                                  read_only=True)
+
+        # ── hardening ────────────────────────────────────────────────────────
+        # Every node builds the same era from the genesis document, and holds
+        # the slice of turns dealt to it.  One node cannot harden a block by
+        # itself — it can only stamp the drawn turns that happen to be its own
+        # — so the stamps have to be gossiped and assembled, which is exactly
+        # the property that makes the pool a distribution of witnesses rather
+        # than one operator with a big number.
+        self.hardening = self.doc.hardening_params()
+        roster = sorted(n.node_id for n in self.doc.nodes)
+        self.era = Era(0, h_bytes("era-seed", self.doc.digest()),
+                       self.hardening.tree_height, self.hardening.turns,
+                       holders={i: roster[i % len(roster)]
+                                for i in range(self.hardening.turns)})
+        self.owned = {i for i in range(self.hardening.turns)
+                      if roster[i % len(roster)] == node_id}
+        self.history = NetworkHistory(self.era.spec, self.hardening)
+        self.stamp_pool: dict = {}         # block_hash -> {leaf_index: Stamp}
+        self.pending_hard: dict = {}       # height -> the block awaiting turns
+        self.stamped: set = set()          # blocks this node has mined for
         self.stop = threading.Event()
         self.epochs_run = 0
         self.last_reason = "not started"
@@ -121,6 +155,9 @@ class NodeProcess:
             "epochs_run": self.epochs_run,
             "last": self.last_reason,
             "behaviour": self.behaviour,
+            "limiter": self.limiter.stats(),
+            "hardened": self.history.height,
+            "weight": self.history.cumulative_weight,
         }
 
     #: A page of outputs is capped so the reply cannot outgrow a frame.  At the
@@ -147,8 +184,9 @@ class NodeProcess:
             return "outputs_reply", {
                 "height": scanned,
                 "tip": self.world.height,
-                "outputs": [[h, cm, blob or b""] for h, cm, blob in outs],
-                "nullifiers": [list(n) for n in nfs],
+                "outputs": [[h, cm, blob or b"", pos]
+                            for h, cm, blob, pos in outs],
+                "nullifiers": [[h, nf, pos] for h, nf, pos in nfs],
                 "next_from": next_from,
             }
 
@@ -205,6 +243,59 @@ class NodeProcess:
                 "leaf": state.utxo.witness_leaf(cm) if proof else None,
                 "height": state.height,
                 "witness_root": state.utxo.witness_root}
+
+        if kind == "tags":
+            # The client hands over a detection secret and says how many bits
+            # of it to use.  The node can compute the whole tag and does not:
+            # that gap is the honest limit of this construction, and it is
+            # named in `notes.detection_tag` rather than papered over.
+            from cryptography.hazmat.primitives.asymmetric.x25519 import (
+                X25519PrivateKey)
+
+            from ..notes import TAG_BYTES, tag_from_shared, tag_matches
+            bits = max(1, min(int(payload.get("bits", 8)), 8 * TAG_BYTES))
+            try:
+                secret = X25519PrivateKey.from_private_bytes(
+                    bytes.fromhex(payload.get("detect", "")))
+            except Exception:
+                return "tags_reply", {"error": "that is not a detection key"}
+            since = int(payload.get("from", 0))
+            to = payload.get("to")
+            limit = min(int(payload.get("limit", self.OUTPUT_PAGE)),
+                        self.OUTPUT_PAGE)
+            rows = self.reader.tagged(since, to, limit=limit)
+            hits, scanned = [], 0
+            for height, cm, sealed, pos, tag in rows:
+                scanned += 1
+                if not sealed or not tag:
+                    continue
+                want = tag_from_shared(secret.exchange(
+                    _x25519_public(sealed[:32])))
+                if tag_matches(bytes(tag), want, bits):
+                    hits.append([height, cm, sealed, pos])
+            return "tags_reply", {
+                "height": self.world.height, "bits": bits,
+                "scanned": scanned, "outputs": hits,
+                "from": since, "to": to}
+
+        if kind == "weight":
+            since = max(1, int(payload.get("from", 1)))
+            rows, more = self.reader.hardened_range(
+                since, payload.get("to"),
+                limit=min(int(payload.get("limit", 256)), 256))
+            spec = self.era.spec
+            return "weight_reply", {
+                "height": self.world.height,
+                "hardened": self.history.height,
+                "cumulative": self.history.cumulative_weight,
+                "more": more, "blocks": rows,
+                # The era a client needs to check the work.  It should build
+                # this from the genesis document rather than believe it; it is
+                # sent so a client can tell at once that it is talking to a
+                # node on another era.
+                "era": {"era_id": spec.era_id, "tree_height": spec.tree_height,
+                        "turns": spec.turns, "pub_seed": spec.pub_seed.hex(),
+                        "root": spec.root.hex()}}
 
         if kind == "register":
             grid_id = payload.get("grid_id") or self.grid_id()
@@ -319,12 +410,107 @@ class NodeProcess:
         block, cert = accepted
         self.world.pending_rolls[gid] = self.seat.roll(cert)
         self.world.apply_network_block(block)
+        self._stamp(block)
         self.epochs_run += 1
         self.last_reason = "ok"
         self.log(f"epoch {epoch}: height {block.height} "
                  f"{block.hash()[:16]}… {len(cert.attestations)} attestations, "
                  f"{sum(1 for _ in block.transactions())} tx")
         self._serve_until(self.clock.commit_deadline(epoch), epoch)
+
+    # ── hardening ────────────────────────────────────────────────────────────
+
+    def _stamp(self, block):
+        """Record a block as awaiting hardening, then push as far as it goes."""
+        self.pending_hard[block.height] = block
+        self._advance_hardening()
+
+    def _absorb_stamps(self, payload):
+        """Keep stamps for a block, whether or not this node has it yet.
+
+        Buffering rather than dropping matters: a peer that hardens quickly
+        broadcasts before a slower node has applied the block at all, and the
+        first version of this dropped exactly those stamps and then wondered
+        why the threshold was never reached.
+        """
+        block_hash = payload.get("block_hash")
+        if not block_hash:
+            return
+        height = int(payload.get("height", 0))
+        pool = self.stamp_pool.setdefault(block_hash, {})
+        # Verified on arrival, not at assembly time.  One bad stamp left in the
+        # pool poisons every attempt to assemble that block for ever, and the
+        # first version of this spent an entire testnet run doing exactly that.
+        from ..hardening.stamp import anchor_bytes, verify_stamp
+        anchor = anchor_bytes(block_hash, height, self.era.spec.root)
+        for stamp in payload.get("stamps") or ():
+            if stamp.leaf_index in pool:
+                continue
+            ok, _ = verify_stamp(self.era.spec, stamp, anchor,
+                                 self.hardening.difficulty_bits)
+            if ok:
+                pool[stamp.leaf_index] = stamp
+        self._advance_hardening()
+
+    def _advance_hardening(self):
+        """Harden in order, one height at a time, as far as the stamps allow.
+
+        Strictly in order because the anchor a turn signs is
+        `H(block_hash, cumulative(prev), era_root)` — it depends on the weight
+        already on the branch.  A node that mined block H+1 while still
+        thinking H was unhardened would sign a different anchor from its peers
+        and its stamps would verify nowhere.  That is what the first run did,
+        and "turn 70: puzzle not solved" is what it looks like from the
+        outside.
+        """
+        while True:
+            height = self.history.height + 1
+            block = self.pending_hard.get(height)
+            if block is None:
+                return
+            block_hash = block.hash()
+            if block_hash not in self.stamped:
+                self.stamped.add(block_hash)
+                try:
+                    mine = self.history.harden(block, self.era,
+                                               owned=self.owned)
+                except Exception as exc:              # an exhausted pool
+                    self.log(f"cannot stamp {block_hash[:14]}…: {exc}")
+                    return
+                pool = self.stamp_pool.setdefault(block_hash, {})
+                for stamp in mine.stamps:
+                    pool[stamp.leaf_index] = stamp
+                if mine.stamps:
+                    self.mesh.broadcast(
+                        list(self.mesh.connected), "stamps",
+                        {"block_hash": block_hash, "height": height,
+                         "stamps": list(mine.stamps)})
+            if not self._try_harden(block):
+                return
+
+    def _try_harden(self, block) -> bool:
+        """Assemble what has arrived and accept it if it is enough.
+
+        Lazy on purpose: the threshold is often reached an epoch or two after
+        the block was agreed, and that gap is the honest shape of the thing —
+        consensus finality and historical finality are different events, and
+        this is the distance between them made visible rather than hidden.
+        """
+        block_hash = block.hash()
+        pool = self.stamp_pool.get(block_hash) or {}
+        if len(pool) < self.hardening.threshold:
+            return False
+        hardened = self.history.assemble(block, pool.values())
+        ok, why = self.history.accept(hardened)
+        if not ok:
+            self.log(f"not hardened {block_hash[:14]}…: {why}")
+            return False
+        self.store.commit_hardened(hardened)
+        self.pending_hard.pop(hardened.height, None)
+        self.log(f"hardened height {hardened.height} with "
+                 f"{len(hardened.stamps)} stamps, cumulative "
+                 f"{hardened.cumulative:,}")
+        return True
 
     def _gossip(self, epoch: int, grid):
         """Exchange until quorum or the deadline.  The rounds are gone."""
@@ -384,6 +570,10 @@ class NodeProcess:
 
     def _handle(self, who, msg, conn):
         kind, payload = msg["kind"], msg["payload"]
+        if kind == "stamps":
+            self._absorb_stamps(payload if isinstance(payload, dict) else {})
+            return
+
         if kind == "tx":
             tx = payload.get("tx") if isinstance(payload, dict) else None
             if tx is not None and tx.txid not in self.node.mempool:
@@ -415,3 +605,8 @@ def run_node(root: str, node_id: str, until_epoch=None, quiet=False):
     proc = NodeProcess(root, node_id, quiet=quiet)
     proc.run(until_epoch=until_epoch)
     return proc
+
+
+def _x25519_public(raw: bytes):
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
+    return X25519PublicKey.from_public_bytes(bytes(raw))

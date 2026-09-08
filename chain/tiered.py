@@ -174,6 +174,15 @@ class NetworkBlockHeader:
     #: Every block strictly below this one, in a tree.  Turns "does this tip
     #: descend from the header I saw last week" from a walk into a path.
     history_root: str = ""
+    #: How many notes and how many nullifiers have ever existed, cumulative.
+    #: Two numbers, and they are what makes a *scan* checkable rather than
+    #: merely verifiable: a client can check every output it was handed and
+    #: still be missing one, unless it can count what it should have been
+    #: handed.  Positions are issued in order and never reused, so the
+    #: difference between two headers' counts is exactly the number of outputs
+    #: the range between them produced.
+    utxo_count: int = 0
+    nf_count: int = 0
     """How many ceremonies stand behind this block.
 
     Three is the full hierarchy: a local grid agreed the transactions, a super
@@ -193,7 +202,8 @@ class NetworkBlockHeader:
                              self.nf_root, self.super_root,
                              self.registers_root, self.tiers,
                              self.foundings_root, self.witness_root,
-                             self.history_root)
+                             self.history_root, self.utxo_count,
+                             self.nf_count)
 
 
 @dataclass(eq=False)

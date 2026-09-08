@@ -39,7 +39,7 @@ from mq.vs6 import verify_hidden as vs6_verify_hidden
 
 from .crypto import h_bytes, h_field, h_hex, owner_field, verify_sig
 from .proofs import get_backend
-from .notes import (Note, encrypt_opening, note_id, note_vector, nullifier_id)
+from .notes import (Note, note_id, note_vector, nullifier_id, seal_output)
 from .params import ChainParams
 from .txsystem import tx_system
 
@@ -77,6 +77,11 @@ class Transaction:
     #: built without recipient addresses, which is how every in-process demo
     #: works and is why receiving needed a design of its own.
     output_notes: tuple = field(default=(), repr=False)
+    #: One detection tag per output, in the same order.  Three bytes each, and
+    #: bound into the binding scalar like the openings beside them — a tag an
+    #: attacker could rewrite would let it redirect somebody's *scan*, which is
+    #: not theft but is a way to make a payment invisible to its recipient.
+    output_tags: tuple = field(default=(), repr=False)
 
     @property
     def txid(self) -> str:
@@ -103,7 +108,8 @@ class Transaction:
 
 
 def binding_scalar(chain_id: str, version: int, fee: int, input_cms,
-                   output_cms, owner_pubs, output_notes=()) -> int:
+                   output_cms, owner_pubs, output_notes=(),
+                   output_tags=()) -> int:
     """The scalar every part of a transaction is bound to.
 
     Computed from the body alone — never from v — so there is no circularity:
@@ -116,7 +122,8 @@ def binding_scalar(chain_id: str, version: int, fee: int, input_cms,
     """
     return h_field("tx-bind", chain_id, version, fee,
                    list(input_cms), list(output_cms), list(owner_pubs),
-                   [bytes(x).hex() for x in output_notes])
+                   [bytes(x).hex() for x in output_notes],
+                   [bytes(x).hex() for x in output_tags])
 
 
 def sig_message(binding: int) -> bytes:
@@ -179,17 +186,19 @@ def build_transaction(spends, outputs, fee: int, params: ChainParams,
     out_cms = [note_id(note_vector(n, params)) for n in outputs]
     owner_pubs = [s.public_hex for s in signers]
 
-    sealed = ()
+    sealed, tags = (), ()
     if output_addresses is not None:
         if len(output_addresses) != len(outputs):
             raise TxError(f"{len(output_addresses)} addresses for "
                           f"{len(outputs)} outputs")
-        sealed = tuple(encrypt_opening(note, address, cm, params)
-                       for note, address, cm in
-                       zip(outputs, output_addresses, out_cms))
+        pairs = [seal_output(note, address, cm, params)
+                 for note, address, cm in
+                 zip(outputs, output_addresses, out_cms)]
+        sealed = tuple(blob for blob, _ in pairs)
+        tags = tuple(tag for _, tag in pairs)
 
     beta = binding_scalar(chain_id, TX_VERSION, fee, in_cms, out_cms,
-                          owner_pubs, sealed)
+                          owner_pubs, sealed, tags)
 
     ts = tx_system(params, len(in_notes), len(outputs))
     x_base = []
@@ -220,7 +229,7 @@ def build_transaction(spends, outputs, fee: int, params: ChainParams,
 
     return Transaction(version=TX_VERSION, chain_id=chain_id, fee=fee,
                        inputs=tx_inputs, output_cms=tuple(out_cms),
-                       output_notes=sealed,
+                       output_notes=sealed, output_tags=tags,
                        v=tuple(int(a) for a in v), binding=beta, proofs=proofs)
 
 
@@ -259,6 +268,8 @@ def verify_transaction(tx: Transaction, params: ChainParams, *,
         if tx.output_notes and len(tx.output_notes) != m:
             return False, (f"{len(tx.output_notes)} sealed openings for {m} "
                            f"outputs")
+        if tx.output_tags and len(tx.output_tags) != m:
+            return False, f"{len(tx.output_tags)} detection tags for {m} outputs"
         if len(set(tx.output_cms)) != m:
             return False, "duplicate output note"
 
@@ -270,7 +281,7 @@ def verify_transaction(tx: Transaction, params: ChainParams, *,
         # 1. binding scalar recomputed from the body
         beta = binding_scalar(chain_id, tx.version, tx.fee, tx.input_cms,
                               tx.output_cms, [i.owner_pub for i in tx.inputs],
-                              tx.output_notes)
+                              tx.output_notes, tx.output_tags)
         if beta != tx.binding % P:
             return False, "binding scalar does not match the transaction body"
         if v[ts.bind_row] != beta:

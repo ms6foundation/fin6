@@ -322,6 +322,7 @@ part seven relied on, for the same reason.
 | Aggregate-count witnesses | §5 argues they are unsound and does not prove it. Worth an hour from someone who wants to be sure, because if the relaxation *is* binding, the second tree is unnecessary. |
 | Completeness of a scan | Inclusion proofs answer "is this note live"; nothing answers "have I been shown every output in this range". A commitment to the per-block output *count*, checked against the range served, is most of the fix, and it is not designed. |
 | Fuzzy message detection | §9's third row is the only honest answer to the scanning problem and is a design of its own. |
+| Weight is observed, not agreed | Every node assembles a hardened block from whatever stamps have reached it, so two honest nodes at the same tip report *different* cumulative weights. Fork choice is unaffected — it compares branches, and the difference is smaller than one block — but a client must key agreement on the tip, never on the number. Found by running it. |
 | Point-query linkability | `inclusion(cm)` identifies a note to the node serving it. Decoys and position ranges help; nothing is specified. |
 | What a client does with two tips | §7 says weight decides. Nothing implements the comparison, and "the client asked two nodes and they disagreed" has no code path at all. |
 
@@ -395,6 +396,121 @@ spent note live.
 The client reports **two numbers, never one**: proved and unproved. The
 distinction is the only thing it has that a wallet does not, and collapsing it
 into a single balance would give the answer back to the node.
+
+## 14. The four that were left
+
+§12 named eight open items. Four are now closed and one is half closed; what
+follows is what each cost and, where it matters, what it does not buy.
+
+### Metering, and a cheaper no
+
+Two different answers to one sentence. The first is ordering: every reason a
+transaction could be refused anyway — wrong chain, absent input, republished
+nullifier, a shape outside what the chain admits — is now checked *before* the
+proof rather than after it. Nothing new is checked; the checks were simply
+behind the expensive one.
+
+| | |
+|---|---|
+| refusing rubbish, cheaply | **2.1 µs** |
+| refusing it by proof, as before | 25.5 ms |
+| ratio | **12,000×** |
+
+The second is a budget. Every source gets a token bucket, priced by what the
+request makes the node do — a status is 1, an inclusion proof 2, a page of
+outputs 10, a submission 50 — refilling at 20 tokens a second over a 240
+capacity, so a wallet never meets the meter and a flood meets it in about four
+transactions. A seated peer is metered too, generously, because a validator
+that cannot gossip is a validator that cannot vote.
+
+One defect found by running it, and worth recording because it would have been
+invisible in a unit test: keyed on the source address alone, a validator's
+promotion to peer rates handed its budget to **every** client dialling from the
+same host — which on a testnet is all of them, and in production is anyone
+behind the same address as a validator. Peers are now metered under the name
+they claim, everybody else under the address they came from.
+
+### Scan completeness
+
+Two numbers in the header, `utxo_count` and `nf_count`, cumulative — four bytes
+between them. Positions are issued in order and never reused, so the difference
+between the header a client last scanned to and the header it trusts now is
+exactly how many outputs the range produced. Counting them is the check; the
+contiguity test beside it is what makes the count mean anything, because
+otherwise a node could answer a request for *n* rows with *n* copies of one row
+and the arithmetic would still work.
+
+`LightClient.scan` refuses a short answer with the count and a padded one with
+the positions, and it is the first thing here that catches **omission** — the
+attack §00 named and nothing until now could see.
+
+### Detection tags
+
+The address grew a third key: spend, view, and now *detect*. A sender tags each
+output with a truncated hash of a second exchange against it; a client hands a
+node the detection secret and a precision, and the node returns the outputs
+whose tags agree on that many bits. Measured against 4,000 outputs and a
+watcher who owns none of them:
+
+| precision | matched | in practice | in theory |
+|---|---|---|---|
+| 1 bit | 2,023 | 1 in 2.0 | 1 in 2 |
+| 2 bits | 1,002 | 1 in 4.0 | 1 in 4 |
+| 4 bits | 239 | 1 in 16.7 | 1 in 16 |
+| 8 bits | 18 | 1 in 222 | 1 in 256 |
+| 12 bits | 1 | 1 in 4,000 | 1 in 4,096 |
+
+The knob behaves exactly as §09 predicted, at 30.8 µs per output for the node
+doing the sorting. Three bytes on the wire per output, bound into the binding
+scalar beside the ciphertext — rewriting a tag is not theft, but it is a way to
+make a payment invisible to the person it was for, so the proof covers it.
+
+And the caveat, which belongs in the same breath as the number: **the precision
+is a knob the node turns.** It is handed the whole detection secret and asked
+to compare only some of the bits, so this bounds the bandwidth
+cryptographically and the disclosure only behaviourally. Binding it properly
+needs one detection key per tag bit, so a client can hand over the first *p*
+keys and the node is *unable* to compute bit *p*+1. That costs 32 bytes of
+address per bit — at eight bits, a 570-character address against today's 166 —
+and it stays open. What is built is the useful half, said out loud rather than
+implied.
+
+### The adjudicating client
+
+Two changes, one of them forced.
+
+The testnet now hardens. Each node holds the slice of the turn pool dealt to
+it, stamps the drawn turns it owns, and gossips them; the stamps are assembled
+and the block enters history once the threshold is met — usually an epoch or
+two after it was agreed, which is the gap between consensus finality and
+historical finality, made visible instead of hidden.
+
+Building that broke the anchor. A turn used to sign
+`H(block_hash, cumulative_weight, era_root)`, which reads well and cannot
+survive a network: weight is not canonical until every stamp has arrived, so a
+node that assembled a block with six stamps and one that assembled the same
+block with eight disagreed about the anchor of the *next* block, and their
+stamps then verified nowhere. `turn 70: puzzle not solved`, for twenty minutes,
+until the cause was clear. The anchor now signs the branch **height**, which
+consensus fixes before any turn is spent. Nothing is lost: the block hash still
+commits to the parent, and a turn still cannot be moved to another block.
+
+`Adjudicator` then verifies rather than tallies. It rebuilds each node's branch
+in its own `NetworkHistory` and re-runs every check — that the committee is the
+one the draw produces, that each stamp solves its puzzle and opens to the era
+root, that no turn is spent twice on a branch, that the weight claimed is the
+weight of the stamps present. A node's `cumulative` field is never read as
+evidence, only compared with what the client computed.
+
+| | |
+|---|---|
+| verifying a branch | 5.1 ms per block (local: 8 turns, tree height 10) |
+| evidence | 19 KiB of stamps per block; 84 KiB at production width |
+| settlement at a third of the pool | 729 blocks — **four hours**, and a bound, not a probability |
+
+It reports; it does not adopt. Choosing is the caller's, and a client that
+silently switched chains on a fork-choice rule would be doing the thing this
+whole module exists to avoid.
 
 ## Rendered version
 

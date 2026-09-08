@@ -565,7 +565,8 @@ class SoloWorkload:
                 {self.grid_id: child.header.register_root}),
             tiers=1, foundings_root=block.compute_foundings_root(),
             witness_root=shadow.utxo.witness_root,
-            history_root=shadow.history.root)
+            history_root=shadow.history.root,
+            utxo_count=shadow.utxo.size, nf_count=shadow.nullifiers.size)
         return NetworkBlock(header=header, supers=(sup,),
                             foundings=foundings), shadow, "ok"
 
@@ -651,7 +652,8 @@ class SupremeWorkload:
             registers_root=registers_root(roots), tiers=self.tiers,
             foundings_root=block.compute_foundings_root(),
             witness_root=shadow.utxo.witness_root,
-            history_root=shadow.history.root)
+            history_root=shadow.history.root,
+            utxo_count=shadow.utxo.size, nf_count=shadow.nullifiers.size)
         return NetworkBlock(header=header, supers=tuple(ordered),
                             dropped=tuple(f"{i}:{w}" for i, w in dropped),
                             foundings=foundings)
@@ -696,6 +698,9 @@ class SupremeWorkload:
             return False, "witness_root does not match the applied epoch"
         if shadow.history.root != h.history_root:
             return False, "history_root does not match the spine"
+        if (shadow.utxo.size, shadow.nullifiers.size) != (h.utxo_count,
+                                                          h.nf_count):
+            return False, "the counts do not match the applied epoch"
 
         roots = {c.header.grid_id: c.header.register_root
                  for s in block.supers for c in s.children}

@@ -66,6 +66,11 @@ def asset_field(name: str) -> int:
 
 FIELD_BYTES = 32
 NONCE = b"\x00" * 12
+#: How wide a detection tag is on the wire.  Three bytes is enough precision
+#: that a node given the whole detection secret finds your outputs and almost
+#: nothing else, and enough width that a client can ask it to match on far
+#: fewer bits than that.
+TAG_BYTES = 3
 
 
 class NoteCipherError(Exception):
@@ -91,6 +96,55 @@ def _unpack_opening(raw: bytes, owner: int, params):
                 rho=values[2], blinders=tuple(values[3:]))
 
 
+def tag_from_shared(shared: bytes) -> bytes:
+    """The tag both sides compute, from the detection exchange."""
+    return h_bytes("note-tag", shared)[:TAG_BYTES]
+
+
+def detection_tag(private, address) -> bytes:
+    """The sender's side: tag this output to its recipient's detection key.
+
+    What this buys, and what it costs, stated plainly.
+
+    *Buys:* a wallet no longer has to read every ciphertext on the chain to
+    find its own.  It hands a node the detection secret and a precision — how
+    many bits of the tag to match on — and gets back the outputs that match,
+    which is its own plus a 2^-bits share of everybody else's.  At eight bits
+    that is a 256-fold cut in what has to be downloaded and trial-decrypted;
+    part eight measured the alternative at 538 MB a day.
+
+    *Costs:* the node learns that a set of outputs, one of which is probably
+    yours, is worth watching.  The precision is the knob, and the honest
+    caveat is that it is a knob the **node** turns: it is handed the whole
+    detection secret and asked to compare only some of the bits.  A node that
+    ignores the request computes the whole tag and identifies your outputs
+    exactly.  So this construction bounds the *bandwidth* cryptographically
+    and the *disclosure* only behaviourally.
+
+    Binding it properly needs one detection key per tag bit, so that a client
+    can hand over the first p keys and the node is unable to compute bit p+1 —
+    the fuzzy-message-detection construction §09 named.  That costs 32 bytes of
+    address per bit, which at eight bits is a 570-character address, and it
+    remains the open item.  What is here is the useful half of it, said out
+    loud rather than implied.
+    """
+    return tag_from_shared(private.exchange(address.detect_key()))
+
+
+def tag_matches(tag: bytes, other: bytes, bits: int) -> bool:
+    """Do these two tags agree on their first `bits` bits?"""
+    bits = max(0, min(int(bits), 8 * TAG_BYTES))
+    if bits == 0:
+        return True
+    whole, spare = divmod(bits, 8)
+    if tag[:whole] != other[:whole]:
+        return False
+    if not spare:
+        return True
+    mask = (0xFF << (8 - spare)) & 0xFF
+    return (tag[whole] & mask) == (other[whole] & mask)
+
+
 def encrypt_opening(note, address, cm: str, params) -> bytes:
     """Seal this note's opening to its recipient.
 
@@ -112,6 +166,27 @@ def encrypt_opening(note, address, cm: str, params) -> bytes:
     blob = ChaCha20Poly1305(key).encrypt(NONCE, _pack_opening(note, params),
                                          cm.encode())
     return epk + blob
+
+
+def seal_output(note, address, cm: str, params):
+    """(sealed opening, detection tag) for one output.
+
+    One ephemeral key serves both: the ciphertext's exchange is against the
+    viewing key and the tag's against the detection key, so holding the tag
+    tells you nothing about the opening and holding the opening tells you
+    nothing you did not already have.
+    """
+    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+
+    from .keys import ephemeral
+    private, epk = ephemeral()
+    shared = private.exchange(address.view_key())
+    key = h_bytes("note-key", shared, epk, cm)
+    blob = ChaCha20Poly1305(key).encrypt(
+        NONCE, _pack_opening(note, params), cm.encode())
+    tag = (detection_tag(private, address) if address.detect_hex
+           else b"\x00" * TAG_BYTES)
+    return epk + blob, tag
 
 
 def decrypt_opening(blob: bytes, keys, cm: str, params):

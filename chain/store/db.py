@@ -33,7 +33,7 @@ from ..state import ChainState
 from . import codec
 from .undo import UndoRecord, apply_undo
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = (
     "CREATE TABLE IF NOT EXISTS meta("
@@ -45,7 +45,8 @@ SCHEMA = (
     # fine for a testnet and wrong for anything that stays up.
     "CREATE TABLE IF NOT EXISTS utxo("
     "  pos INTEGER PRIMARY KEY, cm TEXT NOT NULL UNIQUE,"
-    "  dead INTEGER NOT NULL DEFAULT 0, height INTEGER, sealed BLOB)",
+    "  dead INTEGER NOT NULL DEFAULT 0, height INTEGER, sealed BLOB,"
+    "  tag BLOB)",
     "CREATE TABLE IF NOT EXISTS nullifier("
     "  pos INTEGER PRIMARY KEY, nf TEXT NOT NULL UNIQUE, height INTEGER)",
     "CREATE TABLE IF NOT EXISTS txblock("
@@ -61,9 +62,12 @@ SCHEMA = (
     "  height INTEGER PRIMARY KEY, hash TEXT NOT NULL UNIQUE, prev TEXT,"
     "  epoch INTEGER, utxo_root TEXT, nf_root TEXT, super_root TEXT,"
     "  registers_root TEXT, blob BLOB, cert BLOB)",
+    # The stamps are kept, not just their weight: a client that has to weigh
+    # two branches has to be able to check the work, and a number a node
+    # reports is not work.
     "CREATE TABLE IF NOT EXISTS hardened("
     "  block_hash TEXT PRIMARY KEY, height INTEGER, prev TEXT, era_id INTEGER,"
-    "  weight TEXT, cumulative TEXT, spent_root TEXT)",
+    "  weight TEXT, cumulative TEXT, spent_root TEXT, stamps BLOB, drawn BLOB)",
     "CREATE TABLE IF NOT EXISTS spent_turn("
     "  era_id INTEGER, leaf_index INTEGER, block_hash TEXT,"
     "  PRIMARY KEY(era_id, leaf_index))",
@@ -150,11 +154,12 @@ class ChainStore:
         dump = state.dump()
         with self._write():
             self.db.executemany(
-                "INSERT INTO utxo(pos,cm,dead) VALUES(?,?,?)",
+                "INSERT INTO utxo(pos,cm,dead,height,sealed,tag) "
+                "VALUES(?,?,?,0,NULL,NULL)",
                 [(i, cm, 1 if i in set(dump["utxo_dead"]) else 0)
                  for i, cm in enumerate(dump["utxo"])])
             self.db.executemany(
-                "INSERT INTO nullifier(pos,nf) VALUES(?,?)",
+                "INSERT INTO nullifier(pos,nf,height) VALUES(?,?,0)",
                 list(enumerate(dump["nullifiers"])))
             self.set_meta("chain_id", dump["chain_id"])
             self.set_meta("height", dump["height"])
@@ -237,12 +242,26 @@ class ChainStore:
         """
         end = int(to) if to is not None else 1 << 62
         rows = self.db.execute(
-            "SELECT height,cm,sealed FROM utxo WHERE height>=? AND height<=? "
+            "SELECT height,cm,sealed,pos FROM utxo WHERE height>=? AND height<=? "
             "ORDER BY height,pos", (int(since), end)).fetchall()
         nfs = self.db.execute(
-            "SELECT height,nf FROM nullifier WHERE height>=? AND height<=? "
+            "SELECT height,nf,pos FROM nullifier WHERE height>=? AND height<=? "
             "ORDER BY height,pos", (int(since), end)).fetchall()
         return _cut_on_height(rows, nfs, int(since), int(limit))
+
+    def tagged(self, since: int = 0, to: int | None = None,
+               limit: int = 8000):
+        """(height, cm, sealed, pos, tag) for a height range, tags included.
+
+        The rows a `tags` query filters.  Deliberately the same rows
+        `outputs` serves, so a client that filters and a client that does not
+        are reading one table and cannot be shown two different chains.
+        """
+        end = int(to) if to is not None else 1 << 62
+        return self.db.execute(
+            "SELECT height,cm,sealed,pos,tag FROM utxo "
+            "WHERE height>=? AND height<=? ORDER BY height,pos LIMIT ?",
+            (int(since), end, int(limit))).fetchall()
 
     def tx_height(self, txid: str):
         row = self.db.execute("SELECT height FROM txblock WHERE txid=?",
@@ -278,8 +297,10 @@ class ChainStore:
             sealed = _sealed_openings(block)
             pos = self._count("utxo")
             self.db.executemany(
-                "INSERT INTO utxo(pos,cm,dead,height,sealed) VALUES(?,?,0,?,?)",
-                [(pos + i, cm, header.height, sealed.get(cm))
+                "INSERT INTO utxo(pos,cm,dead,height,sealed,tag) "
+                "VALUES(?,?,0,?,?,?)",
+                [(pos + i, cm, header.height, sealed.get(cm, (None, None))[0],
+                  sealed.get(cm, (None, None))[1])
                  for i, cm in enumerate(delta.created)])
             pos = self._count("nullifier")
             self.db.executemany(
@@ -311,16 +332,40 @@ class ChainStore:
         """A block entering history is a second, separate durable write."""
         with self._write():
             self.db.execute(
-                "INSERT OR REPLACE INTO hardened(block_hash,height,prev,era_id,"
-                "weight,cumulative,spent_root) VALUES(?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO hardened(block_hash,height,prev,"
+                "era_id,weight,cumulative,spent_root,stamps,drawn) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
                 (hardened.block_hash, hardened.height, hardened.prev_hash,
                  hardened.era_id, str(hardened.weight),
-                 str(hardened.cumulative), str(hardened.spent_root)))
+                 str(hardened.cumulative), str(hardened.spent_root),
+                 codec.encode(list(hardened.stamps)),
+                 codec.encode([int(t) for t in hardened.drawn])))
             self.db.executemany(
                 "INSERT OR IGNORE INTO spent_turn(era_id,leaf_index,block_hash)"
                 " VALUES(?,?,?)",
                 [(hardened.era_id, int(t), hardened.block_hash)
                  for t in hardened.drawn])
+
+    def hardened_range(self, since: int = 1, to: int | None = None,
+                       limit: int = 256):
+        """Hardened blocks in height order, with the stamps that hardened them."""
+        rows = self.db.execute(
+            "SELECT height,block_hash,prev,era_id,weight,cumulative,"
+            "spent_root,stamps,drawn FROM hardened "
+            "WHERE height>=? AND height<=? ORDER BY height LIMIT ?",
+            (int(since), int(to) if to is not None else 1 << 62,
+             int(limit) + 1)).fetchall()
+        more = len(rows) > limit
+        out = []
+        for (height, bh, prev, era_id, weight, cumulative, spent_root,
+             stamps, drawn) in rows[:limit]:
+            out.append({
+                "height": height, "block_hash": bh, "prev": prev,
+                "era_id": era_id, "weight": weight, "cumulative": cumulative,
+                "spent_root": spent_root,
+                "stamps": codec.decode(stamps) if stamps else [],
+                "drawn": codec.decode(drawn) if drawn else []})
+        return out, more
 
     def turn_is_spent(self, era_id: int, leaf_index: int) -> bool:
         return self.db.execute(
@@ -465,12 +510,13 @@ def _undo_load(d: dict) -> UndoRecord:
 
 
 def _sealed_openings(block) -> dict:
-    """cm -> the opening sealed to its recipient, for every output in a block."""
+    """cm -> (sealed opening, detection tag) for every output in a block."""
     out = {}
     for tx in block.transactions():
         blobs = list(tx.output_notes) + [None] * len(tx.output_cms)
-        for cm, blob in zip(tx.output_cms, blobs):
-            out[cm] = blob or None
+        tags = list(tx.output_tags) + [None] * len(tx.output_cms)
+        for cm, blob, tag in zip(tx.output_cms, blobs, tags):
+            out[cm] = (blob or None, tag or None)
     return out
 
 
@@ -483,11 +529,11 @@ def _cut_on_height(outputs, nullifiers, since: int, limit: int):
     """
     if len(outputs) <= limit and len(nullifiers) <= limit:
         return list(outputs), list(nullifiers), None
-    heights = sorted({h for h, *_ in outputs} | {h for h, _ in nullifiers})
+    heights = sorted({h for h, *_ in outputs} | {h for h, *_ in nullifiers})
     cut = heights[0] if heights else since
     for candidate in heights:
         n_out = sum(1 for h, *_ in outputs if h <= candidate)
-        n_nf = sum(1 for h, _ in nullifiers if h <= candidate)
+        n_nf = sum(1 for h, *_ in nullifiers if h <= candidate)
         if max(n_out, n_nf) > limit and candidate != heights[0]:
             break
         cut = candidate

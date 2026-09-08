@@ -70,12 +70,15 @@ class Client:
     def status(self) -> dict:
         return self._ask("status", expect="status_reply")
 
-    def outputs(self, since: int = 0, to: int | None = None) -> dict:
+    def outputs(self, since: int = 0, to: int | None = None,
+                limit: int | None = None) -> dict:
         """Commitments and sealed openings in a height range, plus the
         nullifiers published in it — the two things a wallet scans."""
         payload = {"from": int(since)}
         if to is not None:
             payload["to"] = int(to)
+        if limit is not None:
+            payload["limit"] = int(limit)
         return self._ask("getoutputs", payload, expect="outputs_reply")
 
     def txstatus(self, txid: str) -> dict:
@@ -111,6 +114,52 @@ class Client:
         """A proof that one note is live — the answer part seven could not give."""
         return self._ask("inclusion", {"cm": cm}, expect="inclusion_reply")
 
+    def weight(self, since: int = 1, to: int | None = None,
+               limit: int | None = None) -> dict:
+        """Hardened blocks and the stamps behind them — the appeal court's
+        evidence, and the only question here whose answer is *work*."""
+        payload = {"from": int(since)}
+        if to is not None:
+            payload["to"] = int(to)
+        if limit is not None:
+            payload["limit"] = int(limit)
+        return self._ask("weight", payload, expect="weight_reply")
+
+    def tags(self, detect_secret: str, bits: int = 8, since: int = 0,
+             to: int | None = None, limit: int | None = None) -> dict:
+        """Ask a node to sort the chain's outputs for you.
+
+        `bits` is the precision, and it is the whole trade: at 8 the node
+        returns roughly one output in 256 plus all of yours, so the download
+        falls by that factor and the node learns a set your outputs are hiding
+        in.  Read `notes.detection_tag` before using this — what it bounds
+        cryptographically and what it bounds only by the node's good behaviour
+        are different things.
+        """
+        payload = {"detect": detect_secret, "bits": int(bits),
+                   "from": int(since)}
+        if to is not None:
+            payload["to"] = int(to)
+        if limit is not None:
+            payload["limit"] = int(limit)
+        return self._ask("tags", payload, expect="tags_reply")
+
+    def scan_by_tag(self, wallet, bits: int = 8, since: int | None = None):
+        """Scan with the node doing the sorting.  Returns what it cost."""
+        start = wallet.scanned_to + 1 if since is None else int(since)
+        answer = self.tags(wallet.keys.detection_secret(), bits=bits,
+                           since=start)
+        if answer.get("error"):
+            raise ClientError(answer["error"])
+        rows = tuple(map(tuple, answer["outputs"]))
+        found = wallet.scan(rows)
+        wallet.scanned_to = max(wallet.scanned_to, int(answer["height"]))
+        scanned = int(answer["scanned"]) or 1
+        return {"height": answer["height"], "found": found,
+                "fetched": len(rows), "scanned": scanned,
+                "reduction": scanned / max(1, len(rows)),
+                "bits": answer["bits"]}
+
     def register(self, grid_id: str | None = None) -> dict:
         payload = {} if grid_id is None else {"grid_id": grid_id}
         return self._ask("register", payload, expect="register_reply")
@@ -140,7 +189,7 @@ class Client:
         while True:
             answer = self.outputs(since=since)
             found += wallet.scan(tuple(map(tuple, answer["outputs"])))
-            spent += wallet.reconcile([nf for _, nf in answer["nullifiers"]])
+            spent += wallet.reconcile([row[1] for row in answer["nullifiers"]])
             wallet.scanned_to = max(wallet.scanned_to, int(answer["height"]))
             pages += 1
             # A page ends on a height boundary and says where to resume, so a

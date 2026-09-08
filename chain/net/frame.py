@@ -25,13 +25,18 @@ KINDS = ("hello", "tx", "env", "getblock", "block",
          # what a light client may ask: the spine, and proofs against it
          "params", "params_reply", "tip", "tip_reply",
          "headers", "headers_reply", "ancestry", "ancestry_reply",
-         "inclusion", "inclusion_reply", "register", "register_reply")
+         "inclusion", "inclusion_reply", "register", "register_reply",
+         "tags", "tags_reply", "weight", "weight_reply",
+         # what a node says instead of working
+         "refused",
+         # hardening: one node's stamps on a block every node applied
+         "stamps")
 
 #: Requests a node answers on the asking connection, without the asker ever
 #: having been a peer.  A wallet is not a validator and never becomes one.
 CLIENT_KINDS = frozenset({"status", "getoutputs", "txstatus",
                           "params", "tip", "headers", "ancestry",
-                          "inclusion", "register"})
+                          "inclusion", "register", "tags", "weight"})
 
 
 class FrameError(Exception):

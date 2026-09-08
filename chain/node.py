@@ -25,6 +25,13 @@ def tx_fingerprint(tx: Transaction) -> str:
                  list(int(a) for a in tx.v))
 
 
+#: The shape of a transaction this chain admits at all.  Not a consensus rule
+#: — a block full of legal-but-enormous transactions is still legal — but a
+#: bound on what one submission can make a node do before anything is checked.
+MAX_INPUTS = 16
+MAX_OUTPUTS = 16
+
+
 class Node:
     def __init__(self, node_id: str, signer: Signer, params: ChainParams,
                  state: ChainState, store=None):
@@ -39,6 +46,9 @@ class Node:
         self.store = store
         self.mempool: dict = {}
         self._verified: dict = {}          # txid -> fingerprint
+        self.admitted = 0
+        self.refused = 0
+        self.bad_proofs = 0
         # Reservations held by mempool transactions.  Without these two, a node
         # would happily hold two transactions spending the same note: block
         # building skips the conflict, so the chain stays safe, but the node
@@ -59,17 +69,35 @@ class Node:
 
     # ── mempool ──────────────────────────────────────────────────────────────
 
-    def submit(self, tx: Transaction, backend: str | None = None):
-        """Admit a transaction: full proof check plus state check."""
-        ok, why = verify_transaction(tx, self.params, chain_id=self.chain_id,
-                                     backend=backend)
-        if not ok:
-            return False, why
+    def admissible(self, tx: Transaction):
+        """Everything refusable without touching the proof.  (ok, reason)
+
+        This is the cheap `no` part eight asked for.  A proof costs about 26 ms
+        to check and a set lookup costs microseconds, so every reason a
+        transaction could be refused anyway is applied first — and the
+        expensive check only ever runs on something that would otherwise be
+        worth including.  It does not make flooding free to resist; it makes it
+        three orders of magnitude cheaper, which is the difference between a
+        node that falls over and a node that gets slower.
+
+        Nothing here is a *new* rule.  Each of these checks already existed;
+        they were simply behind the proof.
+        """
+        if tx.chain_id != self.chain_id:
+            return False, f"transaction is for chain {str(tx.chain_id)[:20]}…"
+        if tx.txid in self.mempool:
+            return False, "already in the mempool"
+        if tx.fee < 0:
+            return False, "negative fee"
+        if not tx.inputs or not tx.output_cms:
+            return False, "a transaction spends something and creates something"
+        if len(tx.inputs) > MAX_INPUTS or len(tx.output_cms) > MAX_OUTPUTS:
+            return False, (f"{len(tx.inputs)} inputs and "
+                           f"{len(tx.output_cms)} outputs is outside the "
+                           f"shape this chain admits")
         ok, why = self.state.check_transaction(tx, verify_proof=False)
         if not ok:
             return False, why
-        if tx.txid in self.mempool:
-            return False, "already in the mempool"
         for nf in tx.nullifiers:
             holder = self._reserved_nf.get(nf)
             if holder is not None:
@@ -80,7 +108,22 @@ class Node:
             if holder is not None:
                 return False, (f"conflicts with {holder[:14]}…: note "
                                f"{cm[:14]}… is already being spent")
+        return True, "ok"
+
+    def submit(self, tx: Transaction, backend: str | None = None):
+        """Admit a transaction: cheap checks, then the proof."""
+        ok, why = self.admissible(tx)
+        if not ok:
+            self.refused += 1
+            return False, why
+        ok, why = verify_transaction(tx, self.params, chain_id=self.chain_id,
+                                     backend=backend)
+        if not ok:
+            self.refused += 1
+            self.bad_proofs += 1
+            return False, why
         self.mempool[tx.txid] = tx
+        self.admitted += 1
         self._verified[tx.txid] = tx_fingerprint(tx)
         for nf in tx.nullifiers:
             self._reserved_nf[nf] = tx.txid

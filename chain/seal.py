@@ -402,6 +402,17 @@ class SealAccumulator:
         return self._tree.root
 
     @property
+    def size(self) -> int:
+        """Everything ever added, spent or not.
+
+        The *live* count is `len(self)`; this is the one a header commits,
+        because it is what makes a scan checkable: positions are handed out in
+        order and never reused, so two headers' sizes bound exactly how many
+        outputs the range between them produced.
+        """
+        return len(self.items)
+
+    @property
     def witness_root(self) -> str:
         """The same set, in the shape an outsider can check cheaply."""
         return self._witness.root_hex

@@ -91,14 +91,14 @@ class Wallet:
     # ── learning ─────────────────────────────────────────────────────────────
 
     def scan(self, outputs) -> int:
-        """Take (height, cm, sealed) triples and keep what is ours.
+        """Take (height, cm, sealed[, pos]) rows and keep what is ours.
 
         One X25519 exchange per output, about 30 us — so keeping up with a
         block costs milliseconds and a restore from seed is a walk through the
         whole history, which is the price of not having to back anything up.
         """
         found = 0
-        for height, cm, sealed in outputs:
+        for height, cm, sealed, *rest in outputs:
             self.scanned_to = max(self.scanned_to, int(height))
             if not sealed or cm in self.held:
                 continue
