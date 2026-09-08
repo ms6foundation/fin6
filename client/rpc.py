@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import socket
 
-from .frame import Reader, pack
+from chain.net.frame import Reader, pack
 
 
 class ClientError(Exception):

@@ -1,9 +1,13 @@
-"""The witness tree, the spine, and a client that will not take a node's word.
+"""A client that will not take a node's word.
 
-The interesting tests here are the ones where the node is lying. A light client
-that verifies a happy path is a light client that has not been tested: every
-check in `light.py` exists because some specific lie would otherwise get
-through, and each of those lies is written out below.
+The interesting tests here are the ones where the node is lying. A client that
+verifies a happy path is a client that has not been tested: every check in
+`light.py` exists because some specific lie would otherwise get through, and
+each of those lies is written out below.
+
+The trees these checks open against are tested next door, in
+`chain/tests/test_seal_trees.py` — they belong to the ledger, and a client only
+reads them.
 """
 import dataclasses
 import json
@@ -12,135 +16,16 @@ import shutil
 import tempfile
 import time
 
-from ..genesis import boot, load as load_genesis
-from ..keys import WalletKeys
-from ..light import Adjudicator, LightClient, LightError
-from ..net import supervisor as sv
-from ..net.client import Client, ClientError
-from ..net.frame import CLIENT_KINDS, KINDS
-from ..notes import Note, note_id, note_vector
-from ..seal import (HeaderHistory, SealAccumulator, WitnessTree, leaf_value,
-                    verify_ancestry, verify_witness)
-from ..wallet import Held, Wallet
-
-
-# ── the witness tree ─────────────────────────────────────────────────────────
-
-def test_a_leaf_opens_to_the_root_and_a_wrong_one_does_not():
-    tree = WitnessTree("utxo")
-    for i in range(50):
-        tree.append(f"utxo:cm{i}")
-    proof = tree.path(7)
-    assert verify_witness("utxo:cm7", proof, tree.root)
-    assert not verify_witness("utxo:cm8", proof, tree.root)
-    assert not verify_witness("utxo:cm7", proof, WitnessTree("utxo").root)
-
-
-def test_a_proof_is_about_half_a_kilobyte():
-    """The number the whole second tree exists for: the seal tree's own proof
-    of the same leaf is 80 KiB at this size."""
-    tree = WitnessTree("utxo")
-    for i in range(50_000):
-        tree.append(f"utxo:cm{i}")
-    size = tree.size_bytes(31_337)
-    assert 400 < size < 700, size
-    assert len(tree.path(31_337)["siblings"]) == 16, "one per occupied level"
-
-
-def test_an_update_moves_the_root_and_kills_the_old_proof():
-    tree = WitnessTree("utxo")
-    for i in range(20):
-        tree.append(f"utxo:cm{i}")
-    before, proof = tree.root, tree.path(5)
-    tree.set(5, "utxo:fin6:spent:cm5")
-    assert tree.root != before
-    assert not verify_witness("utxo:cm5", proof, tree.root)
-    assert verify_witness("utxo:fin6:spent:cm5", tree.path(5), tree.root)
-
-
-def test_a_forged_proof_is_refused_rather_than_parsed():
-    tree = WitnessTree("utxo")
-    for i in range(20):
-        tree.append(f"utxo:cm{i}")
-    good = tree.path(3)
-    for bad in ({}, {"pos": 3}, dict(good, present=0),
-                dict(good, siblings=[]), dict(good, pos=4),
-                dict(good, height=-1), dict(good, siblings=["zz"])):
-        assert not verify_witness("utxo:cm3", bad, tree.root), bad
-
-
-# ── the accumulator ──────────────────────────────────────────────────────────
-
-def test_the_two_trees_hold_the_same_leaves():
-    acc = SealAccumulator("utxo")
-    for i in range(40):
-        acc.add(f"nc:{i:064x}")
-    cm = f"nc:{9:064x}"
-    assert verify_witness(leaf_value("utxo", cm), acc.witness_path(cm),
-                          acc.witness_root)
-    rebuilt = SealAccumulator.load("utxo", acc.items, acc.dead)
-    assert rebuilt.witness_root == acc.witness_root
-    assert rebuilt.root == acc.root, "and the seal root, from the same dump"
-
-
-def test_a_spent_note_has_no_proof_that_it_is_live():
-    """§3 of the design: unspent is a positive statement, and this is it."""
-    acc = SealAccumulator("utxo")
-    for i in range(40):
-        acc.add(f"nc:{i:064x}")
-    cm = f"nc:{9:064x}"
-    before = acc.witness_path(cm)
-    acc.spend(cm)
-    assert acc.witness_path(cm) is None
-    assert not verify_witness(leaf_value("utxo", cm), before, acc.witness_root)
-    assert f"nc:{8:064x}" in acc, "and its neighbours are untouched"
-
-
-def test_a_clone_copies_the_witness_tree_rather_than_rebuilding_it():
-    acc = SealAccumulator("utxo")
-    for i in range(200):
-        acc.add(f"nc:{i:064x}")
-    twin = acc.clone()
-    assert twin.witness_root == acc.witness_root
-    twin.add("nc:" + "ff" * 32)
-    assert twin.witness_root != acc.witness_root, "and they share nothing"
-
-
-# ── the spine ────────────────────────────────────────────────────────────────
-
-def test_ancestry_is_one_path_however_long_the_gap():
-    spine = HeaderHistory(f"nb:{i:064x}" for i in range(1, 4001))
-    proof = spine.proof(1)
-    assert verify_ancestry(f"nb:{1:064x}", proof, spine.root)
-    assert 32 * len(proof["siblings"]) + 8 < 500, "4,000 blocks, one path"
-
-
-def test_a_prefix_root_is_the_root_that_prefix_had():
-    spine, roots = HeaderHistory(), {}
-    for i in range(1, 60):
-        roots[i - 1] = spine.root
-        spine.append(f"nb:{i:064x}")
-    assert all(spine.root_at(k) == r for k, r in roots.items())
-    for cut in (1, 2, 17, 32, 33, 59):
-        for target in (1, cut):
-            proof = spine.proof(target, under=cut)
-            assert verify_ancestry(proof["block_hash"], proof,
-                                   spine.root_at(cut)), (target, cut)
-
-
-def test_a_proof_under_one_root_does_not_verify_under_another():
-    spine = HeaderHistory(f"nb:{i:064x}" for i in range(1, 60))
-    proof = spine.proof(3, under=10)
-    assert not verify_ancestry(proof["block_hash"], proof, spine.root_at(11))
-    assert not verify_ancestry(f"nb:{4:064x}", proof, spine.root_at(10))
-
-
-def test_a_rolled_back_block_leaves_the_spine():
-    spine = HeaderHistory(f"nb:{i:064x}" for i in range(1, 21))
-    at_ten = spine.root_at(10)
-    spine.truncate_to(10)
-    assert len(spine) == 10 and spine.root == at_ten
-    assert spine.hash_at(11) is None
+from chain.genesis import boot, load as load_genesis
+from chain.net import supervisor as sv
+from chain.net.frame import CLIENT_KINDS, KINDS
+from chain.notes import Note, note_id, note_vector
+from chain.seal import leaf_value
+from client.adjudicate import Adjudicator
+from client.light import LightClient, LightError
+from client.rpc import Client, ClientError
+from wallet.keys import WalletKeys
+from wallet.store import Held, Wallet
 
 
 # ── the wire ─────────────────────────────────────────────────────────────────
@@ -301,102 +186,11 @@ def _refuses(light, fragment):
     raise AssertionError(f"accepted a tip it should have refused ({fragment})")
 
 
-# ── detection tags ───────────────────────────────────────────────────────────
-
-def test_the_address_carries_a_third_key_and_still_round_trips():
-    from ..keys import Address
-    keys = WalletKeys.from_phrase("bob")
-    text = keys.address.encode()
-    assert Address.decode(text) == keys.address
-    assert keys.address.detect_hex not in ("", keys.address.view_hex)
-    assert keys.detection_secret() != keys.viewing_secret(), \
-        "handing over the detection key must not hand over the viewing key"
-
-
-def test_only_the_recipient_recomputes_the_tag():
-    from ..notes import Note, note_id, note_vector, seal_output, tag_from_shared
-    import dataclasses as _dc
-    from ..params import DEMO
-    params = _dc.replace(DEMO)
-    bob, carol = WalletKeys.from_phrase("bob"), WalletKeys.from_phrase("carol")
-    note = Note.create(250, bob.address.spend_hex, params)
-    cm = note_id(note_vector(note, params))
-    sealed, tag = seal_output(note, bob.address, cm, params)
-    epk = sealed[:32]
-    assert tag_from_shared(bob.detect_exchange(epk)) == tag
-    assert tag_from_shared(carol.detect_exchange(epk)) != tag
-
-
-def test_precision_is_the_knob_and_it_behaves_like_one():
-    """At p bits a stranger matches about one output in 2^p.
-
-    Measured rather than asserted from theory, because the whole value of the
-    tag is this ratio and a construction that quietly got it wrong would still
-    look like it worked.
-    """
-    from ..notes import Note, note_id, note_vector, seal_output
-    from ..notes import tag_from_shared, tag_matches
-    import dataclasses as _dc
-    from ..params import DEMO
-    params = _dc.replace(DEMO)
-    watcher = WalletKeys.from_phrase("watcher")
-    tags, epks = [], []
-    for i in range(600):
-        who = WalletKeys.from_phrase(f"stranger-{i}")
-        note = Note.create(1, who.address.spend_hex, params)
-        cm = note_id(note_vector(note, params))
-        sealed, tag = seal_output(note, who.address, cm, params)
-        tags.append(tag)
-        epks.append(sealed[:32])
-    for bits, low, high in ((1, 0.35, 0.65), (4, 0.02, 0.12)):
-        hits = sum(
-            tag_matches(tag, tag_from_shared(watcher.detect_exchange(epk)),
-                        bits)
-            for tag, epk in zip(tags, epks))
-        share = hits / len(tags)
-        assert low <= share <= high, (bits, share)
-
-
-def test_the_tags_are_bound_into_the_transaction():
-    """Rewriting a tag is not theft; it is a way to make a payment invisible
-    to the person it was for.  So the proof covers it."""
-    import dataclasses as _dc
-    from ..params import DEMO
-    from ..transaction import verify_transaction
-    params = _dc.replace(DEMO, proof_backends=("mpcith",),
-                         default_backend="mpcith",
-                         proof_policy=(("local", "mpcith"),))
-    chain = "fin6:" + "ab" * 32
-    alice = Wallet(WalletKeys.from_phrase("alice"), params, chain_id=chain)
-    note = Note.create(1000, alice.address.spend_hex, params)
-    cm = note_id(note_vector(note, params))
-    alice.held[cm] = Held(note=note, cm=cm, height=1)
-    tx, _ = alice.send(WalletKeys.from_phrase("bob").address, 250, fee=5)
-    assert len(tx.output_tags) == len(tx.output_cms)
-    assert verify_transaction(tx, params, chain_id=chain)[0]
-    swapped = dataclasses.replace(tx,
-                                  output_tags=tuple(reversed(tx.output_tags)))
-    assert not verify_transaction(swapped, params, chain_id=chain)[0]
-    assert not verify_transaction(
-        dataclasses.replace(tx, output_tags=()), params, chain_id=chain)[0]
-
-
 # ── scan completeness ────────────────────────────────────────────────────────
-
-def test_the_header_counts_what_the_chain_has_produced():
-    """Two numbers, and they are what make a scan checkable."""
-    from ..seal import SealAccumulator
-    acc = SealAccumulator("utxo")
-    for i in range(10):
-        acc.add(f"nc:{i:064x}")
-    acc.spend(f"nc:{3:064x}")
-    assert acc.size == 10, "size counts everything ever issued"
-    assert len(acc) == 9, "length counts what is live"
-
 
 def test_a_short_answer_is_caught_by_the_count():
     outs = [(1, "cm", b"", i) for i in range(5)]
-    from ..light import _spans
+    from client.light import _spans
     assert _spans(outs, 0, 5, "output")[0]
     ok, why = _spans(outs[:-1], 0, 5, "output")
     assert not ok and "4 outputs" in why, why
@@ -405,7 +199,7 @@ def test_a_short_answer_is_caught_by_the_count():
 def test_a_padded_answer_is_caught_by_contiguity():
     """Without the position check a node could answer a request for five rows
     with five copies of one row and the count would still add up."""
-    from ..light import _spans
+    from client.light import _spans
     padded = [(1, "cm", b"", 0)] * 5
     ok, why = _spans(padded, 0, 5, "output")
     assert not ok and "not contiguous" in why, why
@@ -416,8 +210,8 @@ def test_a_padded_answer_is_caught_by_contiguity():
 # ── the adjudicating client ──────────────────────────────────────────────────
 
 def _era_and_history(turns=64, width=4, bits=8):
-    from ..hardening.params import HardeningParams
-    from ..hardening.pool import Era
+    from chain.hardening.params import HardeningParams
+    from chain.hardening.pool import Era
     params = HardeningParams(name="test", turns=turns, era_seconds=600,
                              width=width, difficulty_bits=bits, tree_height=8)
     era = Era(0, b"\x07" * 32, params.tree_height, params.turns)
@@ -434,8 +228,8 @@ class _Blk:
 
 def test_the_adjudicator_prefers_the_branch_with_more_work():
     """Two tips, two certificates, and only work can settle it."""
-    from ..hardening.history import NetworkHistory
-    from ..light import Adjudicator, Branch
+    from chain.hardening.history import NetworkHistory
+    from client.adjudicate import Adjudicator, Branch
     era, params = _era_and_history()
     heavy = NetworkHistory(era.spec, params)
     light_ = NetworkHistory(era.spec, params)
@@ -463,8 +257,8 @@ def test_the_adjudicator_prefers_the_branch_with_more_work():
 def test_the_adjudicator_refuses_a_branch_it_cannot_check():
     """A weight a node reports is not work; the stamps are."""
     import dataclasses as _dc
-    from ..hardening.history import NetworkHistory
-    from ..light import Adjudicator
+    from chain.hardening.history import NetworkHistory
+    from client.adjudicate import Adjudicator
     era, params = _era_and_history()
     real = NetworkHistory(era.spec, params)
     hb = real.harden(_Blk("a"), era)
@@ -505,7 +299,7 @@ def test_the_adjudicator_refuses_a_branch_it_cannot_check():
 
 
 def test_settlement_depth_is_a_bound_not_a_convention():
-    from ..light import Adjudicator
+    from client.adjudicate import Adjudicator
     _, params = _era_and_history(turns=64, width=4)
     adj = Adjudicator.__new__(Adjudicator)
     adj.params, adj.spec, adj.doc = params, None, None

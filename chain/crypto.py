@@ -19,6 +19,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey, Ed25519PublicKey)
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 from mq.ms6 import P
 
@@ -117,3 +118,53 @@ def verify_sig(public_hex: str, message: bytes, signature_hex: str) -> bool:
 def owner_field(public_hex: str) -> int:
     """Map a public key to the field element stored in a note's owner slot."""
     return h_field("owner", public_hex)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Seed derivations
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# One secret, three keys, and the formula for getting from one to the other
+# lives here rather than in `wallet/` — because the ledger has to derive a
+# genesis holder's spend key too, and a chain that reached up into the wallet
+# package to do it would be a dependency pointing the wrong way.  What `wallet/`
+# adds on top is the *object*: an address, an encoding, a note store.  What is
+# here is only the arithmetic, so both sides derive the same key and neither
+# owns the other.
+
+def seed_from_phrase(phrase: str) -> bytes:
+    """A reproducible seed from a human string.
+
+    For testnets, genesis holders and tests.  A deployment wants real entropy
+    and a real mnemonic, and this is the seam where one drops in.
+    """
+    return h_bytes("wallet-seed", phrase)
+
+
+def spend_signer(seed: bytes) -> "Signer":
+    """The Ed25519 key that authorises a spend.
+
+    Domain-separated from the other two, so the derivations cannot be confused
+    for one another even if one is ever reused elsewhere.
+    """
+    return Signer.from_seed("wallet-spend:" + bytes(seed).hex())
+
+
+def view_key(seed: bytes) -> X25519PrivateKey:
+    """The X25519 key that opens the notes sent to this seed."""
+    return X25519PrivateKey.from_private_bytes(h_bytes("wallet-view", seed))
+
+
+def detect_key(seed: bytes) -> X25519PrivateKey:
+    """The X25519 key that only sorts.  Safe to hand to whoever scans for you."""
+    return X25519PrivateKey.from_private_bytes(h_bytes("wallet-detect", seed))
+
+
+def ephemeral():
+    """A fresh X25519 keypair for one output."""
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey  # noqa
+    private = X25519PrivateKey.generate()
+    public = private.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw)
+    return private, public

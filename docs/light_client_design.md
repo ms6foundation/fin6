@@ -296,15 +296,15 @@ documentation rather than leaving to be discovered.
 
 | module | change |
 |---|---|
-| `seal.py` | *witness tree* — a binary Merkle tree beside the seal tree, `path(pos)` and `verify_path` |
-| `tiered.py` | `NetworkBlockHeader` gains `witness_root` and `history_root` |
-| `state.py` | maintain the witness tree with the UTXO accumulator; the tombstone form is already there |
-| `net/frame.py` | seven more names in `CLIENT_KINDS` |
-| `net/node.py` | serve them; move the output index out of RAM and into the store |
-| `net/client.py` | `headers`, `ancestry`, `inclusion`, `register`, `weight`, `tags`, and a cursor on `getoutputs` |
-| `light.py` | *new* — the following client: a header spine, a register view, and a verified balance |
-| `hardening/history.py` | serve weights and stamps for a range; nothing else moves |
-| `cli.py` | `fin6 light sync` / `fin6 light verify` |
+| `chain/seal.py` | *witness tree* — a binary Merkle tree beside the seal tree, `path(pos)` and `verify_path` |
+| `chain/tiered.py` | `NetworkBlockHeader` gains `witness_root` and `history_root` |
+| `chain/state.py` | maintain the witness tree with the UTXO accumulator; the tombstone form is already there |
+| `chain/net/frame.py` | seven more names in `CLIENT_KINDS` |
+| `chain/net/node.py` | serve them; move the output index out of RAM and into the store |
+| `client/rpc.py` | `headers`, `ancestry`, `inclusion`, `register`, `weight`, `tags`, and a cursor on `getoutputs` |
+| `client/light.py` | *new* — the following client: a header spine, a register view, and a verified balance |
+| `chain/hardening/history.py` | serve weights and stamps for a range; nothing else moves |
+| `fin6/cli.py` | `fin6 light sync` / `fin6 light verify` / `fin6 light adjudicate` |
 
 Note what does not move: the proof stack, the ceremony, the tiers. A light client
 is a reader, and the ledger does not need to know it exists — the same property

@@ -218,14 +218,14 @@ spinner.
 
 | module | change |
 |---|---|
-| `notes.py` | encrypt / decrypt an opening; the detection tag if it is ever needed |
-| `keys.py` | *new* — one seed, a spend key and a viewing key, and the address encoding |
-| `transaction.py` | outputs carry `(cm, ciphertext)`; `build_transaction` encrypts to the recipient address |
-| `wallet.py` | *new* — the note store, scanning, spend detection, balance, coin selection |
-| `net/client.py` | *new* — `status`, `outputs`, `txstatus`, `submit`, and `sync` |
-| `net/node.py` | serve those to clients, and rate-limit submissions |
-| `store/archive.py` | ciphertexts ride with the bodies and are pruned with them |
-| `cli.py` | `fin6 wallet new / address / balance / send / history` |
+| `wallet/sealing.py` | encrypt / decrypt an opening, and the detection tag |
+| `wallet/keys.py` | *new* — one seed, three keys, and the address encoding |
+| `chain/transaction.py` | outputs carry `(cm, ciphertext, tag)`; `build_transaction` is *handed* them already sealed — the ledger binds them and does not make them |
+| `wallet/store.py` | *new* — the note store, scanning, spend detection, balance, coin selection |
+| `client/rpc.py` | *new* — `status`, `outputs`, `txstatus`, `submit`, and `sync` |
+| `chain/net/node.py` | serve those to clients, and rate-limit submissions |
+| `chain/store/archive.py` | ciphertexts ride with the bodies and are pruned with them |
+| `fin6/cli.py` | `fin6 wallet new / address / balance / send / sync` |
 | `mq/ms6/core.py` | nothing — but `sbs` becomes a parameter with a second constituency (§7) |
 
 `state.py`, `ceremony.py`, `tiers.py` and the proof stack do not move. The

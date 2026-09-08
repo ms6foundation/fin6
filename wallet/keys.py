@@ -26,7 +26,8 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.x25519 import (
     X25519PrivateKey, X25519PublicKey)
 
-from .crypto import Signer, h_bytes
+from chain.crypto import (Signer, detect_key, ephemeral, h_bytes, seed_from_phrase,
+                          spend_signer, view_key)
 
 PREFIX = "fin6"
 ADDRESS_VERSION = 2
@@ -115,17 +116,17 @@ class WalletKeys:
         if len(seed) < 16:
             raise ValueError("a seed needs at least 16 bytes")
         self.seed = bytes(seed)
-        # Domain-separated so the two keys cannot be confused for one another
-        # even if a derivation is ever reused elsewhere.
-        self.signer = Signer.from_seed("wallet-spend:" + self.seed.hex())
-        self._view = X25519PrivateKey.from_private_bytes(
-            h_bytes("wallet-view", self.seed))
-        # A third derivation, separate again, because the detection secret is
-        # the one a user may hand to an untrusted server.  Sharing it must not
-        # imply sharing the viewing key, or the tunable leak of §09 collapses
-        # into total disclosure.
-        self._detect = X25519PrivateKey.from_private_bytes(
-            h_bytes("wallet-detect", self.seed))
+        # The three derivations live in `chain.crypto`, not here: the ledger
+        # has to derive a genesis holder's spend key too, and a chain reaching
+        # up into the wallet package to do it would point the dependency the
+        # wrong way.  What this class adds is the object — an address, an
+        # encoding, and the two exchanges below.
+        self.signer = spend_signer(self.seed)
+        self._view = view_key(self.seed)
+        # Separate again, because the detection secret is the one a user may
+        # hand to an untrusted server.  Sharing it must not imply sharing the
+        # viewing key, or the tunable leak collapses into total disclosure.
+        self._detect = detect_key(self.seed)
 
     # ── construction ─────────────────────────────────────────────────────────
 
@@ -133,7 +134,7 @@ class WalletKeys:
     def from_phrase(cls, phrase: str) -> "WalletKeys":
         """A reproducible wallet from a human string.  For testnets and tests;
         a deployment wants real entropy and a real mnemonic."""
-        return cls(h_bytes("wallet-seed", phrase))
+        return cls(seed_from_phrase(phrase))
 
     @classmethod
     def generate(cls) -> "WalletKeys":
@@ -196,10 +197,6 @@ class WalletKeys:
         return f"WalletKeys({self.address.short()})"
 
 
-def ephemeral():
-    """A fresh X25519 keypair for one output."""
-    private = X25519PrivateKey.generate()
-    public = private.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw)
-    return private, public
+#: A fresh X25519 keypair for one output.  Defined in `chain.crypto` beside the
+#: other derivations and re-exported here, where a reader will look for it.
+__all__ = ["Address", "AddressError", "WalletKeys", "ephemeral"]

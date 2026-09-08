@@ -24,12 +24,13 @@ import json
 import os
 from dataclasses import dataclass
 
-from .crypto import Signer
+from chain.crypto import Signer
 from .keys import Address, WalletKeys
-from .notes import Note, decrypt_opening, note_id, note_vector, nullifier_id
-from .notes import nullifier_value
-from .params import ChainParams
-from .transaction import TxError, build_transaction
+from .sealing import decrypt_opening, seal_output
+from chain.notes import Note, note_id, note_vector, nullifier_id
+from chain.notes import nullifier_value
+from chain.params import ChainParams
+from chain.transaction import TxError, build_transaction
 
 STORE_VERSION = 1
 
@@ -167,10 +168,17 @@ class Wallet:
                             asset=held.note.asset),
                 Note.create(change, self.address.spend_hex, self.params,
                             asset=held.note.asset)]
-        addresses = [to, self.address]
+        # Sealed here, not in `build_transaction`: sealing needs an address and
+        # the ledger has no business knowing what an address is.  What the
+        # ledger does is bind what it is handed.
+        cms = [note_id(note_vector(n, self.params)) for n in outs]
+        pairs = [seal_output(note, address, cm, self.params)
+                 for note, address, cm in zip(outs, [to, self.address], cms)]
         tx = build_transaction([(held.note, self.signer)], outs, fee,
                                self.params, chain_id=self.chain_id,
-                               backends=backends, output_addresses=addresses)
+                               backends=backends,
+                               sealed=[blob for blob, _ in pairs],
+                               tags=[tag for _, tag in pairs])
         return tx, outs[1]
 
     # ── persistence ──────────────────────────────────────────────────────────
@@ -208,7 +216,7 @@ class Wallet:
         if raw["address"] != wallet.address.encode():
             raise WalletError("this note store belongs to a different seed")
         wallet.scanned_to = raw.get("scanned_to", 0)
-        from .crypto import owner_field
+        from chain.crypto import owner_field
         owner = owner_field(wallet.address.spend_hex)
         for entry in raw["notes"]:
             note = Note(value=entry["value"], asset=int(entry["asset"]),

@@ -15,8 +15,16 @@ hardened into history by a finite pool of single-use turns.
 |---|---|
 | `mq/` | the MQ-hardened batched commitment — `ms6` (prover) and `vs6` (independent verifier) |
 | `examples/` | account-based ledger and sanctions-screening demos built on `mq/` |
-| `chain/` | the private chain: ~13,200 lines, 304 tests |
+| `chain/` | the ledger and consensus — what a validator needs, and nothing else |
+| `wallet/` | one seed, the notes it can spend, and the sealing that makes them findable |
+| `client/` | what talks to a node without being one: ask, follow, adjudicate |
+| `fin6/` | the command line, and the runner for all three suites |
 | `docs/` | the eight design sketches the chain was built from |
+
+The three packages depend one way only — `wallet → chain`, `client → chain`,
+and nothing depends on `fin6`. The ledger does not know that anyone is
+watching it, which is the property every part of this was designed around and
+now the directory layout says so too.
 
 ## Quick start
 
@@ -30,30 +38,31 @@ python3 -m chain.demo_hardening   # consensus through to hardened history
 python3 -m chain.demo_archive     # what an archive costs, and where it goes
 python3 -m chain.demo_persistence # stop the chain, start it again
 python3 -m chain.demo_genesis     # launch the seven-node network from its config
-python3 -m chain.demo_wallet      # pay a stranger across seven node processes
-python3 -m chain.demo_light       # prove a balance instead of being told it
+python3 -m wallet.demo            # pay a stranger across seven node processes
+python3 -m client.demo            # prove a balance instead of being told it
 
 # and a real network of seven processes, over TCP:
-python3 -m chain.cli genesis new /tmp/fin6-testnet --nodes 7
-python3 -m chain.cli net up       /tmp/fin6-testnet     # ctrl-c to stop
-python3 -m chain.cli net status   /tmp/fin6-testnet     # exits non-zero on disagreement
-python3 -m chain.cli tx send      /tmp/fin6-testnet --amount 100
+python3 -m fin6 genesis new /tmp/fin6-testnet --nodes 7
+python3 -m fin6 net up       /tmp/fin6-testnet     # ctrl-c to stop
+python3 -m fin6 net status   /tmp/fin6-testnet     # exits non-zero on disagreement
+python3 -m fin6 tx send      /tmp/fin6-testnet --amount 100
 
 # and a wallet, which holds one seed and finds its money by scanning:
-python3 -m chain.cli wallet import-genesis /tmp/fin6-testnet --holder treasury
-python3 -m chain.cli wallet new     /tmp/fin6-testnet --name bob
-python3 -m chain.cli wallet send    /tmp/fin6-testnet --name treasury \
-        --to "$(python3 -m chain.cli wallet address /tmp/fin6-testnet --name bob)" \
+python3 -m fin6 wallet import-genesis /tmp/fin6-testnet --holder treasury
+python3 -m fin6 wallet new     /tmp/fin6-testnet --name bob
+python3 -m fin6 wallet send    /tmp/fin6-testnet --name treasury \
+        --to "$(python3 -m fin6 wallet address /tmp/fin6-testnet --name bob)" \
         --amount 250
-python3 -m chain.cli wallet sync    /tmp/fin6-testnet --name bob
-python3 -m chain.cli wallet balance /tmp/fin6-testnet --name bob
+python3 -m fin6 wallet sync    /tmp/fin6-testnet --name bob
+python3 -m fin6 wallet balance /tmp/fin6-testnet --name bob
 
 # and a client that checks rather than believes:
-python3 -m chain.cli light sync   /tmp/fin6-testnet
-python3 -m chain.cli light verify /tmp/fin6-testnet --name bob
-python3 -m chain.cli light adjudicate /tmp/fin6-testnet   # weigh the branches
+python3 -m fin6 light sync   /tmp/fin6-testnet
+python3 -m fin6 light verify /tmp/fin6-testnet --name bob
+python3 -m fin6 light adjudicate /tmp/fin6-testnet   # weigh the branches
 
-python3 -m chain.tests.run_all    # 304 tests, ~90 s
+python3 -m fin6.tests             # 304 tests, ~90 s   (or one package at a time:
+                                  #   python3 -m chain.tests.run_all)
 ```
 
 ```python

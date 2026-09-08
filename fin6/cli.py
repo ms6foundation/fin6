@@ -19,9 +19,9 @@ import os
 import sys
 import time
 
-from . import genesis as genesis_mod
-from .net import supervisor as sv
-from .net.peer import ask
+from chain import genesis as genesis_mod
+from chain.net import supervisor as sv
+from chain.net.peer import ask
 
 
 def _status(root, exit_on_disagreement=True):
@@ -87,8 +87,8 @@ def cmd_tx_send(args):
     `bootstrap_world`), which is what makes a testnet wallet possible at all
     and is exactly what the genesis mint of design §2 would replace.
     """
-    from .network import transfer
-    from .net.frame import pack
+    from chain.network import transfer
+    from chain.net.frame import pack
     import socket
 
     root, net_cfg, doc = sv.load(args.root)
@@ -119,8 +119,8 @@ def _wallet_paths(root, name):
 
 
 def _open_wallet(root, name, doc, params):
-    from .keys import WalletKeys
-    from .wallet import Wallet
+    from wallet.keys import WalletKeys
+    from wallet.store import Wallet
     seed_path, notes_path = _wallet_paths(root, name)
     if not os.path.exists(seed_path):
         raise SystemExit(f"no wallet {name!r} — try: fin6 wallet new {root} "
@@ -133,14 +133,14 @@ def _open_wallet(root, name, doc, params):
 
 
 def _client_for(root, net_cfg, doc, node_id=None):
-    from .net.client import Client
+    from client.rpc import Client
     target = node_id or sorted(net_cfg["nodes"])[0]
     host, port = net_cfg["nodes"][target]["listen"]
     return Client(host, port, doc.chain_id), target
 
 
 def cmd_wallet_new(args):
-    from .keys import WalletKeys
+    from wallet.keys import WalletKeys
     seed_path, notes_path = _wallet_paths(args.root, args.name)
     if os.path.exists(seed_path) and not args.force:
         raise SystemExit(f"{seed_path} exists; pass --force to replace it")
@@ -202,7 +202,7 @@ def cmd_wallet_balance(args):
 
 
 def cmd_wallet_send(args):
-    from .keys import Address
+    from wallet.keys import Address
     root, net_cfg, doc = sv.load(args.root)
     params = doc.chain_params()
     wallet, notes_path = _open_wallet(root, args.name, doc, params)
@@ -228,9 +228,9 @@ def cmd_wallet_import_genesis(args):
     the document — see `bootstrap_world` — which is what makes this possible
     and is exactly why the genesis mint of design §2 is the real answer.
     """
-    from .keys import WalletKeys
-    from .notes import note_id, note_vector
-    from .wallet import Held, Wallet
+    from wallet.keys import WalletKeys
+    from chain.notes import note_id, note_vector
+    from wallet.store import Held, Wallet
     root, net_cfg, doc = sv.load(args.root)
     params = doc.chain_params()
     world, holders = genesis_mod.boot(doc)
@@ -262,7 +262,7 @@ def _light_path(root):
 
 def cmd_light_sync(args):
     """Take one verified step along the spine."""
-    from .light import LightClient
+    from client.light import LightClient
     root, net_cfg, doc = sv.load(args.root)
     client, target = _client_for(root, net_cfg, doc, args.node)
     light = LightClient.load(_light_path(root), doc, client)
@@ -283,7 +283,7 @@ def cmd_light_sync(args):
 
 def cmd_light_verify(args):
     """Prove every note a wallet believes it holds."""
-    from .light import LightClient
+    from client.light import LightClient
     root, net_cfg, doc = sv.load(args.root)
     params = doc.chain_params()
     wallet, _ = _open_wallet(root, args.name, doc, params)
@@ -304,7 +304,7 @@ def cmd_light_verify(args):
 
 def cmd_light_adjudicate(args):
     """Ask every node, check the work, and say what the work says."""
-    from .light import Adjudicator
+    from client.adjudicate import Adjudicator
     root, net_cfg, doc = sv.load(args.root)
     adj = Adjudicator(doc)
     sources = {nid: _client(spec, doc)
@@ -326,7 +326,7 @@ def cmd_light_adjudicate(args):
 
 
 def _client(spec, doc):
-    from .net.client import Client
+    from client.rpc import Client
     host, port = spec["listen"]
     return Client(host, port, doc.chain_id)
 

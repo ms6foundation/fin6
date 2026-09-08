@@ -39,7 +39,7 @@ from mq.vs6 import verify_hidden as vs6_verify_hidden
 
 from .crypto import h_bytes, h_field, h_hex, owner_field, verify_sig
 from .proofs import get_backend
-from .notes import (Note, note_id, note_vector, nullifier_id, seal_output)
+from .notes import Note, note_id, note_vector, nullifier_id
 from .params import ChainParams
 from .txsystem import tx_system
 
@@ -136,16 +136,20 @@ def sig_message(binding: int) -> bytes:
 
 def build_transaction(spends, outputs, fee: int, params: ChainParams,
                       chain_id: str | None = None,
-                      backends=None, output_addresses=None) -> Transaction:
+                      backends=None, sealed=(), tags=()) -> Transaction:
     """Build and prove a transaction.
 
     spends   : [(Note, Signer)] — the notes to consume and the keys that own them
     outputs  : [Note]           — the notes to create
     fee      : public, in the same asset
-    output_addresses : one fin6 address per output, or None.  Given them, each
-               output carries its opening sealed to its recipient, which is
-               what lets the recipient find it at all — and what lets the
-               sender rebuild its own change from a seed.
+    sealed   : one sealed opening per output, or ().  Produced by
+               `wallet.sealing.seal_output` and passed in already made, because
+               sealing needs a recipient *address* and the ledger has no
+               business knowing what an address is.  What the ledger does do is
+               bind them: the openings and tags go into the binding scalar, so
+               an attacker who swaps two of them breaks the proof rather than
+               redirecting a payment.
+    tags     : one detection tag per output, or ().  Same reasoning.
     backends : which proof systems to prove the statement in.  Only the spender
                holds the witness, so only the spender can prove; a higher tier
                can re-verify but never re-prove.  Proving in more than one system
@@ -186,16 +190,12 @@ def build_transaction(spends, outputs, fee: int, params: ChainParams,
     out_cms = [note_id(note_vector(n, params)) for n in outputs]
     owner_pubs = [s.public_hex for s in signers]
 
-    sealed, tags = (), ()
-    if output_addresses is not None:
-        if len(output_addresses) != len(outputs):
-            raise TxError(f"{len(output_addresses)} addresses for "
-                          f"{len(outputs)} outputs")
-        pairs = [seal_output(note, address, cm, params)
-                 for note, address, cm in
-                 zip(outputs, output_addresses, out_cms)]
-        sealed = tuple(blob for blob, _ in pairs)
-        tags = tuple(tag for _, tag in pairs)
+    sealed, tags = tuple(sealed), tuple(tags)
+    if sealed and len(sealed) != len(outputs):
+        raise TxError(f"{len(sealed)} sealed openings for {len(outputs)} "
+                      f"outputs")
+    if tags and len(tags) != len(outputs):
+        raise TxError(f"{len(tags)} detection tags for {len(outputs)} outputs")
 
     beta = binding_scalar(chain_id, TX_VERSION, fee, in_cms, out_cms,
                           owner_pubs, sealed, tags)

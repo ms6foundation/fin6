@@ -15,15 +15,16 @@ import shutil
 import tempfile
 import time
 
-from ..genesis import boot, load as load_genesis
-from ..keys import Address, AddressError, WalletKeys, ephemeral
-from ..net import supervisor as sv
-from ..net.client import Client, ClientError
-from ..notes import (Note, decrypt_opening, encrypt_opening, note_id,
-                     note_vector)
-from ..params import DEMO
-from ..transaction import build_transaction, verify_transaction
-from ..wallet import Held, Wallet, WalletError
+from chain.genesis import boot, load as load_genesis
+from chain.net import supervisor as sv
+from chain.notes import (Note, note_id, note_vector, tag_from_shared,
+                         tag_matches)
+from chain.params import DEMO
+from chain.transaction import build_transaction, verify_transaction
+from client.rpc import Client, ClientError
+from wallet.keys import Address, AddressError, WalletKeys, ephemeral
+from wallet.sealing import decrypt_opening, encrypt_opening, seal_output
+from wallet.store import Held, Wallet, WalletError
 
 PARAMS = dataclasses.replace(DEMO, proof_backends=("mpcith",),
                              default_backend="mpcith",
@@ -264,3 +265,69 @@ def _confirmed(client, txid, timeout=75):
             return answer["height"]
         time.sleep(0.5)
     raise AssertionError(f"{txid[:16]}… never confirmed")
+
+
+# ── detection tags ───────────────────────────────────────────────────────────
+
+def test_the_address_carries_a_third_key_and_still_round_trips():
+    keys = WalletKeys.from_phrase("bob")
+    text = keys.address.encode()
+    assert Address.decode(text) == keys.address
+    assert keys.address.detect_hex not in ("", keys.address.view_hex)
+    assert keys.detection_secret() != keys.viewing_secret(), \
+        "handing over the detection key must not hand over the viewing key"
+
+
+def test_only_the_recipient_recomputes_the_tag():
+    params = PARAMS
+    bob, carol = WalletKeys.from_phrase("bob"), WalletKeys.from_phrase("carol")
+    note = Note.create(250, bob.address.spend_hex, params)
+    cm = note_id(note_vector(note, params))
+    sealed, tag = seal_output(note, bob.address, cm, params)
+    epk = sealed[:32]
+    assert tag_from_shared(bob.detect_exchange(epk)) == tag
+    assert tag_from_shared(carol.detect_exchange(epk)) != tag
+
+
+def test_precision_is_the_knob_and_it_behaves_like_one():
+    """At p bits a stranger matches about one output in 2^p.
+
+    Measured rather than asserted from theory, because the whole value of the
+    tag is this ratio and a construction that quietly got it wrong would still
+    look like it worked.
+    """
+    params = PARAMS
+    watcher = WalletKeys.from_phrase("watcher")
+    tags, epks = [], []
+    for i in range(600):
+        who = WalletKeys.from_phrase(f"stranger-{i}")
+        note = Note.create(1, who.address.spend_hex, params)
+        cm = note_id(note_vector(note, params))
+        sealed, tag = seal_output(note, who.address, cm, params)
+        tags.append(tag)
+        epks.append(sealed[:32])
+    for bits, low, high in ((1, 0.35, 0.65), (4, 0.02, 0.12)):
+        hits = sum(
+            tag_matches(tag, tag_from_shared(watcher.detect_exchange(epk)),
+                        bits)
+            for tag, epk in zip(tags, epks))
+        share = hits / len(tags)
+        assert low <= share <= high, (bits, share)
+
+
+def test_the_tags_are_bound_into_the_transaction():
+    """Rewriting a tag is not theft; it is a way to make a payment invisible
+    to the person it was for.  So the proof covers it."""
+    params, chain = PARAMS, CHAIN
+    alice = Wallet(WalletKeys.from_phrase("alice"), params, chain_id=chain)
+    note = Note.create(1000, alice.address.spend_hex, params)
+    cm = note_id(note_vector(note, params))
+    alice.held[cm] = Held(note=note, cm=cm, height=1)
+    tx, _ = alice.send(WalletKeys.from_phrase("bob").address, 250, fee=5)
+    assert len(tx.output_tags) == len(tx.output_cms)
+    assert verify_transaction(tx, params, chain_id=chain)[0]
+    swapped = dataclasses.replace(tx,
+                                  output_tags=tuple(reversed(tx.output_tags)))
+    assert not verify_transaction(swapped, params, chain_id=chain)[0]
+    assert not verify_transaction(
+        dataclasses.replace(tx, output_tags=()), params, chain_id=chain)[0]

@@ -15,14 +15,15 @@ import shutil
 import tempfile
 import time
 
-from .genesis import boot, load as load_genesis
-from .keys import WalletKeys
-from .light import Adjudicator, LightClient, LightError
-from .net import supervisor as sv
-from .net.client import Client, ClientError
-from .notes import note_id, note_vector
-from .seal import leaf_value
-from .wallet import Held, Wallet
+from chain.genesis import boot, load as load_genesis
+from wallet.keys import WalletKeys
+from client.adjudicate import Adjudicator
+from client.light import LightClient, LightError
+from chain.net import supervisor as sv
+from client.rpc import Client, ClientError
+from chain.notes import note_id, note_vector
+from chain.seal import leaf_value
+from wallet.store import Held, Wallet
 
 
 def say(*a):
@@ -138,7 +139,7 @@ def main(root=None, nodes=4, base_port=7650):
 
             answer = client.inclusion(treasury.unspent()[0].cm)
             if answer.get("live"):
-                from .seal import verify_witness
+                from chain.seal import verify_witness
                 wrong = leaf_value("utxo", "nc:" + "00" * 32)
                 say("── a path that opens to somebody else's leaf: "
                     + ("accepted — BUG" if verify_witness(

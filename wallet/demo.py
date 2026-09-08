@@ -14,12 +14,12 @@ import shutil
 import tempfile
 import time
 
-from .genesis import boot, load as load_genesis
-from .keys import WalletKeys
-from .net import supervisor as sv
-from .net.client import Client, ClientError
-from .notes import note_id, note_vector
-from .wallet import Held, Wallet
+from chain.genesis import boot, load as load_genesis
+from wallet.keys import WalletKeys
+from chain.net import supervisor as sv
+from client.rpc import Client, ClientError
+from chain.notes import note_id, note_vector
+from wallet.store import Held, Wallet
 
 
 def say(*a):

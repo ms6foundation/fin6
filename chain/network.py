@@ -1,4 +1,4 @@
-"""Bootstrapping a test network: validators, wallets, and a genesis block."""
+"""Bootstrapping a test network: validators, note holders, and a genesis block."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -13,8 +13,14 @@ from .state import ChainState
 
 
 @dataclass
-class Wallet:
-    """A holder of notes.  Keeps the secret openings; the chain stores only cms."""
+class Holder:
+    """A bag of notes with a key, for driving the chain from inside one process.
+
+    Not a wallet.  It keeps openings in memory, cannot find a note it was not
+    handed, and has no address — `wallet.Wallet` is the real thing and lives in
+    its own package.  This exists so a test or a demo can move value around
+    without a network, and the name says so.
+    """
     name: str
     signer: Signer
     notes: list = field(default_factory=list)
@@ -45,18 +51,18 @@ class Wallet:
 
 def bootstrap(validator_ids, endowments: dict, params: ChainParams,
               asset: str = "USD"):
-    """Build a genesis state, wallets, and one Node per validator.
+    """Build a genesis state, holders, and one Node per validator.
 
-    endowments: {wallet name: [note values]}
-    Returns (nodes, wallets, genesis_block).
+    endowments: {holder name: [note values]}
+    Returns (nodes, holders, genesis_block).
     """
-    wallets = {name: Wallet(name=name, signer=Signer.from_seed(f"wallet:{name}"),
+    holders = {name: Holder(name=name, signer=Signer.from_seed(f"wallet:{name}"),
                             params=params)
                for name in endowments}
 
     genesis = ChainState(params)
     for name, values in endowments.items():
-        w = wallets[name]
+        w = holders[name]
         for value in values:
             note = Note.create(value, w.public_hex, params, asset=asset)
             genesis.issue(note_id(note_vector(note, params)))
@@ -77,10 +83,10 @@ def bootstrap(validator_ids, endowments: dict, params: ChainParams,
     nodes = {nid: Node(nid, Signer.from_seed(f"validator:{nid}"), params,
                        genesis.copy())
              for nid in validator_ids}
-    return nodes, wallets, block
+    return nodes, holders, block
 
 
-def transfer(wallet_from: Wallet, wallet_to: Wallet, amount: int, fee: int,
+def transfer(holder_from: Holder, holder_to: Holder, amount: int, fee: int,
              params: ChainParams):
     """Convenience: spend one note, pay `amount`, return the change.
 
@@ -88,18 +94,18 @@ def transfer(wallet_from: Wallet, wallet_to: Wallet, amount: int, fee: int,
     """
     from .transaction import build_transaction
 
-    note = wallet_from.take(amount + fee)
+    note = holder_from.take(amount + fee)
     change = note.value - amount - fee
-    outs = [Note.create(amount, wallet_to.public_hex, params, asset=note.asset)]
+    outs = [Note.create(amount, holder_to.public_hex, params, asset=note.asset)]
     if change > 0:
-        outs.append(Note.create(change, wallet_from.public_hex, params,
+        outs.append(Note.create(change, holder_from.public_hex, params,
                                 asset=note.asset))
     else:
         # Every transaction needs at least one output; a zero-value change note
         # keeps the shape uniform and leaks nothing (the value is hidden).
-        outs.append(Note.create(0, wallet_from.public_hex, params,
+        outs.append(Note.create(0, holder_from.public_hex, params,
                                 asset=note.asset))
-    tx = build_transaction([(note, wallet_from.signer)], outs, fee, params)
-    wallet_to.receive(outs[0])
-    wallet_from.receive(outs[1])
+    tx = build_transaction([(note, holder_from.signer)], outs, fee, params)
+    holder_to.receive(outs[0])
+    holder_from.receive(outs[1])
     return tx, outs

@@ -27,7 +27,7 @@ from .trustlist import TrustList
 from . import hardening
 from .hardening import Era, NetworkHistory, HardeningParams
 from .crypto import Signer
-from .network import Wallet, bootstrap, transfer
+from .network import Holder, bootstrap, transfer
 from .node import Node
 from .notes import Note, note_id, note_vector
 from .params import DEMO, PRESETS, STRONG, ChainParams
@@ -48,7 +48,7 @@ __all__ = [
     "FaultReport", "QuorumCert",
     "Grid", "Ceremony", "CeremonyResult", "run_epoch",
     "HonestLeader", "SilentLeader", "EquivocatingLeader",
-    "Node", "Signer", "Wallet", "bootstrap", "transfer",
+    "Node", "Signer", "Holder", "bootstrap", "transfer",
     # tiered design
     "Standing", "GridRegister", "MemberRecord", "AttendanceRoll",
     "Topology", "GridSpec", "Enrolment", "sign_enrolment",

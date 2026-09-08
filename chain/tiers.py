@@ -238,30 +238,33 @@ def bootstrap_world(node_regions: dict, endowments: dict, params: ChainParams,
                     seed: str = "genesis", asset: str = "USD",
                     newcomers: dict | None = None, signers: dict | None = None,
                     note_seed: str | None = None):
-    """Build a tiered network: topology, genesis registers, wallets, nodes.
+    """Build a tiered network: topology, genesis registers, holders, nodes.
 
     The founding cohort of every grid starts as attesters — it has to, since a
     grid of pure apprentices can never reach quorum and so can never run the
     ceremony that would promote anyone.  The bootstrap is a trusted setup.
     `newcomers` are seated afterwards as apprentices, at zero.
     """
-    from .network import Wallet
+    from .network import Holder
     from .notes import Note, note_id, note_vector
 
     topology = Topology.build(node_regions, params.grid_size, seed)
 
-    # Genesis holders get wallet keys rather than a bare signer, so a real
-    # `chain.wallet.Wallet` can be reconstructed for them later.  The issuance
-    # itself still carries no sealed openings — genesis mints outside a
-    # transaction, which is exactly the gap part five §2 describes.
-    from .keys import WalletKeys
-    wallets = {name: Wallet(name=name,
-                            signer=WalletKeys.from_phrase(f"genesis:{name}").signer,
+    # A genesis holder's spend key is derived from a phrase the same way a
+    # user's is, so a real `wallet.Wallet` can be reconstructed for it later —
+    # which is what `fin6 wallet import-genesis` does.  The derivation lives in
+    # `crypto` precisely so the ledger can do this without importing `wallet`.
+    # The issuance itself still carries no sealed openings: genesis mints
+    # outside a transaction, which is the gap part five §2 describes.
+    from .crypto import seed_from_phrase, spend_signer
+    holders = {name: Holder(name=name,
+                            signer=spend_signer(seed_from_phrase(
+                                f"genesis:{name}")),
                             params=params)
                for name in endowments}
     genesis = ChainState(params)
     for name, values in sorted(endowments.items()):
-        w = wallets[name]
+        w = holders[name]
         for i, value in enumerate(values):
             if note_seed is None:
                 note = Note.create(value, w.public_hex, params, asset=asset)
@@ -306,7 +309,7 @@ def bootstrap_world(node_regions: dict, endowments: dict, params: ChainParams,
         registers[gid].admit(nid)
         nodes[nid] = Node(nid, signer_for(nid), params, genesis.copy())
         world.trust[nid] = TrustList(nid)
-    return world, wallets
+    return world, holders
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

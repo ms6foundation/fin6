@@ -1,9 +1,15 @@
-# fin6 private chain
+# `chain/` — the ledger and the ceremony
 
 A private, **transaction-based** ledger whose transactions are verified with
 `mq/ms6` (MQ-hardened commitments + the 5-pass SSH zero-knowledge proof), and
 whose blocks are agreed by a **scheduled grid ceremony** rather than proof of
 work.
+
+This package is what a *validator* needs and nothing more. It has no idea what
+an address is, never opens a ciphertext, and does not know that anyone is
+reading it — the user's side is in [`wallet/`](../wallet/README.md) and the
+readers are in [`client/`](../client/README.md), and both depend on this one
+rather than the other way round.
 
 ```
 python3 -m chain.demo            # one grid: transfers, ceremony, Byzantine leaders
@@ -12,7 +18,7 @@ python3 -m chain.demo_hardening  # consensus through to hardened network history
 python3 -m chain.demo_archive    # what an archive costs, and where it goes
 python3 -m chain.demo_persistence # stop the chain, start it again
 python3 -m chain.demo_genesis   # launch the seven-node network from its config
-python3 -m chain.tests.run_all   # 304 tests, ~90 s
+python3 -m chain.tests.run_all   # 277 tests, ~45 s
 ```
 
 Both are run from the repository root (the same place `examples/` imports
@@ -25,7 +31,7 @@ Both are run from the repository root (the same place `examples/` imports
 | file | what it holds |
 |---|---|
 | `params.py` | `ChainParams`, the `DEMO` and `STRONG` presets |
-| `crypto.py` | domain-separated hashing, field helpers, Ed25519 signer |
+| `crypto.py` | domain-separated hashing, field helpers, Ed25519 signer, and the seed derivations both this package and `wallet/` build on |
 | `notes.py` | the note (this chain's UTXO), its MQ commitment, its nullifier form |
 | `txsystem.py` | `TxSystem` — the per-transaction MQ map |
 | `transaction.py` | build / prove / verify a spend |
@@ -34,7 +40,7 @@ Both are run from the repository root (the same place `examples/` imports
 | `block.py` | block, header, and the signed consensus objects |
 | `ceremony.py` | `Grid`, `Envelope`, `Ceremony`, leader behaviours, view change |
 | `node.py` | a validating node: mempool, block production, attestation |
-| `network.py` | bootstrapping a test network; wallets |
+| `network.py` | bootstrapping a test network; `Holder`, a bag of notes for driving the chain in one process — not a wallet |
 | `demo.py` | the single-grid walkthrough |
 | `genesis.py` | the genesis document: `chain_id = H(document)`, ratification, booting |
 | **tiered path** | |
@@ -56,19 +62,11 @@ Both are run from the repository root (the same place `examples/` imports
 | **the network** | |
 | `net/frame.py` | length-prefixed codec frames — the trust boundary |
 | `net/peer.py` | the TCP mesh: dialling, accepting, one inbox |
-| `net/limits.py` | a token bucket per source, in front of everything |
 | `net/seat.py` | one node's side of a ceremony, driven by messages |
 | `net/clock.py` | the epoch, computed from the genesis document |
 | `net/node.py` | the node process and its epoch loop |
 | `net/supervisor.py` | lay out, start, break and inspect a testnet |
-| `net/client.py` | what a client may ask: `status`, `outputs`, `txstatus`, `submit`, and the light client's `params`, `tip`, `headers`, `ancestry`, `inclusion`, `register` |
-| **the wallet** | |
-| `keys.py` | one seed → a spend key and a viewing key; the checksummed address |
-| `wallet.py` | the note cache: scan, reconcile, select, send |
-| `demo_wallet.py` | pay a stranger across seven node processes |
-| `light.py` | the following client, and the adjudicator that weighs two tips |
-| `demo_light.py` | prove a balance instead of being told it |
-| `cli.py` | `fin6 genesis new` / `net up` / `net status` / `wallet …` / `light sync|verify|adjudicate` / `tx send` |
+| `net/limits.py` | a token bucket per source, in front of everything |
 | **storage** | |
 | `store/codec.py` | canonical binary encoding — interning, hex packing, vector packing |
 | `store/db.py` | the SQLite store: one commit per network block, `load_state`, `rollback` |

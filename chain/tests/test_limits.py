@@ -9,14 +9,14 @@ valid and still arriving faster than a node can want them.
 import dataclasses
 import time
 
-from ..crypto import Signer
-from ..keys import WalletKeys
-from ..net.limits import Bucket, COSTS, Limiter
-from ..node import MAX_INPUTS, MAX_OUTPUTS, Node
-from ..notes import Note, note_id, note_vector
-from ..params import DEMO
-from ..state import ChainState
-from ..wallet import Held, Wallet
+from chain.crypto import Signer
+from wallet.keys import WalletKeys
+from chain.net.limits import Bucket, COSTS, Limiter
+from chain.node import MAX_INPUTS, MAX_OUTPUTS, Node
+from chain.notes import Note, note_id, note_vector
+from chain.params import DEMO
+from chain.state import ChainState
+from wallet.store import Held, Wallet
 
 PARAMS = dataclasses.replace(DEMO, proof_backends=("mpcith",),
                              default_backend="mpcith",
