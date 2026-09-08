@@ -20,7 +20,7 @@ MODULES = ["test_notes", "test_transaction", "test_state", "test_grid",
            # genesis
            "test_genesis", "test_growth",
            # the network
-           "test_net",
+           "test_net", "test_wallet",
            # hardening
            "test_hardening"]
 

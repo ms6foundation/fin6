@@ -39,7 +39,7 @@ from mq.vs6 import verify_hidden as vs6_verify_hidden
 
 from .crypto import h_bytes, h_field, h_hex, owner_field, verify_sig
 from .proofs import get_backend
-from .notes import Note, note_id, note_vector, nullifier_id
+from .notes import (Note, encrypt_opening, note_id, note_vector, nullifier_id)
 from .params import ChainParams
 from .txsystem import tx_system
 
@@ -72,6 +72,11 @@ class Transaction:
     v: tuple
     binding: int
     proofs: dict = field(repr=False)      # backend name -> proof
+    #: One sealed opening per output, in `output_cms` order — `epk || ct`,
+    #: readable only by the address it was sent to.  Empty for a transaction
+    #: built without recipient addresses, which is how every in-process demo
+    #: works and is why receiving needed a design of its own.
+    output_notes: tuple = field(default=(), repr=False)
 
     @property
     def txid(self) -> str:
@@ -98,15 +103,20 @@ class Transaction:
 
 
 def binding_scalar(chain_id: str, version: int, fee: int, input_cms,
-                   output_cms, owner_pubs) -> int:
+                   output_cms, owner_pubs, output_notes=()) -> int:
     """The scalar every part of a transaction is bound to.
 
     Computed from the body alone — never from v — so there is no circularity:
     a spender knows all cms before building the proof, because each note's
     commitment depends only on that note.
+
+    The sealed openings are in here too, so the proof covers them: a relay that
+    swaps a ciphertext for another breaks the proof rather than quietly leaving
+    a recipient unable to find money that is provably theirs.
     """
     return h_field("tx-bind", chain_id, version, fee,
-                   list(input_cms), list(output_cms), list(owner_pubs))
+                   list(input_cms), list(output_cms), list(owner_pubs),
+                   [bytes(x).hex() for x in output_notes])
 
 
 def sig_message(binding: int) -> bytes:
@@ -119,12 +129,16 @@ def sig_message(binding: int) -> bytes:
 
 def build_transaction(spends, outputs, fee: int, params: ChainParams,
                       chain_id: str | None = None,
-                      backends=None) -> Transaction:
+                      backends=None, output_addresses=None) -> Transaction:
     """Build and prove a transaction.
 
     spends   : [(Note, Signer)] — the notes to consume and the keys that own them
     outputs  : [Note]           — the notes to create
     fee      : public, in the same asset
+    output_addresses : one fin6 address per output, or None.  Given them, each
+               output carries its opening sealed to its recipient, which is
+               what lets the recipient find it at all — and what lets the
+               sender rebuild its own change from a seed.
     backends : which proof systems to prove the statement in.  Only the spender
                holds the witness, so only the spender can prove; a higher tier
                can re-verify but never re-prove.  Proving in more than one system
@@ -165,7 +179,17 @@ def build_transaction(spends, outputs, fee: int, params: ChainParams,
     out_cms = [note_id(note_vector(n, params)) for n in outputs]
     owner_pubs = [s.public_hex for s in signers]
 
-    beta = binding_scalar(chain_id, TX_VERSION, fee, in_cms, out_cms, owner_pubs)
+    sealed = ()
+    if output_addresses is not None:
+        if len(output_addresses) != len(outputs):
+            raise TxError(f"{len(output_addresses)} addresses for "
+                          f"{len(outputs)} outputs")
+        sealed = tuple(encrypt_opening(note, address, cm, params)
+                       for note, address, cm in
+                       zip(outputs, output_addresses, out_cms))
+
+    beta = binding_scalar(chain_id, TX_VERSION, fee, in_cms, out_cms,
+                          owner_pubs, sealed)
 
     ts = tx_system(params, len(in_notes), len(outputs))
     x_base = []
@@ -196,6 +220,7 @@ def build_transaction(spends, outputs, fee: int, params: ChainParams,
 
     return Transaction(version=TX_VERSION, chain_id=chain_id, fee=fee,
                        inputs=tx_inputs, output_cms=tuple(out_cms),
+                       output_notes=sealed,
                        v=tuple(int(a) for a in v), binding=beta, proofs=proofs)
 
 
@@ -231,6 +256,9 @@ def verify_transaction(tx: Transaction, params: ChainParams, *,
             return False, "duplicate input note"
         if len(set(tx.nullifiers)) != k:
             return False, "duplicate nullifier"
+        if tx.output_notes and len(tx.output_notes) != m:
+            return False, (f"{len(tx.output_notes)} sealed openings for {m} "
+                           f"outputs")
         if len(set(tx.output_cms)) != m:
             return False, "duplicate output note"
 
@@ -241,7 +269,8 @@ def verify_transaction(tx: Transaction, params: ChainParams, *,
 
         # 1. binding scalar recomputed from the body
         beta = binding_scalar(chain_id, tx.version, tx.fee, tx.input_cms,
-                              tx.output_cms, [i.owner_pub for i in tx.inputs])
+                              tx.output_cms, [i.owner_pub for i in tx.inputs],
+                              tx.output_notes)
         if beta != tx.binding % P:
             return False, "binding scalar does not match the transaction body"
         if v[ts.bind_row] != beta:

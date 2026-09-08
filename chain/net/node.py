@@ -81,9 +81,16 @@ class NodeProcess:
                  for nid, spec in self.config["nodes"].items() if nid != node_id}
         self.mesh = Mesh(node_id, self.doc.chain_id,
                          tuple(self.settings["listen"]), peers, self.inbox,
-                         log=self.log, on_status=self.status)
+                         log=self.log, on_request=self.answer)
         self.seat: Seat | None = None
         self.bodies: dict = {}
+        # What a wallet needs and a validator does not: every output the chain
+        # has produced, and every nullifier it has published, in height order.
+        # Append-only, so the reader thread can serve a slice while the epoch
+        # loop is appending to the end.
+        self.outputs: list = []            # (height, cm, sealed opening)
+        self.spent: list = []              # (height, nullifier)
+        self.tx_height: dict = {}          # txid -> height
         self.stop = threading.Event()
         self.epochs_run = 0
         self.last_reason = "not started"
@@ -115,6 +122,47 @@ class NodeProcess:
             "last": self.last_reason,
             "behaviour": self.behaviour,
         }
+
+    def answer(self, msg):
+        """Serve one client request.  Read-only, and never blocks the epoch."""
+        kind, payload = msg["kind"], msg["payload"] or {}
+        if kind == "status":
+            return "status_reply", self.status()
+        if kind == "getoutputs":
+            start = int(payload.get("from", 0))
+            end = int(payload.get("to", 1 << 62))
+            return "outputs_reply", {
+                "height": self.world.height,
+                "outputs": [list(o) for o in self.outputs
+                            if start <= o[0] <= end],
+                "nullifiers": [list(n) for n in self.spent
+                               if start <= n[0] <= end],
+            }
+        if kind == "txstatus":
+            txid = payload.get("txid")
+            height = self.tx_height.get(txid)
+            if height is not None:
+                return "txstatus_reply", {"txid": txid, "state": "in_block",
+                                          "height": height,
+                                          "tip": self.world.height}
+            if txid in self.node.mempool:
+                return "txstatus_reply", {"txid": txid, "state": "pending",
+                                          "height": None,
+                                          "tip": self.world.height}
+            return "txstatus_reply", {"txid": txid, "state": "unknown",
+                                      "height": None, "tip": self.world.height}
+        return None
+
+    def _index(self, block):
+        """Record what a wallet will come asking for."""
+        height = block.height
+        for tx in block.transactions():
+            self.tx_height[tx.txid] = height
+            sealed = list(tx.output_notes) + [b""] * len(tx.output_cms)
+            for cm, blob in zip(tx.output_cms, sealed):
+                self.outputs.append((height, cm, blob))
+            for nf in tx.nullifiers:
+                self.spent.append((height, nf))
 
     def grid_id(self) -> str:
         return self.world.topology.grid_of(self.id)
@@ -209,6 +257,7 @@ class NodeProcess:
         block, cert = accepted
         self.world.pending_rolls[gid] = self.seat.roll(cert)
         self.world.apply_network_block(block)
+        self._index(block)
         self.epochs_run += 1
         self.last_reason = "ok"
         self.log(f"epoch {epoch}: height {block.height} "

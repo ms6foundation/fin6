@@ -15,8 +15,8 @@ hardened into history by a finite pool of single-use turns.
 |---|---|
 | `mq/` | the MQ-hardened batched commitment — `ms6` (prover) and `vs6` (independent verifier) |
 | `examples/` | account-based ledger and sanctions-screening demos built on `mq/` |
-| `chain/` | the private chain: ~7,200 lines, 135 tests |
-| `docs/` | the three design sketches the chain was built from |
+| `chain/` | the private chain: ~10,900 lines, 268 tests |
+| `docs/` | the seven design sketches the chain was built from |
 
 ## Quick start
 
@@ -30,13 +30,24 @@ python3 -m chain.demo_hardening   # consensus through to hardened history
 python3 -m chain.demo_archive     # what an archive costs, and where it goes
 python3 -m chain.demo_persistence # stop the chain, start it again
 python3 -m chain.demo_genesis     # launch the seven-node network from its config
+python3 -m chain.demo_wallet      # pay a stranger across seven node processes
 
 # and a real network of seven processes, over TCP:
 python3 -m chain.cli genesis new /tmp/fin6-testnet --nodes 7
 python3 -m chain.cli net up       /tmp/fin6-testnet     # ctrl-c to stop
 python3 -m chain.cli net status   /tmp/fin6-testnet     # exits non-zero on disagreement
 python3 -m chain.cli tx send      /tmp/fin6-testnet --amount 100
-python3 -m chain.tests.run_all    # 135 tests, ~20 s
+
+# and a wallet, which holds one seed and finds its money by scanning:
+python3 -m chain.cli wallet import-genesis /tmp/fin6-testnet --holder treasury
+python3 -m chain.cli wallet new     /tmp/fin6-testnet --name bob
+python3 -m chain.cli wallet send    /tmp/fin6-testnet --name treasury \
+        --to "$(python3 -m chain.cli wallet address /tmp/fin6-testnet --name bob)" \
+        --amount 250
+python3 -m chain.cli wallet sync    /tmp/fin6-testnet --name bob
+python3 -m chain.cli wallet balance /tmp/fin6-testnet --name bob
+
+python3 -m chain.tests.run_all    # 268 tests, ~55 s
 ```
 
 ```python
@@ -209,7 +220,7 @@ simulation with no clock.
 - [`docs/persistence_design.md`](docs/persistence_design.md) — what survives a restart, and what may be thrown away
 - [`docs/genesis_design.md`](docs/genesis_design.md) — what a new network must be trusted about, and for how long *(the one-tier launch is built; the rest is a sketch)*
 - [`docs/testnet_design.md`](docs/testnet_design.md) — running it for real: seven processes, a wire, a clock *(built, through stage 2)*
-- [`docs/wallet_design.md`](docs/wallet_design.md) — how a user holds money, spends it, and finds out they were paid *(sketch; not implemented)*
+- [`docs/wallet_design.md`](docs/wallet_design.md) — how a user holds money, spends it, and finds out they were paid *(built)*
 - [`chain/README.md`](chain/README.md) — implementation notes, measured costs, and what the code changed about the design
 
 ## License

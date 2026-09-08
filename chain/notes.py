@@ -27,7 +27,7 @@ from functools import lru_cache
 
 from mq.ms6 import MQSystem, P
 
-from .crypto import h_field, h_hex, rand_field, owner_field
+from .crypto import h_bytes, h_field, h_hex, rand_field, owner_field
 from .params import (ChainParams, NOTE_ASSET, NOTE_FIXED_COORDS, NOTE_OWNER,
                      NOTE_RHO, NOTE_VALUE)
 
@@ -59,6 +59,92 @@ def asset_field(name: str) -> int:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Note
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Sending a note to its owner
+# ═══════════════════════════════════════════════════════════════════════════════
+
+FIELD_BYTES = 32
+NONCE = b"\x00" * 12
+
+
+class NoteCipherError(Exception):
+    pass
+
+
+def _pack_opening(note, params) -> bytes:
+    """value, asset, rho, blinders — everything but the owner, which the
+    recipient already knows because it is the recipient."""
+    parts = [note.value, note.asset, note.rho, *note.blinders]
+    if len(parts) != 3 + params.note_blinders:
+        raise NoteCipherError("note does not match the parameters")
+    return b"".join(int(x).to_bytes(FIELD_BYTES, "big") for x in parts)
+
+
+def _unpack_opening(raw: bytes, owner: int, params):
+    want = FIELD_BYTES * (3 + params.note_blinders)
+    if len(raw) != want:
+        raise NoteCipherError(f"opening is {len(raw)} bytes, expected {want}")
+    values = [int.from_bytes(raw[i:i + FIELD_BYTES], "big")
+              for i in range(0, len(raw), FIELD_BYTES)]
+    return Note(value=values[0], asset=values[1], owner=owner,
+                rho=values[2], blinders=tuple(values[3:]))
+
+
+def encrypt_opening(note, address, cm: str, params) -> bytes:
+    """Seal this note's opening to its recipient.
+
+    `epk || ciphertext`, where the key is a fresh X25519 exchange and the
+    commitment is the associated data — so a ciphertext cannot be lifted onto
+    a different output, and a nonce of zero is safe because every output has
+    its own ephemeral key and therefore its own shared secret.
+
+    272 bytes at the demo parameters, against a 63 KB proof.  This is what
+    makes a note recoverable from a seed rather than only from a backup of the
+    wallet's own files.
+    """
+    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+
+    from .keys import ephemeral
+    private, epk = ephemeral()
+    shared = private.exchange(address.view_key())
+    key = h_bytes("note-key", shared, epk, cm)
+    blob = ChaCha20Poly1305(key).encrypt(NONCE, _pack_opening(note, params),
+                                         cm.encode())
+    return epk + blob
+
+
+def decrypt_opening(blob: bytes, keys, cm: str, params):
+    """The note, if this output was addressed to these keys — else None.
+
+    Returns None rather than raising: a wallet trial-decrypts every output on
+    the chain, and almost all of them are somebody else's.
+    """
+    from cryptography.exceptions import InvalidTag
+    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+
+    if not isinstance(blob, (bytes, bytearray)) or len(blob) <= 32:
+        return None
+    epk, body = bytes(blob[:32]), bytes(blob[32:])
+    try:
+        shared = keys.exchange(epk)
+    except Exception:
+        return None
+    key = h_bytes("note-key", shared, epk, cm)
+    try:
+        raw = ChaCha20Poly1305(key).decrypt(NONCE, body, cm.encode())
+    except (InvalidTag, ValueError):
+        return None
+    try:
+        note = _unpack_opening(raw, owner_field(keys.spend_hex), params)
+    except NoteCipherError:
+        return None
+    # The commitment is the last word: a sender who encrypts an opening that
+    # does not match the output it is attached to has sent nothing.
+    if note_id(note_vector(note, params)) != cm:
+        return None
+    return note
+
 
 @dataclass(frozen=True)
 class Note:

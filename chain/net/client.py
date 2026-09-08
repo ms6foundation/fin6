@@ -1,0 +1,109 @@
+"""What a wallet may ask a node.
+
+A client is not a peer: it dials, asks one thing, and is answered on the same
+connection.  Nothing here requires the node to trust the asker, and nothing
+here lets the asker join a ceremony — a wallet is not a validator and never
+becomes one.
+
+What a client can verify for itself, and what it must take on trust, is worth
+being exact about.  It can check that a note it decrypts really is the note the
+commitment names, because it recomputes the commitment.  It cannot yet check
+that the note is still unspent without holding the whole nullifier set, because
+the accumulator's membership proofs are too large to serve — the design's open
+item.  Until then a wallet believes what a node tells it about its own money,
+which is why `sync` should be pointed at a node the user has a reason to trust,
+or at several.
+"""
+from __future__ import annotations
+
+import socket
+
+from .frame import Reader, pack
+
+
+class ClientError(Exception):
+    pass
+
+
+class Client:
+    """One node, dialled per request."""
+
+    def __init__(self, host: str, port: int, chain_id: str, timeout=5.0):
+        self.host, self.port = host, int(port)
+        self.chain_id = chain_id
+        self.timeout = timeout
+
+    # ── plumbing ─────────────────────────────────────────────────────────────
+
+    def _ask(self, kind: str, payload=None, expect=None):
+        try:
+            with socket.create_connection((self.host, self.port),
+                                          timeout=self.timeout) as sock:
+                sock.sendall(pack(kind, self.chain_id, payload))
+                sock.settimeout(self.timeout)
+                reader = Reader(self.chain_id)
+                while True:
+                    data = sock.recv(1 << 16)
+                    if not data:
+                        raise ClientError(f"{self.host}:{self.port} closed "
+                                          f"without answering {kind}")
+                    for msg in reader.feed(data):
+                        if expect and msg["kind"] != expect:
+                            raise ClientError(f"expected {expect}, got "
+                                              f"{msg['kind']}")
+                        return msg["payload"]
+        except OSError as exc:
+            raise ClientError(f"{self.host}:{self.port}: {exc}") from None
+
+    def _tell(self, kind: str, payload=None):
+        try:
+            with socket.create_connection((self.host, self.port),
+                                          timeout=self.timeout) as sock:
+                sock.sendall(pack("hello", self.chain_id,
+                                  {"node_id": "fin6-client"}))
+                sock.sendall(pack(kind, self.chain_id, payload))
+        except OSError as exc:
+            raise ClientError(f"{self.host}:{self.port}: {exc}") from None
+
+    # ── the interface ────────────────────────────────────────────────────────
+
+    def status(self) -> dict:
+        return self._ask("status", expect="status_reply")
+
+    def outputs(self, since: int = 0, to: int | None = None) -> dict:
+        """Commitments and sealed openings in a height range, plus the
+        nullifiers published in it — the two things a wallet scans."""
+        payload = {"from": int(since)}
+        if to is not None:
+            payload["to"] = int(to)
+        return self._ask("getoutputs", payload, expect="outputs_reply")
+
+    def txstatus(self, txid: str) -> dict:
+        return self._ask("txstatus", {"txid": txid}, expect="txstatus_reply")
+
+    def submit(self, tx):
+        """Hand a transaction to the network.
+
+        Fire-and-forget by design at this stage: the node answers nothing, and
+        a wallet finds out what happened by asking `txstatus`. That is honest
+        rather than convenient — the transaction has to survive gossip, a
+        grid's mempool and a ceremony before anything can be said about it.
+        """
+        self._tell("tx", {"tx": tx})
+        return tx.txid
+
+    # ── the wallet's side of it ──────────────────────────────────────────────
+
+    def sync(self, wallet) -> dict:
+        """Bring a wallet up to the node's tip: find money, then lose it.
+
+        Scanning first and reconciling second matters. A note created and spent
+        between two syncs must be seen before it is marked gone, or the wallet
+        never learns it existed and cannot explain its own balance.
+        """
+        answer = self.outputs(since=wallet.scanned_to + 1)
+        found = wallet.scan(tuple(map(tuple, answer["outputs"])))
+        spent = wallet.reconcile([nf for _, nf in answer["nullifiers"]])
+        wallet.scanned_to = max(wallet.scanned_to, int(answer["height"]))
+        return {"height": answer["height"], "found": found, "spent": spent,
+                "balance": wallet.balance()}

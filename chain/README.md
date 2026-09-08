@@ -12,7 +12,7 @@ python3 -m chain.demo_hardening  # consensus through to hardened network history
 python3 -m chain.demo_archive    # what an archive costs, and where it goes
 python3 -m chain.demo_persistence # stop the chain, start it again
 python3 -m chain.demo_genesis   # launch the seven-node network from its config
-python3 -m chain.tests.run_all   # 135 tests, ~20 s
+python3 -m chain.tests.run_all   # 268 tests, ~55 s
 ```
 
 Both are run from the repository root (the same place `examples/` imports
@@ -60,7 +60,12 @@ Both are run from the repository root (the same place `examples/` imports
 | `net/clock.py` | the epoch, computed from the genesis document |
 | `net/node.py` | the node process and its epoch loop |
 | `net/supervisor.py` | lay out, start, break and inspect a testnet |
-| `cli.py` | `fin6 genesis new` / `net up` / `net status` / `tx send` |
+| `net/client.py` | what a wallet may ask a node: `status`, `outputs`, `txstatus`, `submit` |
+| **the wallet** | |
+| `keys.py` | one seed → a spend key and a viewing key; the checksummed address |
+| `wallet.py` | the note cache: scan, reconcile, select, send |
+| `demo_wallet.py` | pay a stranger across seven node processes |
+| `cli.py` | `fin6 genesis new` / `net up` / `net status` / `wallet …` / `tx send` |
 | **storage** | |
 | `store/codec.py` | canonical binary encoding — interning, hex packing, vector packing |
 | `store/db.py` | the SQLite store: one commit per network block, `load_state`, `rollback` |

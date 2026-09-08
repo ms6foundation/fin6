@@ -18,7 +18,14 @@ MAGIC = b"F6"
 VERSION = 1
 MAX_FRAME = 8 << 20          # 8 MB: a block of ~100 transactions with one proof
 
-KINDS = ("hello", "tx", "env", "getblock", "block", "status", "status_reply")
+KINDS = ("hello", "tx", "env", "getblock", "block",
+         # what a client — a wallet — may ask a node
+         "status", "status_reply", "getoutputs", "outputs_reply",
+         "txstatus", "txstatus_reply", "submit_reply")
+
+#: Requests a node answers on the asking connection, without the asker ever
+#: having been a peer.  A wallet is not a validator and never becomes one.
+CLIENT_KINDS = frozenset({"status", "getoutputs", "txstatus"})
 
 
 class FrameError(Exception):

@@ -106,6 +106,141 @@ def cmd_tx_send(args):
     return 0
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Wallets
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _wallet_paths(root, name):
+    home = os.path.join(os.path.abspath(root), "wallets")
+    os.makedirs(home, exist_ok=True)
+    return (os.path.join(home, f"{name}.seed"),
+            os.path.join(home, f"{name}.notes.json"))
+
+
+def _open_wallet(root, name, doc, params):
+    from .keys import WalletKeys
+    from .wallet import Wallet
+    seed_path, notes_path = _wallet_paths(root, name)
+    if not os.path.exists(seed_path):
+        raise SystemExit(f"no wallet {name!r} — try: fin6 wallet new {root} "
+                         f"--name {name}")
+    with open(seed_path) as fh:
+        keys = WalletKeys.from_phrase(fh.read().strip())
+    if os.path.exists(notes_path):
+        return Wallet.load(notes_path, keys, params), notes_path
+    return Wallet(keys, params, chain_id=doc.chain_id, name=name), notes_path
+
+
+def _client_for(root, net_cfg, doc, node_id=None):
+    from .net.client import Client
+    target = node_id or sorted(net_cfg["nodes"])[0]
+    host, port = net_cfg["nodes"][target]["listen"]
+    return Client(host, port, doc.chain_id), target
+
+
+def cmd_wallet_new(args):
+    from .keys import WalletKeys
+    seed_path, notes_path = _wallet_paths(args.root, args.name)
+    if os.path.exists(seed_path) and not args.force:
+        raise SystemExit(f"{seed_path} exists; pass --force to replace it")
+    phrase = args.phrase or args.name
+    with open(seed_path, "w") as fh:
+        fh.write(phrase + "\n")
+    os.chmod(seed_path, 0o600)
+    keys = WalletKeys.from_phrase(phrase)
+    print(f"wallet {args.name}")
+    print(f"  seed      {seed_path}  (mode 600 — this is the money)")
+    print(f"  address   {keys.address.encode()}")
+    if not args.phrase:
+        print(f"  {'':10}the seed phrase is the wallet name, which is fine for "
+              f"a testnet and nowhere else")
+    return 0
+
+
+def cmd_wallet_address(args):
+    root, net_cfg, doc = sv.load(args.root)
+    wallet, _ = _open_wallet(root, args.name, doc, doc.chain_params())
+    print(wallet.address.encode())
+    return 0
+
+
+def cmd_wallet_sync(args):
+    root, net_cfg, doc = sv.load(args.root)
+    params = doc.chain_params()
+    wallet, notes_path = _open_wallet(root, args.name, doc, params)
+    client, target = _client_for(root, net_cfg, doc, args.node)
+    before = wallet.balance()
+    result = client.sync(wallet)
+    wallet.save(notes_path)
+    print(f"synced {args.name} against {target} to height {result['height']}")
+    print(f"  found {result['found']} new note(s), {result['spent']} spent")
+    print(f"  balance {before} -> {result['balance']}")
+    return 0
+
+
+def cmd_wallet_balance(args):
+    root, net_cfg, doc = sv.load(args.root)
+    wallet, _ = _open_wallet(root, args.name, doc, doc.chain_params())
+    print(f"{wallet.balance()}  in {len(wallet.unspent())} note(s), "
+          f"scanned to height {wallet.scanned_to}")
+    for held in sorted(wallet.unspent(), key=lambda h: -h.value):
+        print(f"  {held.value:>8}  {held.cm[:20]}…  from height {held.height}")
+    return 0
+
+
+def cmd_wallet_send(args):
+    from .keys import Address
+    root, net_cfg, doc = sv.load(args.root)
+    params = doc.chain_params()
+    wallet, notes_path = _open_wallet(root, args.name, doc, params)
+    to = Address.decode(args.to)
+    tx, change = wallet.send(to, args.amount, fee=args.fee)
+    client, target = _client_for(root, net_cfg, doc, args.node)
+    client.submit(tx)
+    wallet.save(notes_path)
+    print(f"sent {args.amount} (+{args.fee} fee) to {to.short()} via {target}")
+    print(f"  txid      {tx.txid}")
+    print(f"  proof     {tx.proof_bytes():,} B in {sorted(tx.proofs)}")
+    print(f"  sealed    {len(tx.output_notes)} openings, "
+          f"{sum(len(x) for x in tx.output_notes)} B")
+    print(f"  next      fin6 wallet sync {args.root} --name {args.name}")
+    return 0
+
+
+def cmd_wallet_import_genesis(args):
+    """Reconstruct a genesis holder's wallet.
+
+    Genesis issues notes outside any transaction, so they carry no sealed
+    opening and cannot be found by scanning.  The openings are derivable from
+    the document — see `bootstrap_world` — which is what makes this possible
+    and is exactly why the genesis mint of design §2 is the real answer.
+    """
+    from .keys import WalletKeys
+    from .notes import note_id, note_vector
+    from .wallet import Held, Wallet
+    root, net_cfg, doc = sv.load(args.root)
+    params = doc.chain_params()
+    world, holders = genesis_mod.boot(doc)
+    if args.holder not in holders:
+        print(f"genesis holders are {sorted(holders)}", file=sys.stderr)
+        return 2
+    seed_path, notes_path = _wallet_paths(root, args.name)
+    phrase = f"genesis:{args.holder}"
+    with open(seed_path, "w") as fh:
+        fh.write(phrase + "\n")
+    os.chmod(seed_path, 0o600)
+    wallet = Wallet(WalletKeys.from_phrase(phrase), params,
+                    chain_id=doc.chain_id, name=args.name)
+    for note in holders[args.holder].notes:
+        cm = note_id(note_vector(note, params))
+        wallet.held[cm] = Held(note=note, cm=cm, height=0)
+    wallet.save(notes_path)
+    print(f"imported {len(wallet.held)} genesis note(s) for {args.holder}")
+    print(f"  address   {wallet.address.encode()}")
+    print(f"  balance   {wallet.balance()}")
+    return 0
+
+
 def cmd_net_kill(args):
     print("`kill` needs the supervisor that started the nodes; run it from a "
           "python session holding the Testnet, or stop `net up`.",
@@ -144,6 +279,30 @@ def main(argv=None):
     kl.add_argument("root")
     kl.add_argument("node_id")
     kl.set_defaults(fn=cmd_net_kill)
+
+    w = sub.add_parser("wallet").add_subparsers(dest="cmd", required=True)
+    wn = w.add_parser("new", help="create a wallet")
+    wn.add_argument("root"); wn.add_argument("--name", required=True)
+    wn.add_argument("--phrase", default=None)
+    wn.add_argument("--force", action="store_true")
+    wn.set_defaults(fn=cmd_wallet_new)
+    wa = w.add_parser("address"); wa.add_argument("root")
+    wa.add_argument("--name", required=True); wa.set_defaults(fn=cmd_wallet_address)
+    ws = w.add_parser("sync", help="scan the chain for money")
+    ws.add_argument("root"); ws.add_argument("--name", required=True)
+    ws.add_argument("--node", default=None); ws.set_defaults(fn=cmd_wallet_sync)
+    wb = w.add_parser("balance"); wb.add_argument("root")
+    wb.add_argument("--name", required=True); wb.set_defaults(fn=cmd_wallet_balance)
+    wsd = w.add_parser("send"); wsd.add_argument("root")
+    wsd.add_argument("--name", required=True)
+    wsd.add_argument("--to", required=True)
+    wsd.add_argument("--amount", type=int, required=True)
+    wsd.add_argument("--fee", type=int, default=1)
+    wsd.add_argument("--node", default=None); wsd.set_defaults(fn=cmd_wallet_send)
+    wi = w.add_parser("import-genesis", help="reconstruct a genesis holder")
+    wi.add_argument("root"); wi.add_argument("--holder", default="treasury")
+    wi.add_argument("--name", default="treasury")
+    wi.set_defaults(fn=cmd_wallet_import_genesis)
 
     t = sub.add_parser("tx").add_subparsers(dest="cmd", required=True)
     send = t.add_parser("send")

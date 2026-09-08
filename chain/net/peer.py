@@ -18,7 +18,7 @@ import socket
 import threading
 import time
 
-from .frame import FrameError, Reader, pack
+from .frame import CLIENT_KINDS, FrameError, Reader, pack
 
 CONNECT_RETRY = 0.5
 SOCKET_TIMEOUT = 1.0
@@ -28,17 +28,18 @@ class Mesh:
     """Outbound dialling, inbound accepting, one inbox."""
 
     def __init__(self, node_id: str, chain_id: str, listen, peers: dict,
-                 inbox, log=None, on_status=None):
+                 inbox, log=None, on_request=None):
         self.node_id = node_id
         self.chain_id = chain_id
         self.host, self.port = listen
         self.peers = dict(peers)                 # peer_id -> (host, port)
         self.inbox = inbox
         self.log = log or (lambda *a: None)
-        # Answered in the reader thread, not through the inbox: a status
-        # request must be answerable while the node is asleep between epochs,
-        # which is exactly when someone asks whether it is alive.
-        self.on_status = on_status
+        # Client requests are answered in the reader thread rather than through
+        # the inbox, because a wallet asks while the node is asleep between
+        # epochs — which is most of the time, and exactly when someone wants to
+        # know whether it is alive.
+        self.on_request = on_request
         self.out: dict = {}                      # peer_id -> socket we dialled
         self._locks: dict = {pid: threading.Lock() for pid in self.peers}
         self._stop = threading.Event()
@@ -146,10 +147,11 @@ class Mesh:
                         payload = msg["payload"] or {}
                         who = payload.get("node_id")
                         continue
-                    if msg["kind"] == "status":
-                        if self.on_status is not None:
-                            reply(conn, self.chain_id, "status_reply",
-                                  self.on_status())
+                    if msg["kind"] in CLIENT_KINDS:
+                        if self.on_request is not None:
+                            answer = self.on_request(msg)
+                            if answer is not None:
+                                reply(conn, self.chain_id, answer[0], answer[1])
                         continue
                     self.inbox.put((who or "?", msg, None))
         except FrameError as exc:

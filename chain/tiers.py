@@ -251,7 +251,13 @@ def bootstrap_world(node_regions: dict, endowments: dict, params: ChainParams,
 
     topology = Topology.build(node_regions, params.grid_size, seed)
 
-    wallets = {name: Wallet(name=name, signer=Signer.from_seed(f"wallet:{name}"),
+    # Genesis holders get wallet keys rather than a bare signer, so a real
+    # `chain.wallet.Wallet` can be reconstructed for them later.  The issuance
+    # itself still carries no sealed openings — genesis mints outside a
+    # transaction, which is exactly the gap part five §2 describes.
+    from .keys import WalletKeys
+    wallets = {name: Wallet(name=name,
+                            signer=WalletKeys.from_phrase(f"genesis:{name}").signer,
                             params=params)
                for name in endowments}
     genesis = ChainState(params)

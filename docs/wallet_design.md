@@ -98,13 +98,16 @@ quietly.
 ## 4. Scanning, and what a restore costs
 
 A wallet finds its money by trial-decrypting every output it has not seen
-before. One X25519 operation per output, roughly 60 µs:
+before. One X25519 operation per output. The sketch estimated 60 µs; the built
+code measures **36 µs** for an output that is not ours — which is the number
+that matters, because almost none of them are — and 111 µs for one that is,
+where the opening is also unpacked and its commitment recomputed:
 
 | situation | outputs | time |
 |---|---|---|
-| keeping up, one block at 200 tx | 400 | ~24 ms |
-| a day at 10 tx/s | 1.7 M | ~1.7 min |
-| restoring from seed over a 10 M-output history | 10 M | ~10 min |
+| keeping up, one block at 200 tx | 400 | ~15 ms |
+| a day at 10 tx/s | 1.7 M | ~62 s |
+| restoring from seed over a 10 M-output history | 10 M | ~6 min |
 
 Keeping up is free and a restore is a coffee. If that ever stops being true the
 usual answer is a short detection tag — two bytes derived from the shared secret
@@ -219,7 +222,7 @@ spinner.
 | `keys.py` | *new* — one seed, a spend key and a viewing key, and the address encoding |
 | `transaction.py` | outputs carry `(cm, ciphertext)`; `build_transaction` encrypts to the recipient address |
 | `wallet.py` | *new* — the note store, scanning, spend detection, balance, coin selection |
-| `net/client.py` | *new* — `headers`, `block`, `outputs`, `submit`, `txstatus`, `member` |
+| `net/client.py` | *new* — `status`, `outputs`, `txstatus`, `submit`, and `sync` |
 | `net/node.py` | serve those to clients, and rate-limit submissions |
 | `store/archive.py` | ciphertexts ride with the bodies and are pruned with them |
 | `cli.py` | `fin6 wallet new / address / balance / send / history` |
@@ -237,8 +240,39 @@ ledger does not need to know that anyone is watching it.
 | Rate limiting | A submission costs 26 ms of verification and nothing meters it. A fee cannot be charged before the proof is checked, which is the wrong way round and needs a cheap admission test in front. |
 | Recovery without a scan | Restoring from seed means reading every output ever. Fine at 10 M, not fine at 10 B, and the fix (detection tags) trades a little linkability. |
 | Viewing keys and disclosure | Handing an auditor a viewing key grants *permanent* read access with no way to revoke or scope it. A permissioned financial chain probably wants scoped, expiring disclosure, and that is a design of its own. |
-| Multi-note spends | `transfer` spends exactly one note. Real wallets need coin selection across several inputs, which the `TxSystem` supports and no code exercises. |
+| Multi-note spends | `transfer` spends exactly one note. `Wallet.select` already picks several and `Wallet.send` refuses loudly rather than building a statement it cannot prove; `TxSystem` supports k inputs and no code exercises it. |
 | What a client does when nodes disagree | `net status` exits non-zero; a wallet has no equivalent rule. Following the heaviest hardened chain is the answer, and nothing implements it. |
+
+## 12. What was built
+
+Everything in §10 except `headers`, `block` and `member`, which a wallet turned
+out not to need once `outputs` carried the ciphertexts. The client interface
+that shipped is three questions — `status`, `getoutputs`, `txstatus` — plus
+fire-and-forget submission, listed in `CLIENT_KINDS` so a client can never reach
+a ceremony message by asking for one.
+
+Measured, not estimated:
+
+| | |
+|---|---|
+| sealed opening | 272 bytes per output — 32 ephemeral key, 16 tag, 224 opening |
+| scanning | 36 µs per foreign output, 111 µs per own |
+| address | 115 characters, `fin6` + base32(version ‖ spend ‖ view ‖ checksum) |
+| single-character typos caught | 36 of 36 tested positions |
+
+Two things the tests pin down that prose cannot. Swapping the two ciphertexts
+inside a transaction does **not** redirect the payment — the openings are hashed
+into the binding scalar, so a swapped or stripped `output_notes` fails
+verification. And `test_a_stranger_is_paid_on_a_running_network` runs the whole
+claim across four node processes and real sockets: a wallet holding nothing but
+a freshly generated seed is paid 250, finds it by trial decryption, spends 100
+onward, and reconciles to 148. It is the test that makes the wallet real, and it
+takes ten seconds.
+
+Open, still: nothing here verifies that a note is *unspent* without trusting the
+node it asked. `Client.sync` believes what it is told about its own money. The
+membership proof that would fix it is the accumulator's, and it is too large to
+serve — which is the design's open item and not the wallet's to close.
 
 ## Rendered version
 
