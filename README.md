@@ -16,7 +16,7 @@ hardened into history by a finite pool of single-use turns.
 | `mq/` | the MQ-hardened batched commitment — `ms6` (prover) and `vs6` (independent verifier) |
 | `examples/` | account-based ledger and sanctions-screening demos built on `mq/` |
 | `chain/` | the private chain: ~10,900 lines, 268 tests |
-| `docs/` | the seven design sketches the chain was built from |
+| `docs/` | the eight design sketches the chain was built from |
 
 ## Quick start
 
@@ -221,6 +221,7 @@ simulation with no clock.
 - [`docs/genesis_design.md`](docs/genesis_design.md) — what a new network must be trusted about, and for how long *(the one-tier launch is built; the rest is a sketch)*
 - [`docs/testnet_design.md`](docs/testnet_design.md) — running it for real: seven processes, a wire, a clock *(built, through stage 2)*
 - [`docs/wallet_design.md`](docs/wallet_design.md) — how a user holds money, spends it, and finds out they were paid *(built)*
+- [`docs/light_client_design.md`](docs/light_client_design.md) — the query interface, and what a client can check for itself *(sketch; not implemented)*
 - [`chain/README.md`](chain/README.md) — implementation notes, measured costs, and what the code changed about the design
 
 ## License
