@@ -49,6 +49,83 @@ def _unpack_opening(raw: bytes, owner: int, params):
                 rho=values[2], blinders=tuple(values[3:]))
 
 
+def opening_key(shared: bytes, epk: bytes, cm: str) -> bytes:
+    """The symmetric key that opens one output's sealed opening.
+
+    Named, rather than inlined in the two places that used to compute it,
+    because it is the unit of *disclosure*. A viewing key is the coarsest
+    grant there is — every note ever sent to an address, including the ones
+    nobody has sent yet. This key is the finest: it opens exactly one output
+    and says nothing about any other, because `shared` is an exchange against
+    that output's own ephemeral key and `cm` is hashed in besides.
+
+    So an auditor who needs to see three payments can be given three of these
+    instead of the ability to read everything for ever. See
+    `disclosure_key` and `open_disclosed`.
+    """
+    return h_bytes("note-key", shared, epk, cm)
+
+
+def disclosure_key(keys, blob: bytes, cm: str) -> str | None:
+    """The per-output key for one sealed opening, as hex, or None.
+
+    Derives and nothing more — whether the key actually opens this output is
+    the caller's business, and `Wallet.disclose` checks it, because a holder
+    that hands out a key it cannot use itself will disclose garbage and blame
+    the auditor.
+    """
+    if not isinstance(blob, (bytes, bytearray)) or len(blob) <= 32:
+        return None
+    epk = bytes(blob[:32])
+    try:
+        shared = keys.exchange(epk)
+    except Exception:
+        return None
+    return opening_key(shared, epk, cm).hex()
+
+
+def open_disclosed(blob: bytes, key_hex: str, cm: str, owner_hex: str, params):
+    """Open one output with nothing but its disclosure key.  The auditor side.
+
+    Deliberately self-proving. The auditor is not taking the holder's word for
+    what a note is worth: the key either decrypts the ciphertext that is on
+    the chain under that commitment, or it does not, and the reconstructed
+    note has to reproduce `cm` before this returns anything. A holder cannot
+    disclose a payment that was never made, or a different amount than the one
+    it made.
+
+    What it cannot establish is *completeness* — that you were shown every
+    note, rather than every note the holder chose to show. That needs the
+    detection secret for a range, or the output count the header already
+    commits. Worth being explicit about, because it is the question an
+    auditor actually has.
+
+    `owner_hex` is the recipient's spend key, which the opening deliberately
+    does not carry (the recipient already knows it), and which is public.
+    """
+    from cryptography.exceptions import InvalidTag
+    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+
+    if not isinstance(blob, (bytes, bytearray)) or len(blob) <= 32:
+        return None
+    body = bytes(blob[32:])
+    try:
+        key = bytes.fromhex(key_hex)
+    except (TypeError, ValueError):
+        return None
+    try:
+        raw = ChaCha20Poly1305(key).decrypt(NONCE, body, cm.encode())
+    except (InvalidTag, ValueError):
+        return None
+    try:
+        note = _unpack_opening(raw, owner_field(owner_hex), params)
+    except NoteCipherError:
+        return None
+    if note_id(note_vector(note, params)) != cm:
+        return None
+    return note
+
+
 def detection_tag(private, address) -> bytes:
     """The sender's side: tag this output to its recipient's detection key.
 
@@ -109,7 +186,7 @@ def seal_output(note, address, cm: str, params):
 
     private, epk = ephemeral()
     shared = private.exchange(address.view_key())
-    key = h_bytes("note-key", shared, epk, cm)
+    key = opening_key(shared, epk, cm)
     blob = ChaCha20Poly1305(key).encrypt(
         NONCE, _pack_opening(note, params), cm.encode())
     tag = (detection_tag(private, address) if address.detect_hex
@@ -133,7 +210,7 @@ def decrypt_opening(blob: bytes, keys, cm: str, params):
         shared = keys.exchange(epk)
     except Exception:
         return None
-    key = h_bytes("note-key", shared, epk, cm)
+    key = opening_key(shared, epk, cm)
     try:
         raw = ChaCha20Poly1305(key).decrypt(NONCE, body, cm.encode())
     except (InvalidTag, ValueError):

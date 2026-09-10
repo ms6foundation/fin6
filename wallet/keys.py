@@ -108,25 +108,35 @@ class Address:
 
 
 class WalletKeys:
-    """The secret.  Everything a wallet can do comes from here."""
+    """The secret, at one diversifier.  Everything a wallet can do comes from
+    here.
 
-    __slots__ = ("seed", "signer", "_view", "_detect")
+    One seed yields as many addresses as you want, and `index` says which.
+    That matters for disclosure rather than for privacy: a viewing key grants
+    sight of everything sent to *its* address, so an address you used for one
+    counterparty is a viewing key you can hand over without disclosing the
+    rest of your money. Index 0 is what a bare `WalletKeys(seed)` gives and is
+    byte-identical to what it always gave.
+    """
 
-    def __init__(self, seed: bytes):
+    __slots__ = ("seed", "index", "signer", "_view", "_detect")
+
+    def __init__(self, seed: bytes, index: int = 0):
         if len(seed) < 16:
             raise ValueError("a seed needs at least 16 bytes")
         self.seed = bytes(seed)
+        self.index = int(index)
         # The three derivations live in `chain.crypto`, not here: the ledger
         # has to derive a genesis holder's spend key too, and a chain reaching
         # up into the wallet package to do it would point the dependency the
         # wrong way.  What this class adds is the object — an address, an
         # encoding, and the two exchanges below.
-        self.signer = spend_signer(self.seed)
-        self._view = view_key(self.seed)
+        self.signer = spend_signer(self.seed, self.index)
+        self._view = view_key(self.seed, self.index)
         # Separate again, because the detection secret is the one a user may
         # hand to an untrusted server.  Sharing it must not imply sharing the
         # viewing key, or the tunable leak collapses into total disclosure.
-        self._detect = detect_key(self.seed)
+        self._detect = detect_key(self.seed, self.index)
 
     # ── construction ─────────────────────────────────────────────────────────
 
@@ -140,6 +150,10 @@ class WalletKeys:
     def generate(cls) -> "WalletKeys":
         import secrets
         return cls(secrets.token_bytes(32))
+
+    def at(self, index: int) -> "WalletKeys":
+        """The same secret at another diversifier — another address."""
+        return WalletKeys(self.seed, index)
 
     # ── public halves ────────────────────────────────────────────────────────
 
@@ -186,8 +200,20 @@ class WalletKeys:
             encryption_algorithm=serialization.NoEncryption()).hex()
 
     def viewing_secret(self) -> str:
-        """The read-only half, for an auditor.  Grants sight of every note sent
-        to this address, forever and unscoped — see the design's open item."""
+        """The read-only half, for an auditor.
+
+        Scoped to *this address*, which is as much as a key can be scoped: it
+        opens every note ever sent to this diversifier, including notes nobody
+        has sent yet, and nothing sent to any other. So route a counterparty
+        or a period through its own address and this is a bounded grant; use
+        one address for everything and it is your whole financial history.
+        `Wallet.new_address` is the other half of that.
+        
+        What it still is not is revocable. The auditor keeps what it can
+        decrypt; retiring the address stops the grant growing, and
+        `Wallet.disclose` is the narrower instrument when you want to show
+        three payments rather than an address.
+        """
         return self._view.private_bytes(
             encoding=serialization.Encoding.Raw,
             format=serialization.PrivateFormat.Raw,
