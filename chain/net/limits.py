@@ -50,8 +50,46 @@ COSTS = {
     "getoutputs": 10,
     "tags": 20,
     "tx": 50,
+    # Not a request, and deliberately zero: a frame is charged for its *bytes*
+    # before it is decoded, and for its kind afterwards.  A base cost here
+    # would be a flat surcharge on every small frame — it tripled the price of
+    # a `status`, which is the one request a light client makes constantly.
+    # A stream of tiny frames is priced by the kinds it carries, and a stream
+    # of tiny frames carrying no valid kind is a FrameError and a disconnect.
+    "frame": 0,
 }
 DEFAULT_COST = 5
+
+#: One token per 8 KB decoded.  Two charges, not one: the bytes pay for the
+#: decode and the kind pays for the work, and a frame refused at the door never
+#: reaches the second.
+#:
+#: The rate is set so that the ceiling and the budget agree, which is the thing
+#: that is easy to get wrong — a per-frame ceiling a source can never afford is
+#: not a ceiling, it is a decoy, and the real limit is then whatever the bucket
+#: happens to allow.  At 8 KB a token:
+#:
+#:   60 KB   (a LOCAL submission)        8 tokens
+#:   600 KB  (a three-backend submission) 75 tokens, +50 for the kind
+#:   1 MB    (`CLIENT_MAX_FRAME`)        128 tokens — inside a client's 240 burst
+#:   8 MB    (`MAX_FRAME`, a block)    1,024 tokens — inside a peer's 6,000
+#:
+#: And it prices the attack out: a client's 20 tokens a second buys one 1 MB
+#: frame every 6.4 s, so 45 ms of decode every 6.4 s — 0.7% of a core, against
+#: the 143% the same address could take when the meter ran after the decode.
+BYTES_PER_TOKEN = 8192
+
+
+def bytes_cost(nbytes: int) -> float:
+    """Tokens owed for decoding `nbytes`.
+
+    Proportional, and *not* rounded up.  Rounding up meant a 60-byte request
+    cost a whole token on top of its kind, which is a tax on exactly the small
+    frequent frames this was never aimed at — a light client's `status` went
+    from 1 token to 3.  The buckets hold floats, so there is no reason to
+    quantise: a tiny frame costs a tiny fraction and a megabyte costs 128.
+    """
+    return int(nbytes) / BYTES_PER_TOKEN
 
 #: A client may spend 240 tokens at once and earns 20 a second: two dozen
 #: inclusion proofs back to back, or four transactions a minute sustained.
@@ -115,9 +153,9 @@ class Limiter:
         return COSTS.get(kind, DEFAULT_COST)
 
     def check(self, source, kind: str, *, peer: bool = False,
-              now: float | None = None):
+              now: float | None = None, nbytes: int = 0):
         """(allowed, reason).  Never raises, never blocks."""
-        cost = self.cost_of(kind)
+        cost = self.cost_of(kind) + (bytes_cost(nbytes) if nbytes else 0)
         now = time.monotonic() if now is None else now
         with self._lock:
             bucket = self._buckets.get(source)

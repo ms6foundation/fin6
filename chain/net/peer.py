@@ -19,10 +19,24 @@ import threading
 import time
 
 from . import handshake
-from .frame import CLIENT_KINDS, FrameError, Reader, pack
+from .frame import (CLIENT_KINDS, CLIENT_MAX_FRAME, MAX_FRAME,
+                    FrameError, Reader, pack)
 
 CONNECT_RETRY = 0.5
 SOCKET_TIMEOUT = 1.0
+
+#: How many hellos one connection may send.  Opening with one is what a
+#: connection is *for*, so the first is free; a peer has no reason to send a
+#: second, and a connection sending them in a stream is replaying handshakes.
+#:
+#: Not charged to the address-keyed client bucket, and that mattered more than
+#: it looks: on a testnet every node dials from 127.0.0.1, so charging the
+#: handshake there let peer reconnections drain the budget a wallet asks
+#: questions out of — the same collision part eight split the keyspaces to
+#: avoid, reintroduced for one kind.  Repeated hellos get their own keyspace,
+#: and reconnecting for a fresh allowance is a connection-level cost, which is
+#: stage 4's business.
+MAX_HELLOS = 4
 
 
 class Mesh:
@@ -149,10 +163,10 @@ class Mesh:
             conn.settimeout(SOCKET_TIMEOUT)
             self._spawn(self._read_loop, "read", conn, addr)
 
-    def _afford(self, source, kind: str, seated: bool) -> bool:
+    def _afford(self, source, kind: str, seated: bool, nbytes: int = 0) -> bool:
         if self.limiter is None:
             return True
-        ok, why = self.limiter.check(source, kind, peer=seated)
+        ok, why = self.limiter.check(source, kind, peer=seated, nbytes=nbytes)
         if not ok:
             self._last_refusal = why
         return ok
@@ -160,25 +174,48 @@ class Mesh:
     def _greet(self, payload: dict, source: str):
         """Authenticate a hello, or refuse the connection.  Returns the peer id.
 
-        Raises `FrameError` on a bad hello, which the read loop already treats
-        as fatal: a connection that cannot prove the name it opened with has no
-        claim on the next frame.  A wallet is unaffected — a client never sends
-        a hello at all, and stays on the address-keyed budget.
+        Raises `FrameError` only when a hello claims a *roster* name and fails
+        to prove it, which the read loop already treats as fatal: a connection
+        that cannot prove the seat it claimed has no claim on the next frame.
+        A hello naming anything else is a client's label — see
+        `Verifier.claims_a_seat` — and is accepted and ignored.
         """
         if self.handshake is None:
             return payload.get("node_id")
+        if not self.handshake.claims_a_seat(payload):
+            # A wallet says hello as well, naming itself something that is not
+            # in the roster.  Nothing to prove, nothing to gain: it stays on
+            # the address-keyed budget and can never be seated.
+            return None
         ok, why, who = self.handshake.check(payload)
         if not ok:
             raise FrameError(f"hello from {source}: {why}")
         return who
 
     def _read_loop(self, conn, addr=None):
-        reader = Reader(self.chain_id)
         who = None
+        hellos = 0
         # The bucket is keyed by host, not by host and port: a new connection
         # per request would otherwise buy a fresh budget every time, which is
         # the first thing anybody flooding a node would try.
         source = addr[0] if addr else "?"
+
+        def gate(nbytes: int) -> bool:
+            """Pay for the bytes before they are decoded.
+
+            `who` is read live rather than captured: a connection starts
+            unauthenticated and is promoted by its hello, and the tier decides
+            both the budget and the ceiling.  This is the whole reason a
+            per-tier ceiling is possible at all — whether a connection has
+            proved a roster name is known before a byte of any body is parsed.
+            """
+            seated = who is not None and who in self.peers
+            key = ("peer", who) if seated else ("client", source)
+            return self._afford(key, "frame", seated, nbytes=nbytes)
+
+        # An unauthenticated connection starts on the client ceiling.  8 MB is
+        # for a block body and nothing a wallet sends is a block.
+        reader = Reader(self.chain_id, max_frame=CLIENT_MAX_FRAME, gate=gate)
         try:
             while not self._stop.is_set():
                 try:
@@ -191,13 +228,24 @@ class Mesh:
                     break
                 for msg in reader.feed(data):
                     if msg["kind"] == "hello":
-                        # Metered before it is checked, because checking it is
-                        # not free either — and unmetered was exactly what it
-                        # used to be, the one kind that reached `continue`
-                        # before the limiter was ever consulted.
-                        if not self._afford(("client", source), "hello", False):
+                        # The first hello is what opening a connection means.
+                        # Every one after it is metered, in its own keyspace,
+                        # and a stream of them ends the connection: checking a
+                        # hello is not free, and it used to be the one kind
+                        # that reached `continue` before the limiter was ever
+                        # consulted.
+                        hellos += 1
+                        if hellos > MAX_HELLOS:
+                            raise FrameError(f"{hellos} hellos on one "
+                                             f"connection")
+                        if hellos > 1 and not self._afford(
+                                ("hello", source), "hello", False):
                             continue
                         who = self._greet(msg["payload"] or {}, source)
+                        # A proven peer may send a block, so it gets the real
+                        # ceiling.  Nothing before the handshake could have.
+                        if who is not None and who in self.peers:
+                            reader.max_frame = MAX_FRAME
                         continue
                     seated = who is not None and who in self.peers
                     # Two keyspaces, not one.  On a testnet — and behind any

@@ -1,6 +1,6 @@
 # Admission — fin6 design sketch, part nine
 
-*Stages 1, 2 and 3 are built — see §10 for what changed on contact.*
+*Stages 1, 2, 3 and 5 are built — see §10 for what changed on contact.*
 
 How a node decides to spend work on a stranger. Follows `testnet_design.md`
 (part six), whose open items included "no transport authentication", and
@@ -372,10 +372,10 @@ punishable — but it is unbounded until it is punished, and it should be capped
 |---|---|
 | `transaction.py` | **built.** `authenticate(tx)` is steps 1–4 and returns an `Authenticated` carrying `(ts, v, beta)`; `verify_proof(tx, auth, backend)` is step 5 and reuses it. `verify_transaction` is now their composition, unchanged in behaviour and order of refusal |
 | `node.py` | **built.** `Node.authenticate` / `Node.verify_and_admit` are the two rungs, `submit` is both back to back; `proof_fingerprint` keys the negative cache on proof *content*; `strikes_against` / `suspect` are the budget's demotion signal. Mempool bound and fee eviction are stage 6 |
-| `net/limits.py` | byte-denominated costs, three keyspaces, sweep on a timer, per-kind frame ceilings, the refusal cap |
+| `net/limits.py` | **partly built.** `bytes_cost` prices the decode at one token per 8 KB, charged before the frame is parsed and separately from its kind. Sweep on a timer, the refusal cap and `_last_refusal` are still open |
 | `net/handshake.py` | **built**, though not as a challenge-response — see §10. A self-authenticating signed hello, verified against the roster in the genesis document |
 | `net/peer.py` | **partly built.** The hello is signed on dial, authenticated on accept, and metered; a peer is keyed on the name it proved. Bounded accept, connection caps, deadlines and the penalty box are stage 4 |
-| `net/frame.py` | per-kind size ceilings; charge the announced length before parsing the body |
+| `net/frame.py` | **built**, per *tier* rather than per kind — the kind is only known after the decode, and the tier is known before it. `Reader` takes a `gate` consulted on the announced length before the body is parsed, and `CLIENT_MAX_FRAME` is 1 MB until a connection proves a seat |
 | `net/budget.py` | **built.** `Meter` (EWMA of measured cost), `EpochBudget` (window, reserve, per-class floors), `WorkQueue` (bounded, priority-ordered, holds across epochs) |
 | `net/node.py` | **built.** `_offer_tx` authenticates inline and queues the proof; `_gossip` and `_serve_until` drain the queue out of the epoch's slack; `run_epoch` opens the budget; `status` reports both |
 | `net/seat.py` | cap `pending` |
@@ -393,7 +393,7 @@ adopts none of it agree on exactly the same blocks.
 | 2 | the work budget and the scheduler; `_handle` off the inline path | **built** |
 | 3 | the `hello` handshake; peers metered under authenticated names | **built** |
 | 4 | connection admission: caps, pool, deadlines, penalty box | not started — the layer the limiter has never seen |
-| 5 | byte-denominated costs and per-kind frame ceilings | not started — removes the 357 ms decode from paths that never needed it |
+| 5 | byte-denominated costs and per-tier frame ceilings | **built** |
 | 6 | mempool bound and fee eviction; `pending` cap | not started — the memory half, which valid transactions cause |
 | 7 | owner-keyed metering with failures charged to the note | not started — the other half of §4.3, and the first cost an attacker cannot mint |
 
@@ -440,6 +440,47 @@ the reader thread, so the symptom was "no node answered" and not anything about
 floats. Reported in whole microseconds now. Worth stating as a rule rather
 than a fix: anything that can reach `frame.pack` is integers and strings, and
 `store/codec.py` is right to refuse the rest.
+
+### Stage 3 and 5, and three more corrections
+
+**A client says hello too.** §4.1 asserted that "a client never sends a hello
+at all", and `client/rpc.py` opens `_tell` with one, naming itself
+`fin6-client`, then sends the transaction in the same breath. Treating an
+unauthenticated hello as fatal therefore closed the connection before the
+transaction was read, and every wallet submission vanished — silently, because
+a dropped frame has no reply. A name that is not in the roster is a label, not
+a claim: there is nothing to prove and nothing to gain by proving it, since
+only a roster name reaches a peer's budget. Only an unproved *roster* name is
+fatal now.
+
+**Where the charge for a handshake goes matters as much as that there is one.**
+Charging `hello` to the address-keyed client bucket starved the light client's
+tight-budget node: on a testnet every peer dials from 127.0.0.1, so peer
+reconnections were spending the tokens a wallet asks its questions out of —
+precisely the keyspace collision part eight split the buckets to avoid,
+reintroduced for one kind. The first hello on a connection is free, because
+opening with one is what a connection is for; the rest are metered in their own
+keyspace and a stream of them ends the connection.
+
+**A ceiling nobody can afford is a decoy.** The first byte price was one token
+per 4 KB, which made `CLIENT_MAX_FRAME` cost 257 tokens against a client's
+240-token capacity — so the 1 MB ceiling could never be reached and the real
+limit was whatever the bucket happened to allow. And rounding the byte cost up
+taxed exactly the small frequent frames this was never aimed at, tripling the
+price of a light client's `status`. Now it is one token per 8 KB, unrounded,
+with no base cost: a request frame pays a rounding error, a megabyte pays 128
+of a 240 burst, and an 8 MB block pays 1,024 of a peer's 6,000.
+
+The measured effect of stage 5 is the number §3 opened with: a client address
+could take 1.43 CPU-seconds per wall second in decode alone while never
+exceeding its rate limit. At one token per 8 KB its 20 tokens a second buy one
+1 MB frame every 6.4 s — 45 ms of decode, or 0.7% of a core. The residual is at
+the other end: an authenticated peer's 2,000 tokens a second still buys about
+two 8 MB frames, which is 71% of a core, and six of them could still swamp a
+node. A peer legitimately needs about 54 tokens a second, so `PEER_RATE` is
+some 37× more than the traffic justifies — but re-tuning it is part eight's
+numbers rather than this stage's, and a peer is at least now authenticated and
+accountable.
 
 And two things found while reading that this stage did not change:
 

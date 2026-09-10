@@ -14,8 +14,8 @@ import time
 from chain.crypto import Signer
 from chain.net import handshake
 from chain.net.frame import FrameError, Reader, pack
-from chain.net.limits import COSTS, Limiter
-from chain.net.peer import Mesh
+from chain.net.limits import CLIENT_CAPACITY, COSTS, Limiter
+from chain.net.peer import MAX_HELLOS, Mesh
 
 CHAIN = "fin6:" + "ab" * 32
 EPOCH = 7
@@ -60,10 +60,22 @@ def test_v3_cannot_be_impersonated_by_signing_as_itself():
     assert not ok and "did not sign" in why, why
 
 
-def test_a_name_that_is_not_in_the_roster_is_refused():
+def test_a_name_that_is_not_in_the_roster_is_refused_a_seat():
     ok, why, _ = _verifier().check(
         handshake.build(Signer.from_seed("nobody"), CHAIN, "v9", "v1", EPOCH))
     assert not ok and "not in the roster" in why, why
+
+
+def test_a_hello_that_claims_no_seat_is_not_a_claim_at_all():
+    """A wallet says hello too — `client/rpc.py` names itself `fin6-client` —
+    which part nine §4.1 got wrong when it said a client never sends one.
+    Treating that as a failed handshake closed the connection and dropped the
+    submission that followed it in the same send."""
+    v = _verifier()
+    assert not v.claims_a_seat({"node_id": "fin6-client"})
+    assert not v.claims_a_seat({})
+    assert not v.claims_a_seat(None)
+    assert v.claims_a_seat({"node_id": "v2"}), "a roster name does claim one"
 
 
 # ── what the signature has to cover ──────────────────────────────────────────
@@ -165,10 +177,15 @@ def _mesh(port, inbox, limiter):
 
 
 def _speak(port, frames, wait=0.4):
+    """Send frames down one connection.  A closed pipe is a valid outcome —
+    several of these tests are about the node hanging up."""
     sock = socket.create_connection(("127.0.0.1", port), timeout=2)
     try:
         for kind, payload in frames:
-            sock.sendall(pack(kind, CHAIN, payload, epoch=EPOCH))
+            try:
+                sock.sendall(pack(kind, CHAIN, payload, epoch=EPOCH))
+            except OSError:
+                break
             time.sleep(0.05)
         time.sleep(wait)
     finally:
@@ -226,5 +243,91 @@ def test_a_wallet_still_gets_served_without_any_hello():
         assert answered == ["status"], answered
         assert ("client", "127.0.0.1") in limiter._buckets
         assert ("peer", "v2") not in limiter._buckets
+    finally:
+        mesh.stop()
+
+
+def test_a_client_that_says_hello_is_still_served():
+    """The regression that mattered: `Client._tell` opens with a hello naming
+    `fin6-client` and sends the transaction in the same breath.  Refusing the
+    hello closed the connection before the transaction was read, so every
+    wallet submission vanished — silently, because a dropped frame has no
+    reply."""
+    port = 7960
+    inbox, limiter = queue.Queue(), Limiter()
+    mesh = _mesh(port, inbox, limiter)
+    mesh.start()
+    try:
+        _speak(port, [("hello", {"node_id": "fin6-client"}),
+                      ("tx", {"tx": "a transaction"})])
+        who, msg, _ = inbox.get(timeout=1)
+        assert msg["kind"] == "tx", msg["kind"]
+        assert who == "?", "and it is not credited to any seat"
+        assert ("peer", "fin6-client") not in limiter._buckets
+        assert ("client", "127.0.0.1") in limiter._buckets
+    finally:
+        mesh.stop()
+
+
+def test_a_client_cannot_introduce_itself_as_a_validator():
+    """The other half: naming a *roster* seat still has to be proved, and
+    failing is fatal to the connection."""
+    port = 7970
+    inbox, limiter = queue.Queue(), Limiter()
+    mesh = _mesh(port, inbox, limiter)
+    mesh.start()
+    try:
+        _speak(port, [("hello", {"node_id": "v2"}),
+                      ("tx", {"tx": "a transaction"})])
+        assert inbox.empty(), "the frame after an unproved seat claim was read"
+        assert ("peer", "v2") not in limiter._buckets
+    finally:
+        mesh.stop()
+
+
+def test_repeated_hellos_end_the_connection_without_touching_the_client_budget():
+    """Where the charge for a handshake goes matters as much as that there is
+    one.  Charging it to the address-keyed client bucket starved a node whose
+    client budget was small: on a testnet every peer dials from 127.0.0.1, so
+    peer reconnections spent the tokens a wallet asks questions out of — the
+    collision part eight split the keyspaces to avoid, reintroduced for one
+    kind.  The first hello is free, the rest have their own keyspace, and a
+    stream of them ends the connection.
+    """
+    port = 7990
+    inbox, limiter = queue.Queue(), Limiter()
+    mesh = _mesh(port, inbox, limiter)
+    mesh.start()
+    try:
+        _speak(port, [("hello", {"node_id": "fin6-client"})] * (MAX_HELLOS + 2)
+                     + [("tx", {"tx": "after the flood"})])
+        assert inbox.empty(), "the connection should have been closed"
+        assert ("hello", "127.0.0.1") in limiter._buckets, \
+            "repeated hellos are metered"
+        # The client bucket exists — every frame pays for its own bytes — but
+        # the handshakes themselves were not charged to it.
+        spent = CLIENT_CAPACITY - limiter._buckets[
+            ("client", "127.0.0.1")].tokens
+        assert spent < COSTS["hello"], \
+            f"handshakes spent {spent:.2f} of the budget a wallet needs"
+    finally:
+        mesh.stop()
+
+
+def test_one_hello_costs_a_client_next_to_nothing():
+    """The first hello pays for its own bytes, like every frame, and nothing
+    else: a couple of hundred bytes is a rounding error against a 240-token
+    burst. What it must not do is spend `COSTS["hello"]` out of the bucket a
+    wallet asks its questions from."""
+    port = 8000
+    inbox, limiter = queue.Queue(), Limiter()
+    mesh = _mesh(port, inbox, limiter)
+    mesh.start()
+    try:
+        _speak(port, [("hello", {"node_id": "fin6-client"})])
+        assert ("hello", "127.0.0.1") not in limiter._buckets
+        spent = CLIENT_CAPACITY - limiter._buckets[
+            ("client", "127.0.0.1")].tokens
+        assert spent < 1, f"one hello cost a client {spent:.2f} tokens"
     finally:
         mesh.stop()

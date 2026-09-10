@@ -15,7 +15,8 @@ from ..crypto import h_hex
 from ..hardening.params import LOCAL as LOCAL_HARDENING
 from ..net import supervisor as sv
 from ..net.clock import Clock, parse_time
-from ..net.frame import FrameError, MAX_FRAME, Reader, pack, unpack
+from ..net.frame import (CLIENT_MAX_FRAME, FrameError, MAX_FRAME, SKIPPED,
+                         Reader, pack, unpack)
 from ..net.seat import Seat, proposal_header
 from ..network import transfer
 from ..params import DEMO, LOCAL
@@ -78,6 +79,63 @@ def test_an_oversized_frame_is_refused_before_it_is_read():
         assert "announced" in str(exc)
         return
     raise AssertionError("accepted an oversized announcement")
+
+
+def test_the_gate_sees_a_frame_before_it_is_decoded():
+    """Part nine's fourth item. `feed` used to decode the body and the limiter
+    was asked afterwards, so the expensive part was already paid — 45 ms per
+    megabyte, 357 ms at the 8 MB ceiling. The gate is consulted once the body
+    has arrived and before it is parsed."""
+    seen = []
+
+    def gate(nbytes):
+        seen.append(nbytes)
+        return True
+
+    reader = Reader(CHAIN, gate=gate)
+    blob = pack("status", CHAIN, {"a": 1})
+    frames = list(reader.feed(blob))
+    assert len(frames) == 1 and seen and seen[0] < len(blob)
+
+
+def test_a_frame_the_gate_refuses_is_never_parsed():
+    """And it is discarded rather than closing the connection: being over
+    budget is not a protocol violation, unlike being over the ceiling."""
+    from ..store import codec
+    reader = Reader(CHAIN, gate=lambda n: False)
+    # Deliberately undecodable: if the gate did not stop it, `unpack` would
+    # raise rather than return, and that is the assertion.
+    body = b"not a codec frame at all"
+    head = bytearray(b"F6")
+    head.append(1)
+    codec.put_uint(head, len(body))
+    assert list(reader.feed(bytes(head) + body)) == []
+    assert reader.skipped == 1
+    # and the stream is still usable: the skipped bytes were consumed exactly
+    assert list(reader.feed(pack("status", CHAIN, None))) == []
+    assert reader.skipped == 2
+
+
+def test_an_unauthenticated_connection_gets_the_smaller_ceiling():
+    """8 MB is for a block body, and nothing a wallet sends is a block."""
+    assert CLIENT_MAX_FRAME < MAX_FRAME
+    from ..store import codec
+    reader = Reader(CHAIN, max_frame=CLIENT_MAX_FRAME)
+    head = bytearray(b"F6")
+    head.append(1)
+    codec.put_uint(head, CLIENT_MAX_FRAME + 1)
+    try:
+        list(reader.feed(bytes(head)))
+    except FrameError as exc:
+        assert "announced" in str(exc), exc
+    else:
+        raise AssertionError("an oversized client frame was accepted")
+
+
+def test_a_three_backend_submission_still_fits_a_client_frame():
+    """The ceiling has to clear the largest legitimate client frame: a
+    submission carrying all three backends' proofs, measured at 568 KB."""
+    assert CLIENT_MAX_FRAME > 600 * 1024
 
 
 def test_unknown_kinds_are_refused():

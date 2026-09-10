@@ -110,6 +110,24 @@ class Verifier:
         self.accepted = 0
         self.refused = 0
 
+    def claims_a_seat(self, payload) -> bool:
+        """Is this hello even claiming to be a validator?
+
+        A wallet introduces itself too — `client/rpc.py` opens with a hello
+        naming `fin6-client` — which part nine §4.1 got wrong when it said a
+        client never sends one.  A name that is not in the roster is a label,
+        not a claim: there is nothing to prove and nothing to be gained by
+        proving it, because only a roster name reaches a peer's budget.  So it
+        is accepted and ignored, and the connection stays a client.
+
+        Refusing it instead was a real outage in the making: the first version
+        of this treated any unauthenticated hello as fatal, closed the
+        connection, and every wallet submission was silently dropped with the
+        transaction that followed it in the same send.
+        """
+        return isinstance(payload, dict) and \
+            payload.get("node_id") in self.validators
+
     def check(self, payload):
         """(ok, reason, node_id).  Never raises."""
         if not isinstance(payload, dict):

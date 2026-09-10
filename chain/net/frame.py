@@ -18,6 +18,19 @@ MAGIC = b"F6"
 VERSION = 1
 MAX_FRAME = 8 << 20          # 8 MB: a block of ~100 transactions with one proof
 
+#: What an *unauthenticated* connection may send in one frame.  8 MB exists
+#: for a block body, and nothing a wallet sends is a block: the largest
+#: legitimate client frame is a submission carrying all three backends' proofs,
+#: measured at 568 KB (mpcith 60 KB, ssh5 203 KB, ssh3 304 KB) plus the body.
+#: 1 MB leaves room and still takes the 357 ms decode off every path that has
+#: no use for it.  A connection is promoted to `MAX_FRAME` when it
+#: authenticates as a peer, which is known before a byte of the body is parsed.
+CLIENT_MAX_FRAME = 1 << 20
+
+#: Returned by `Reader._take` for a frame the caller's gate would not pay for.
+#: The bytes are discarded without being decoded, which is the whole point.
+SKIPPED = object()
+
 KINDS = ("hello", "tx", "env", "getblock", "block",
          # what a client — a wallet — may ask a node
          "status", "status_reply", "getoutputs", "outputs_reply",
@@ -80,11 +93,24 @@ def unpack(body: bytes, expect_chain: str | None = None) -> dict:
 
 
 class Reader:
-    """Incremental parser over a byte stream.  Feed it whatever arrived."""
+    """Incremental parser over a byte stream.  Feed it whatever arrived.
 
-    def __init__(self, expect_chain: str | None = None, max_frame=MAX_FRAME):
+    `gate` is called with the announced body length once the whole body has
+    arrived and *before* it is decoded, and a falsy answer discards those bytes
+    unparsed.  It exists because the meter used to run on the other side of the
+    decode: `feed` parsed the frame and `Mesh._read_loop` then asked the
+    limiter whether it was allowed — by which time the expensive part was
+    already paid.  Decode measures 45 ms/MB, so an 8 MB frame is 357 ms, and at
+    `DEFAULT_COST` a client's four frames a second came to 1.43 CPU-seconds per
+    wall second from one address that never exceeded its rate limit.
+    """
+
+    def __init__(self, expect_chain: str | None = None, max_frame=MAX_FRAME,
+                 gate=None):
         self.expect_chain = expect_chain
         self.max_frame = max_frame
+        self.gate = gate
+        self.skipped = 0
         self._buf = bytearray()
 
     def feed(self, data: bytes):
@@ -94,6 +120,8 @@ class Reader:
             frame = self._take()
             if frame is None:
                 return
+            if frame is SKIPPED:
+                continue
             yield frame
 
     def _take(self):
@@ -114,4 +142,7 @@ class Reader:
             return None
         body = bytes(buf[pos:pos + size])
         del self._buf[:pos + size]
+        if self.gate is not None and not self.gate(size):
+            self.skipped += 1
+            return SKIPPED
         return unpack(body, self.expect_chain)

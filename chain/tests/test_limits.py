@@ -11,7 +11,8 @@ import time
 
 from chain.crypto import Signer
 from wallet.keys import WalletKeys
-from chain.net.limits import Bucket, COSTS, Limiter
+from chain.net.limits import (BYTES_PER_TOKEN, Bucket, COSTS, Limiter,
+                              bytes_cost)
 from chain.node import (MAX_INPUTS, MAX_OUTPUTS, MAX_REFUSED_PROOFS,
                         PROOF_STRIKES, Node)
 from chain.notes import Note, note_id, note_vector
@@ -275,3 +276,63 @@ def test_the_negative_cache_does_not_grow_without_bound():
         node2.submit(dataclasses.replace(tx2, proofs=proofs))
     assert 0 < len(node2._refused_proofs) <= MAX_REFUSED_PROOFS
     assert 0 < len(node2._strikes) <= MAX_REFUSED_PROOFS
+
+
+# ── paying for bytes before they are decoded ─────────────────────────────────
+
+def test_bytes_are_priced_in_proportion_and_not_quantised():
+    """Rounding up taxed the small frequent frames this was never aimed at: a
+    light client's `status` went from 1 token to 3."""
+    assert bytes_cost(0) == 0
+    assert bytes_cost(BYTES_PER_TOKEN) == 1
+    assert bytes_cost(2 * BYTES_PER_TOKEN) == 2
+    assert bytes_cost(60) < 0.01, "a request frame is not a surcharge"
+    assert bytes_cost(8 << 20) == (8 << 20) / BYTES_PER_TOKEN
+
+
+def test_a_small_request_still_costs_what_its_kind_costs():
+    lim = Limiter()
+    lim.check(("client", "a"), "status", nbytes=60)
+    used = 240 - lim._buckets[("client", "a")].tokens
+    assert abs(used - COSTS["status"]) < 0.05, used
+
+
+def test_a_frame_costs_its_bytes_as_well_as_its_kind():
+    """Two charges, not one: the bytes pay for the decode and the kind pays
+    for the work."""
+    lim = Limiter()
+    small = Bucket(1e9, 0)
+    assert lim.cost_of("tx") == COSTS["tx"]
+    ok, why = lim.check(("client", "a"), "tx", nbytes=600 * 1024)
+    assert ok, why
+    # 600 KB is 75 tokens, plus 50 for the kind, out of a 240 burst.
+    used = 240 - lim._buckets[("client", "a")].tokens
+    assert abs(used - (75 + COSTS["tx"])) < 0.5, used
+
+
+def test_the_client_ceiling_is_one_a_client_can_actually_afford():
+    """A per-frame ceiling nobody can pay for is a decoy, and the real limit
+    becomes whatever the bucket happens to allow."""
+    from chain.net.frame import CLIENT_MAX_FRAME
+    from chain.net.limits import CLIENT_CAPACITY
+    assert bytes_cost(CLIENT_MAX_FRAME) + COSTS["frame"] <= CLIENT_CAPACITY
+
+
+def test_the_peer_ceiling_is_one_a_peer_can_actually_afford():
+    from chain.net.frame import MAX_FRAME
+    from chain.net.limits import PEER_CAPACITY
+    assert bytes_cost(MAX_FRAME) + COSTS["frame"] <= PEER_CAPACITY
+
+
+def test_a_megabyte_a_second_is_priced_out_of_a_clients_budget():
+    """The number part nine §3 put on this: the same address used to be able
+    to take 1.43 CPU-seconds per wall second in decode alone, inside its rate
+    limit, because the meter ran after the decode."""
+    from chain.net.frame import CLIENT_MAX_FRAME
+    from chain.net.limits import CLIENT_RATE
+    per_frame = bytes_cost(CLIENT_MAX_FRAME) + COSTS["frame"]
+    frames_per_second = CLIENT_RATE / per_frame
+    #: 45 ms of decode per megabyte, measured.
+    decode_ms = 45 * (CLIENT_MAX_FRAME / (1 << 20))
+    share = frames_per_second * decode_ms / 1000
+    assert share < 0.02, f"a client can still take {share * 100:.0f}% of a core"
