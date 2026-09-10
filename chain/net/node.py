@@ -34,6 +34,7 @@ from ..hardening.history import NetworkHistory
 from ..hardening.pool import Era
 from ..store.db import ChainStore
 from ..tiers import SoloWorkload, run_tiered_epoch
+from .budget import EpochBudget, Priority, WorkQueue
 from .clock import Clock
 from .limits import CLIENT_CAPACITY, CLIENT_RATE, Limiter
 from .peer import Mesh
@@ -128,6 +129,14 @@ class NodeProcess:
         self.stop = threading.Event()
         self.epochs_run = 0
         self.last_reason = "not started"
+        # Part nine.  Verifying a submitted proof is 25 ms and used to happen
+        # inline on `_drain`, which is the loop that has to meet the decide
+        # deadline — so a stranger's submission and this node's attestation
+        # competed for the same thread, and the stranger did not have to win
+        # often.  Expensive work now goes in the queue and is paid for out of
+        # the epoch's slack.
+        self.budget = EpochBudget(self.clock)
+        self.work = WorkQueue()
 
     # ── plumbing ─────────────────────────────────────────────────────────────
 
@@ -156,6 +165,8 @@ class NodeProcess:
             "last": self.last_reason,
             "behaviour": self.behaviour,
             "limiter": self.limiter.stats(),
+            "budget": self.budget.stats(),
+            "work": self.work.stats(),
             "hardened": self.history.height,
             "weight": self.history.cumulative_weight,
         }
@@ -352,6 +363,10 @@ class NodeProcess:
         chain: `prev_hash` still chains, and the block simply takes the next
         height.
         """
+        # The window this epoch's expensive work is paid for out of.  Opened
+        # before the seating check, because an unseated node still serves
+        # clients and still must not be talked into spending the epoch on them.
+        self.budget.open(epoch)
         gid = self.grid_id()
         register = self.world.registers[gid]
         members = self.world.grid_members(gid)
@@ -520,6 +535,7 @@ class NodeProcess:
         while self.clock.now_ms() < deadline and not self.stop.is_set():
             self._drain(timeout=0.02)
             self.seat.react()
+            self.work.drain(self.budget, self.clock.now_ms, max_items=4)
             got = self.seat.accepted()
             if got is not None:
                 return got
@@ -547,6 +563,7 @@ class NodeProcess:
         last_sent = 0.0
         while self.clock.now_ms() < when_ms and not self.stop.is_set():
             self._drain(timeout=0.02)
+            self.work.drain(self.budget, self.clock.now_ms, max_items=8)
             if self.seat is None or epoch is None:
                 time.sleep(0.03)
                 continue
@@ -568,6 +585,40 @@ class NodeProcess:
             except Exception as exc:                     # never die on a peer
                 self.log(f"dropped a {msg.get('kind')} from {who}: {exc}")
 
+    def _offer_tx(self, tx, who):
+        """Authenticate now, verify later.  Nothing expensive on this thread.
+
+        The cheap half runs inline because it is 0.12 ms and because its answer
+        is what decides the priority: a transaction that authenticates was
+        built by someone holding spend authority over notes this node's UTXO
+        set says are live, and that is the only identity a submission has.
+        Everything after it is queued.
+        """
+        backend = self.world.params.backend_for("local")
+        ok, why, auth = self.node.authenticate(tx, backend)
+        if not ok:
+            return
+        if who in self.mesh.connected:
+            priority = Priority.PEER
+        elif self.node.suspect(tx):
+            # A body that has already had proofs fail against it goes to the
+            # back rather than being refused, because refusing it would let
+            # anyone censor a transaction by splicing bad proofs onto its body.
+            priority = Priority.ANON
+        else:
+            priority = Priority.OWNER
+
+        def verify():
+            got, reason = self.node.verify_and_admit(tx, auth, backend)
+            if got:                                      # flood it onward once
+                self.mesh.broadcast(
+                    [p for p in self.mesh.connected if p != who], "tx",
+                    {"tx": tx})
+            return got
+
+        self.work.offer(verify, priority, key=tx.txid,
+                        epoch=self.budget.epoch)
+
     def _handle(self, who, msg, conn):
         kind, payload = msg["kind"], msg["payload"]
         if kind == "stamps":
@@ -577,12 +628,7 @@ class NodeProcess:
         if kind == "tx":
             tx = payload.get("tx") if isinstance(payload, dict) else None
             if tx is not None and tx.txid not in self.node.mempool:
-                ok, why = self.node.submit(
-                    tx, backend=self.world.params.backend_for("local"))
-                if ok:                                   # flood it onward once
-                    self.mesh.broadcast(
-                        [p for p in self.mesh.connected if p != who], "tx",
-                        {"tx": tx})
+                self._offer_tx(tx, who)
             return
         if self.seat is None or msg.get("epoch") != self.seat.epoch:
             return

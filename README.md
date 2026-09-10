@@ -19,7 +19,7 @@ hardened into history by a finite pool of single-use turns.
 | `wallet/` | one seed, the notes it can spend, and the sealing that makes them findable |
 | `client/` | what talks to a node without being one: ask, follow, adjudicate |
 | `fin6/` | the command line, and the runner for all three suites |
-| `docs/` | the eight design sketches the chain was built from |
+| `docs/` | the nine design sketches the chain was built from |
 
 The three packages depend one way only — `wallet → chain`, `client → chain`,
 and nothing depends on `fin6`. The ledger does not know that anyone is

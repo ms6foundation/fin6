@@ -33,8 +33,9 @@ from .notes import Note, note_id, note_vector
 from .params import DEMO, PRESETS, STRONG, ChainParams
 from .seal import SealAccumulator, seal_root
 from .state import ChainState, UtxoDelta, merge_deltas
-from .transaction import (Transaction, TxError, build_transaction,
-                          verify_transaction, verify_transaction_vs6)
+from .transaction import (Authenticated, Transaction, TxError, authenticate,
+                          build_transaction, verify_proof, verify_transaction,
+                          verify_transaction_vs6)
 from .txsystem import TxSystem, tx_system
 
 __all__ = [
@@ -42,7 +43,7 @@ __all__ = [
     "Note", "note_id", "note_vector",
     "TxSystem", "tx_system",
     "Transaction", "TxError", "build_transaction", "verify_transaction",
-    "verify_transaction_vs6",
+    "verify_transaction_vs6", "Authenticated", "authenticate", "verify_proof",
     "SealAccumulator", "seal_root", "ChainState",
     "Block", "BlockHeader", "CeremonyMeta", "SignedProposal", "Attestation",
     "FaultReport", "QuorumCert",

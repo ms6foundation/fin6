@@ -12,7 +12,8 @@ import time
 from chain.crypto import Signer
 from wallet.keys import WalletKeys
 from chain.net.limits import Bucket, COSTS, Limiter
-from chain.node import MAX_INPUTS, MAX_OUTPUTS, Node
+from chain.node import (MAX_INPUTS, MAX_OUTPUTS, MAX_REFUSED_PROOFS,
+                        PROOF_STRIKES, Node)
 from chain.notes import Note, note_id, note_vector
 from chain.params import DEMO
 from chain.state import ChainState
@@ -152,9 +153,125 @@ def test_a_transaction_for_another_chain_never_reaches_the_prover():
     assert not ok and "for chain" in why, why
 
 
-def test_a_bad_proof_is_still_refused_and_counted():
+def test_a_mangled_body_is_refused_before_the_proof_and_counted_as_such():
+    """Part nine split the check in two, so the counters now say which half
+    refused.  A transaction whose `v` does not reproduce its own declared
+    commitments is caught by authentication at 0.12 ms; nothing reaches the
+    prover, and `bad_proofs` — which means "25 ms was spent" — stays at zero."""
     node, tx, _ = _node_and_tx()
     forged = dataclasses.replace(tx, v=tuple([1] * len(tx.v)))
-    ok, _ = node.submit(forged)
+    t = time.perf_counter()
+    ok, why = node.submit(forged)
+    spent = time.perf_counter() - t
     assert not ok
+    assert node.unauthenticated == 1 and node.bad_proofs == 0, why
+    assert spent < 0.005, f"authentication took {spent * 1000:.1f} ms"
+
+
+def test_a_bad_proof_is_still_refused_and_counted():
+    """And the expensive path still runs when it must: a body that
+    authenticates carrying a proof that does not verify is the one case where
+    the 25 ms is unavoidable."""
+    node, tx, alice = _node_and_tx()
+    other = Note.create(400, alice.address.spend_hex, PARAMS)
+    other_cm = note_id(note_vector(other, PARAMS))
+    node.state.issue(other_cm)
+    alice.held[other_cm] = Held(note=other, cm=other_cm, height=0)
+    donor, _ = alice.send(WalletKeys.from_phrase("carol").address, 100, fee=3)
+    spliced = dataclasses.replace(tx, proofs=donor.proofs)
+    ok, why = node.submit(spliced)
+    assert not ok and "proof" in why, why
     assert node.bad_proofs == 1, "the expensive path still runs when it must"
+
+
+# ── the two halves, and the cache between them ───────────────────────────────
+
+def _donor_proofs(alice, node, n=1, start=400):
+    """n transactions from `alice`, for their proofs alone.
+
+    Splicing another transaction's proof onto this body is the cheapest way to
+    make a submission that authenticates and then fails, which is exactly the
+    shape part nine is about: steps 1-4 never look at the proof bytes.
+    """
+    out = []
+    for i in range(n):
+        note = Note.create(start + i, alice.address.spend_hex, PARAMS)
+        cm = note_id(note_vector(note, PARAMS))
+        node.state.issue(cm)
+        alice.held[cm] = Held(note=note, cm=cm, height=0)
+        donor, _ = alice.send(WalletKeys.from_phrase(f"donor{i}").address,
+                              100 + i, fee=3)
+        out.append(donor.proofs)
+    return out
+
+
+def test_authentication_costs_a_fraction_of_the_proof():
+    """The seam part nine is built on.  Both halves run on every honest
+    submission; only one of them is worth metering."""
+    node, tx, _ = _node_and_tx()
+    t = time.perf_counter()
+    ok, why, auth = node.authenticate(tx)
+    cheap = time.perf_counter() - t
+    assert ok, why
+    t = time.perf_counter()
+    ok, why = node.verify_and_admit(tx, auth)
+    dear = time.perf_counter() - t
+    assert ok, why
+    assert cheap < 0.005, f"authentication took {cheap * 1000:.2f} ms"
+    assert dear > cheap * 5, (f"{dear * 1000:.1f} ms proof vs "
+                              f"{cheap * 1000:.2f} ms authentication")
+
+
+def test_a_replayed_bad_proof_is_refused_from_the_cache():
+    node, tx, alice = _node_and_tx()
+    spliced = dataclasses.replace(tx, proofs=_donor_proofs(alice, node)[0])
+
+    t = time.perf_counter()
+    assert not node.submit(spliced)[0]
+    first = time.perf_counter() - t
+    assert node.bad_proofs == 1, "the first one has to be checked"
+
+    t = time.perf_counter()
+    ok, why = node.submit(spliced)
+    again = time.perf_counter() - t
+    assert not ok and "already been refused" in why, why
+    assert node.bad_proofs == 1, "and the second one does not"
+    assert node.stale_proofs == 1
+    assert again < first / 3, (f"replay cost {again * 1000:.1f} ms against "
+                               f"{first * 1000:.1f} ms")
+
+
+def test_splicing_bad_proofs_onto_a_body_cannot_censor_it():
+    """The reason `PROOF_STRIKES` demotes rather than refuses.
+
+    An attacker watches a transaction go past in gossip, splices bad proofs
+    onto its body, and submits them.  If strikes were a refusal threshold the
+    real transaction would then be refused by every node it reached, having
+    done nothing wrong — a censorship primitive built out of a DoS defence.
+    """
+    node, tx, alice = _node_and_tx()
+    for proofs in _donor_proofs(alice, node, n=PROOF_STRIKES + 1):
+        assert not node.submit(dataclasses.replace(tx, proofs=proofs))[0]
+
+    assert node.strikes_against(tx) > PROOF_STRIKES
+    assert node.suspect(tx), "the body is suspect, which is a priority signal"
+
+    ok, why = node.submit(tx)
+    assert ok, f"the honest transaction was censored: {why}"
+    assert tx.txid in node.mempool
+
+
+def test_the_negative_cache_does_not_grow_without_bound():
+    node, tx, _ = _node_and_tx()
+    for i in range(MAX_REFUSED_PROOFS + 50):
+        node._refused_proofs[f"f{i}"] = True
+        node._strikes[f"t{i}"] = 1
+        if len(node._refused_proofs) > MAX_REFUSED_PROOFS:
+            node._refused_proofs.clear()
+    assert len(node._refused_proofs) <= MAX_REFUSED_PROOFS
+
+    node2, tx2, alice2 = _node_and_tx()
+    for proofs in _donor_proofs(alice2, node2, n=2):
+        node2.submit(dataclasses.replace(tx2, proofs=proofs))
+    assert 0 < len(node2._refused_proofs) <= MAX_REFUSED_PROOFS
+    assert 0 < len(node2._strikes) <= MAX_REFUSED_PROOFS

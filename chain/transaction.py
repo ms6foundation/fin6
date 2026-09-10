@@ -236,6 +236,154 @@ def build_transaction(spends, outputs, fee: int, params: ChainParams,
 # ═══════════════════════════════════════════════════════════════════════════════
 # Verify
 # ═══════════════════════════════════════════════════════════════════════════════
+#
+# Checking a transaction has two halves that differ by two hundred times in
+# cost, and part nine is the argument for being able to act in the gap between
+# them.  Measured on one input and two outputs:
+#
+#     authenticate    0.12 ms    the body binds, the note rows reproduce the
+#                                declared commitments, values conserve, each
+#                                nullifier is derived from the note being spent,
+#                                each spending key matches its owner slot, and
+#                                every spend signature verifies
+#     verify_proof   25.40 ms    the MQ zero-knowledge proof (mpcith)
+#
+# `verify_transaction` still runs both, in the same order, and is what every
+# consensus path calls.  The two halves are exported for the one caller that
+# needs the seam: a node deciding whether to spend 25 ms on a stranger wants to
+# know *who is asking* first, and the cheap half is what tells it — the owner
+# rows and their signatures name a party holding spend authority over notes the
+# ledger says are unspent.  See `chain/net/budget.py`.
+
+
+@dataclass(frozen=True)
+class Authenticated:
+    """The cheap half's work, kept so the expensive half need not redo it."""
+    ts: object          # the tx system for this (k, m) shape
+    v: tuple            # the declared MQ output vector, reduced mod P
+    beta: int           # the binding scalar, recomputed from the body
+
+
+def authenticate(tx: Transaction, params: ChainParams, *,
+                 chain_id: str | None = None):
+    """Everything about a transaction that does not need its proof.
+
+    Returns (ok, reason, auth) — `auth` is an `Authenticated` on success and
+    None otherwise.  Never raises.
+
+    This is steps 1-4 of the old single function, unchanged and in the same
+    order.  What it establishes is worth stating plainly, because it is the
+    only identity a submission has: the owner rows of `v` are pinned to the
+    declared commitments, each spend signature verifies against the owner key
+    in its input, and the whole thing is welded to this body by the binding
+    scalar.  A caller that has also confirmed the inputs are unspent therefore
+    knows the submitter holds spend authority over specific live notes.
+
+    What it does NOT establish: that `v` is a satisfying assignment.  Nothing
+    here touches the proof bytes, so a transaction with a mutated or garbage
+    proof passes this and fails the next step.  That asymmetry is the whole
+    reason the negative cache in `chain/node.py` exists.
+    """
+    chain_id = chain_id or params.chain_id
+    try:
+        if tx.version != TX_VERSION:
+            return False, f"unknown transaction version {tx.version}", None
+        if tx.chain_id != chain_id:
+            return False, f"wrong chain: {tx.chain_id!r} != {chain_id!r}", None
+        if tx.fee < 0:
+            return False, f"negative fee {tx.fee}", None
+        k, m = len(tx.inputs), len(tx.output_cms)
+        if k < 1 or m < 1:
+            return False, "transaction must have at least one input and output", None
+        if len(set(tx.input_cms)) != k:
+            return False, "duplicate input note", None
+        if len(set(tx.nullifiers)) != k:
+            return False, "duplicate nullifier", None
+        if tx.output_notes and len(tx.output_notes) != m:
+            return False, (f"{len(tx.output_notes)} sealed openings for {m} "
+                           f"outputs"), None
+        if tx.output_tags and len(tx.output_tags) != m:
+            return False, f"{len(tx.output_tags)} detection tags for {m} outputs", None
+        if len(set(tx.output_cms)) != m:
+            return False, "duplicate output note", None
+
+        ts = tx_system(params, k, m)
+        v = [int(a) % P for a in tx.v]
+        if len(v) != ts.m:
+            return False, f"v has {len(v)} rows, system has {ts.m}", None
+
+        # 1. binding scalar recomputed from the body
+        beta = binding_scalar(chain_id, tx.version, tx.fee, tx.input_cms,
+                              tx.output_cms, [i.owner_pub for i in tx.inputs],
+                              tx.output_notes, tx.output_tags)
+        if beta != tx.binding % P:
+            return False, "binding scalar does not match the transaction body", None
+        if v[ts.bind_row] != beta:
+            return False, "bind row does not carry the binding scalar", None
+
+        # 2. every slot's note rows must reproduce the declared commitment
+        declared = list(tx.input_cms) + list(tx.output_cms)
+        for s in range(ts.n_slots):
+            if note_id(ts.note_vector_of(v, s)) != declared[s]:
+                where = "input" if s < k else "output"
+                return False, (f"{where} {s if s < k else s - k}: note rows do "
+                               f"not match the declared commitment"), None
+
+        # 3. ledger semantics carried in the clear by v
+        if v[ts.sum_row] != tx.fee % P:
+            return False, "values do not conserve (sum row != fee)", None
+        for r in ts.asset_rows:
+            if v[r] != 0:
+                return False, "notes do not all carry the same asset", None
+        for r in ts.range_rows:
+            if v[r] != 0:
+                return False, "output range decomposition inconsistent", None
+        for r in ts.bit_rows:
+            if v[r] != 0:
+                return False, "range bit not in {0, 1}", None
+
+        # 4. nullifiers and spend authorisation
+        msg = sig_message(beta)
+        for j, tin in enumerate(tx.inputs):
+            if nullifier_id(v[ts.nf_rows[j]]) != tin.nullifier:
+                return False, f"input {j}: nullifier not derived from the note", None
+            if v[ts.owner_rows[j]] != owner_field(tin.owner_pub):
+                return False, f"input {j}: spending key is not the note's owner", None
+            if not verify_sig(tin.owner_pub, msg, tin.signature):
+                return False, f"input {j}: bad spend signature", None
+
+        return True, "ok", Authenticated(ts=ts, v=tuple(v), beta=beta)
+    except Exception as exc:                       # malformed input, never fatal
+        return False, f"malformed transaction: {exc.__class__.__name__}: {exc}", None
+
+
+def verify_proof(tx: Transaction, params: ChainParams, auth: Authenticated, *,
+                 verifier=None, backend: str | None = None):
+    """The expensive half: the MQ proof, against an already-authenticated body.
+
+    `auth` must come from `authenticate` on this same transaction — it carries
+    the recomputed binding scalar, so the proof is checked against the body the
+    cheap half verified rather than against anything the transaction claims a
+    second time.  Returns (ok, reason).  Never raises.
+    """
+    backend_name = backend or params.default_backend
+    try:
+        proof = tx.proofs.get(backend_name)
+        if proof is None:
+            return False, (f"no {backend_name} proof attached "
+                           f"(has {sorted(tx.proofs)})")
+        ts, v, beta = auth.ts, list(auth.v), auth.beta
+        if verifier is not None:
+            ok = verifier(ts, v, {ts.bind_pos: beta}, proof)
+        else:
+            ok = get_backend(backend_name).verify(ts, v, {ts.bind_pos: beta},
+                                                  proof)
+        if not ok:
+            return False, f"MQ proof failed ({backend_name})"
+        return True, "ok"
+    except Exception as exc:                       # malformed proof, never fatal
+        return False, f"malformed proof: {exc.__class__.__name__}: {exc}"
+
 
 def verify_transaction(tx: Transaction, params: ChainParams, *,
                        utxo_has=None, nf_has=None, chain_id: str | None = None,
@@ -248,89 +396,18 @@ def verify_transaction(tx: Transaction, params: ChainParams, *,
                            independent one named by params.default_backend)
     verifier               override the checking function itself; pass the vs6
                            copy to exercise the prover-independent verifier
+
+    The composition of `authenticate` and `verify_proof`, then the ledger
+    checks.  Unchanged in behaviour and in order of refusal; the halves are
+    separate so a node under load can pay for them separately.
     """
-    backend_name = backend or params.default_backend
-    chain_id = chain_id or params.chain_id
+    ok, why, auth = authenticate(tx, params, chain_id=chain_id)
+    if not ok:
+        return False, why
+    ok, why = verify_proof(tx, params, auth, verifier=verifier, backend=backend)
+    if not ok:
+        return False, why
     try:
-        if tx.version != TX_VERSION:
-            return False, f"unknown transaction version {tx.version}"
-        if tx.chain_id != chain_id:
-            return False, f"wrong chain: {tx.chain_id!r} != {chain_id!r}"
-        if tx.fee < 0:
-            return False, f"negative fee {tx.fee}"
-        k, m = len(tx.inputs), len(tx.output_cms)
-        if k < 1 or m < 1:
-            return False, "transaction must have at least one input and output"
-        if len(set(tx.input_cms)) != k:
-            return False, "duplicate input note"
-        if len(set(tx.nullifiers)) != k:
-            return False, "duplicate nullifier"
-        if tx.output_notes and len(tx.output_notes) != m:
-            return False, (f"{len(tx.output_notes)} sealed openings for {m} "
-                           f"outputs")
-        if tx.output_tags and len(tx.output_tags) != m:
-            return False, f"{len(tx.output_tags)} detection tags for {m} outputs"
-        if len(set(tx.output_cms)) != m:
-            return False, "duplicate output note"
-
-        ts = tx_system(params, k, m)
-        v = [int(a) % P for a in tx.v]
-        if len(v) != ts.m:
-            return False, f"v has {len(v)} rows, system has {ts.m}"
-
-        # 1. binding scalar recomputed from the body
-        beta = binding_scalar(chain_id, tx.version, tx.fee, tx.input_cms,
-                              tx.output_cms, [i.owner_pub for i in tx.inputs],
-                              tx.output_notes, tx.output_tags)
-        if beta != tx.binding % P:
-            return False, "binding scalar does not match the transaction body"
-        if v[ts.bind_row] != beta:
-            return False, "bind row does not carry the binding scalar"
-
-        # 2. every slot's note rows must reproduce the declared commitment
-        declared = list(tx.input_cms) + list(tx.output_cms)
-        for s in range(ts.n_slots):
-            if note_id(ts.note_vector_of(v, s)) != declared[s]:
-                where = "input" if s < k else "output"
-                return False, f"{where} {s if s < k else s - k}: note rows do " \
-                              f"not match the declared commitment"
-
-        # 3. ledger semantics carried in the clear by v
-        if v[ts.sum_row] != tx.fee % P:
-            return False, "values do not conserve (sum row != fee)"
-        for r in ts.asset_rows:
-            if v[r] != 0:
-                return False, "notes do not all carry the same asset"
-        for r in ts.range_rows:
-            if v[r] != 0:
-                return False, "output range decomposition inconsistent"
-        for r in ts.bit_rows:
-            if v[r] != 0:
-                return False, "range bit not in {0, 1}"
-
-        # 4. nullifiers and spend authorisation
-        msg = sig_message(beta)
-        for j, tin in enumerate(tx.inputs):
-            if nullifier_id(v[ts.nf_rows[j]]) != tin.nullifier:
-                return False, f"input {j}: nullifier not derived from the note"
-            if v[ts.owner_rows[j]] != owner_field(tin.owner_pub):
-                return False, f"input {j}: spending key is not the note's owner"
-            if not verify_sig(tin.owner_pub, msg, tin.signature):
-                return False, f"input {j}: bad spend signature"
-
-        # 5. the zero-knowledge proof itself, in the tier's system
-        proof = tx.proofs.get(backend_name)
-        if proof is None:
-            return False, (f"no {backend_name} proof attached "
-                           f"(has {sorted(tx.proofs)})")
-        if verifier is not None:
-            ok = verifier(ts, v, {ts.bind_pos: beta}, proof)
-        else:
-            ok = get_backend(backend_name).verify(ts, v, {ts.bind_pos: beta},
-                                                  proof)
-        if not ok:
-            return False, f"MQ proof failed ({backend_name})"
-
         # 6. ledger state, when the caller supplied it
         if utxo_has is not None:
             for tin in tx.inputs:
