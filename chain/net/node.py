@@ -29,12 +29,13 @@ from .. import genesis as genesis_mod
 from ..block import CeremonyMeta
 from ..ceremony import Grid
 from ..crypto import Signer, h_bytes, h_hex
-from ..register import Standing
+from ..register import AttendanceRoll, Standing
 from ..hardening.history import NetworkHistory
 from ..hardening.pool import Era
 from ..store.db import ChainStore
 from ..tiers import SoloWorkload, run_tiered_epoch
 from .budget import EpochBudget, Priority, WorkQueue
+from .catchup import BATCH, BodyCache, Catchup
 from .clock import Clock
 from .limits import CLIENT_CAPACITY, CLIENT_RATE, Limiter
 from .peer import Mesh
@@ -104,7 +105,12 @@ class NodeProcess:
                          signer=self.signer, validators=self.validators,
                          epoch_now=self.clock.epoch_now)
         self.seat: Seat | None = None
-        self.bodies: dict = {}
+        # Bounded, because it used to be an unbounded dict that every block a
+        # node saw was appended to — a leak, and an accidental answer to "how
+        # far back can a peer be helped", which deserves a number.  That
+        # number is now `catchup.BODY_WINDOW`.
+        self.bodies = BodyCache()
+        self.catchup = Catchup()
         # What a wallet needs and a validator does not — every output the chain
         # has produced and every nullifier it has published — lives in the
         # store, not in this process.  It is the same rows the ledger already
@@ -194,6 +200,8 @@ class NodeProcess:
             "limiter": self.limiter.stats(),
             "budget": self.budget.stats(),
             "work": self.work.stats(),
+            "catchup": self.catchup.stats(),
+            "bodies": len(self.bodies),
             "hardened": self.history.height,
             "weight": self.history.cumulative_weight,
         }
@@ -394,6 +402,14 @@ class NodeProcess:
         # before the seating check, because an unseated node still serves
         # clients and still must not be talked into spending the epoch on them.
         self.budget.open(epoch)
+        # Before seating, not after.  Catching up once the ceremony has been
+        # and gone leaves a node permanently one block short: it learns the
+        # height from this epoch's proposal, fetches the block, applies it —
+        # and by then the proposal it could have attested to has expired.  The
+        # target is already known from the epoch before, so the right moment is
+        # here, while the seat's height is still to be decided.
+        if self.catchup.behind(self.world.height) > 0:
+            self._catch_up(self.clock.decide_deadline(epoch))
         gid = self.grid_id()
         register = self.world.registers[gid]
         members = self.world.grid_members(gid)
@@ -435,7 +451,7 @@ class NodeProcess:
                 sp = None
             if sp is not None:
                 body = self.seat.blocks[sp.block_hash]
-                self.bodies[sp.block_hash] = body
+                self.bodies.put(body)
                 # Push the body to the seats that will need it first.  The
                 # header alone would cost them a round-trip before they can
                 # validate anything.
@@ -446,10 +462,28 @@ class NodeProcess:
         if accepted is None:
             self.last_reason = f"epoch {epoch}: {self.seat.why_not()}"
             self.log(self.last_reason)
+            # The most common reason a seat cannot reach quorum is that it is
+            # the odd one out, and the leader's signed header says so: a
+            # proposal for height h proves h-1 exists, whoever else agreed.
+            # Minus one because the proposed block is not finalised yet, and
+            # asking a peer for a height nobody has applied would be asking
+            # for the future.
+            # Not minus one: by the end of an epoch the proposed block is
+            # either finalised or it is not, and a peer only serves bodies
+            # that carry a certificate — so asking for a height nobody agreed
+            # costs one unanswered request, while asking for one less leaves
+            # this node a block short for ever.
+            self.catchup.note_height(self.seat.signed_height())
+            self._catch_up(self.clock.commit_deadline(epoch))
             self._serve_until(self.clock.commit_deadline(epoch), epoch)
             return
 
         block, cert = accepted
+        # Explicitly, and not by relying on `Seat.accepted` having set the
+        # certificate in place on the object the cache happens to hold: that
+        # aliasing is what left peers serving pre-agreement proposals to a
+        # node trying to catch up, which then refused every one of them.
+        self.bodies.put(block)
         self.world.pending_rolls[gid] = self.seat.roll(cert)
         self.world.apply_network_block(block)
         self._stamp(block)
@@ -590,6 +624,7 @@ class NodeProcess:
         last_sent = 0.0
         while self.clock.now_ms() < when_ms and not self.stop.is_set():
             self._drain(timeout=0.02)
+            self._catch_up(when_ms)
             self.work.drain(self.budget, self.clock.now_ms, max_items=8)
             if self.seat is None or epoch is None:
                 time.sleep(0.03)
@@ -611,6 +646,136 @@ class NodeProcess:
                 self._handle(who, msg, conn)
             except Exception as exc:                     # never die on a peer
                 self.log(f"dropped a {msg.get('kind')} from {who}: {exc}")
+
+    def _serve_blocks(self, who: str, payload: dict):
+        """Answer a peer that is behind, with what is still held.
+
+        Only a connected peer is answered — a client has the `headers` and
+        `hardened` interfaces for the spine, and no business asking a
+        validator to replay bodies at it.
+        """
+        try:
+            start = max(1, int(payload.get("from", 1)))
+            end = int(payload.get("to", start))
+        except (TypeError, ValueError):
+            return
+        end = min(end, start + BATCH - 1)
+        bodies = self.bodies.range(start, end)
+        if not bodies:
+            return
+        self.mesh.send(who, "blocks", {"blocks": bodies})
+        self.log(f"catch-up: served {len(bodies)} bodies "
+                 f"({start}-{end}) to {who}")
+
+    def _ask_for_blocks(self):
+        """Ask every connected peer for the next run of heights we are missing.
+
+        Broadcast rather than chosen: any peer that still holds the range can
+        answer, duplicates cost a buffer lookup, and picking a peer well needs
+        the peer-quality information the trust list deliberately does not feed
+        into anything that matters.
+        """
+        want = self.catchup.wanted(self.world.height)
+        if want is None:
+            return False
+        start, end = want
+        self.log(f"catch-up: behind by "
+                 f"{self.catchup.behind(self.world.height)}, asking for "
+                 f"{start}-{end}")
+        self.mesh.broadcast(self.mesh.connected, "getblocks",
+                            {"from": start, "to": end})
+        return True
+
+    def _roll_of_epoch(self, gid: str, epoch: int) -> AttendanceRoll:
+        """The roll the ceremony of `epoch` produced, recomputed.
+
+        `Seat.roll` is a pure function of the grid's seats, and the seats are a
+        pure function of the register and the epoch seed — which is the one
+        property of that stopgap worth having: a node that was absent for the
+        ceremony can still work out what every node present wrote down.  Called
+        with the register as it stands *before* the block is applied, which is
+        where the live path calls it from too.
+        """
+        members = self.world.grid_members(gid)
+        register = self.world.registers[gid]
+        seed = h_hex("view", self.doc.first_seed, epoch, gid, 0)
+        grid = Grid.seat(members, self.world.params.row_size, seed,
+                         standing={n: register.standing_of(n)
+                                   for n in members})
+        return AttendanceRoll(grid_id=gid, epoch=epoch,
+                              leader_id=grid.leader,
+                              seated=tuple(sorted(grid.seats)),
+                              attended=tuple(sorted(grid.seats)))
+
+    def _apply_caught_up(self, block):
+        """Validate one fetched block exactly as a seat would, then apply it.
+
+        Nothing here is a shortcut.  The block must chain onto the tip this
+        node holds, its certificate must carry the register's own quorum in
+        the roster's own keys, and `SoloWorkload.validate` is the same check
+        the ceremony runs — so a node adopts by catch-up only what it could
+        have agreed to in the epoch it missed.
+        """
+        header = block.header
+        if header.height != self.world.height + 1:
+            return False, (f"height {header.height} does not follow "
+                           f"{self.world.height}")
+        if header.prev_hash != self.world.tip:
+            return False, "does not chain onto the tip this node holds"
+        if header.chain_id != self.doc.chain_id:
+            return False, f"block is for chain {str(header.chain_id)[:20]}…"
+
+        gid = self.grid_id()
+        register = self.world.registers[gid]
+        quorum = register.quorum(self.world.params.quorum_num,
+                                 self.world.params.quorum_den)
+        cert = block.quorum_cert
+        if cert is None:
+            return False, "no quorum certificate"
+        ok, why = cert.verify(quorum, block.hash(), validators=self.validators)
+        if not ok:
+            return False, f"certificate: {why}"
+
+        workload = SoloWorkload(self.world, gid, header.epoch,
+                                self.world.params.backend_for("local"))
+        ok, why = workload.validate(self.node, block)
+        if not ok:
+            return False, why
+
+        # Exactly what the live path does at this point, and for the same
+        # reason: a block carries the roll of the epoch *before* it, so the
+        # roll this epoch produced has to be standing in `pending_rolls` before
+        # the block is applied or the next block cannot be validated. Setting
+        # it to the roll the block *carries* is the tempting wrong answer — it
+        # is one epoch stale, and the next block is then refused with
+        # "attendance roll is not the one this grid produced".
+        self.world.pending_rolls[gid] = self._roll_of_epoch(gid, header.epoch)
+        self.world.apply_network_block(block)
+        self.bodies.put(block)
+        self._stamp(block)
+        self.log(f"catch-up: applied height {block.height} "
+                 f"{block.hash()[:16]}…")
+        return True, "ok"
+
+    def _catch_up(self, deadline_ms: int) -> int:
+        """Apply what has arrived, then ask for more.  Returns blocks applied.
+
+        Run at ceremony priority, which sounds generous and is not: the
+        reserve exists so that a proposal can be validated before the decide
+        deadline, and a node this far behind cannot validate the proposal at
+        all.  Spending that reserve on the one thing that would let it is the
+        reserve doing its job.
+        """
+        if self.catchup.behind(self.world.height) <= 0:
+            return 0
+        applied = self.catchup.advance(
+            self._apply_caught_up, lambda: self.world.height,
+            budget=lambda: (self.clock.now_ms() < deadline_ms
+                            and self.budget.afford(Priority.CEREMONY)[0]))
+        if self.catchup.last_reason and not applied:
+            self.log(f"catch-up: {self.catchup.last_reason}")
+        self._ask_for_blocks()
+        return applied
 
     def _offer_tx(self, tx, who):
         """Authenticate now, verify later.  Nothing expensive on this thread.
@@ -657,6 +822,22 @@ class NodeProcess:
             if tx is not None and tx.txid not in self.node.mempool:
                 self._offer_tx(tx, who)
             return
+
+        # Catch-up, and both halves have to sit *before* the epoch guard: a
+        # node that is behind is by definition not in the epoch its helper is
+        # in, and the old guard is exactly why there was no way back.
+        if kind == "getblocks":
+            if who in self.mesh.connected:
+                self._serve_blocks(who, payload if isinstance(payload, dict)
+                                   else {})
+            return
+        if kind == "blocks":
+            if who in self.mesh.connected:
+                got = self.catchup.absorb(
+                    (payload or {}).get("blocks") or [])
+                if got:
+                    self.log(f"catch-up: {got} block bodies from {who}")
+            return
         if self.seat is None or msg.get("epoch") != self.seat.epoch:
             return
         if kind == "env":
@@ -670,7 +851,7 @@ class NodeProcess:
         elif kind == "block":
             body = (payload or {}).get("block")
             if body is not None:
-                self.bodies[body.hash()] = body
+                self.bodies.put(body)
                 self.seat.offer_block(body)
 
 

@@ -125,7 +125,13 @@ class TierWorld:
             node = self.nodes[nid]
             node.store.commit(block=block, delta=merged, state=node.state,
                               undo=record,
-                              registers={g: self.registers[g] for g in touched})
+                              registers={g: self.registers[g] for g in touched},
+                              # Written every time, because a block carries the
+                              # roll of the epoch before it: a node that comes
+                              # back without this cannot validate the next
+                              # block, whether it is catching up or was never
+                              # behind at all.
+                              rolls=self.rolls)
 
     # ── growing ──────────────────────────────────────────────────────────────
 
@@ -229,6 +235,8 @@ class TierWorld:
             node._reserved_nf.clear()
             node._reserved_cm.clear()
         self.registers = store.load_registers()
+        self.rolls = store.load_rolls()
+        self.pending_rolls = {}
         self.height = state.height
         self.tip = state.tip
         return self

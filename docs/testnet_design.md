@@ -253,7 +253,7 @@ on disagreement so a CI job can be a testnet run.
 | 1 | frames, transport, node loop, `net up` / `status` — no hardening, one tier, seven nodes | **built** |
 | 2 | block fetch by hash, transaction gossip | **built** |
 | 3 | hardening with `LOCAL` params | presets built, not wired into the node loop |
-| 4 | chaos: kill, pause, partition, skew | `Testnet.kill` and `pause` exist; nothing asserts what should follow |
+| 4 | chaos: kill, pause, partition, skew | *partly.* `chain/tests/test_catchup.py` now asserts what follows a kill and a pause: the victim rejoins, reaches the same tip, and every root agrees. Partition and skew still assert nothing |
 | 5 | growth: admit nodes, watch a grid get founded, tiers go 1 → 2 → 3 | not started — needs peer discovery |
 | 6 | more than one host | not started |
 
@@ -267,7 +267,8 @@ Stage 1 is a few hundred lines. Stages 2 and 4 are where the findings will be.
 | `net/peer.py` | the mesh: dialling, accepting, one inbox, reconnection |
 | `net/seat.py` | one node's side of a ceremony — propose, absorb, react, decide |
 | `net/clock.py` | epoch from wall time, deadlines, deliberate skew |
-| `net/node.py` | the process: identity, store, epoch loop, gossip, block fetch |
+| `net/node.py` | the process: identity, store, epoch loop, gossip, block fetch, catch-up |
+| `net/catchup.py` | the way back: a buffer of blocks a node is behind on, the walk forward, and the bounded window of bodies a peer can serve |
 | `net/node_main.py` | `python3 -m chain.net.node_main DIR ID` |
 | `net/supervisor.py` | lay out, start, stop, kill, pause, and read the status of a testnet |
 | `cli.py` | `fin6 genesis new` / `net up` / `net status` / `tx send` |
@@ -290,7 +291,7 @@ networked; only the parts that were pretending to be a network do.**
 | **Deciding is not a reason to stop talking** | A seat that reached quorum first went quiet and took its attestation with it, leaving the seats one short stuck. Nodes now keep gossiping until the commit deadline. Worth a rule in the design, not just a fix in the loop. |
 | **Genesis was not reproducible** | Note randomness was drawn fresh per process, so seven nodes computed seven different genesis states from the same document. Now derived from the document digest — which makes every genesis opening public, and is one more argument for the mint of part five §2. |
 | No transport authentication | Content is signed, connections are not. A peer can flood, and nothing rate-limits it. Fine on loopback, not fine on stage 6. |
-| **A node that falls behind stays behind** | There is no catch-up: a node that misses an epoch cannot rejoin, because it has no way to fetch the block it missed. A `kill -9` at the fault bound leaves the network running on exactly its quorum, which is one straggler away from a stall. This is the largest missing piece and the next thing to build. |
+| ~~A node that falls behind stays behind~~ | **Fixed in part nine.** `net/catchup.py`: bodies addressed by *height* rather than by hash — the old `getblock` took a hash the behind node could not know, which was the circularity — triggered by the height a verified leader signature claims, and applied in order through the same `SoloWorkload.validate` and quorum check the ceremony runs. Two things had to be fixed with it. Catch-up has to run **before** seating, or a node stays permanently one block short: it learns the height from this epoch's proposal, fetches the block, and by then the proposal it could have attested to has expired. And `world.rolls` had to become durable — a block carries the roll of the epoch before it, so a node that came back without that roll could not validate the *next* block either, whether it was behind or not. What is still open is the range: bodies live only in memory (`netblock` keeps the header and the certificate), so a peer can help across `BODY_WINDOW` blocks — about 21 minutes at the shipped interval — and a node further behind than that needs state sync from a snapshot, which nothing schedules. |
 | No peer discovery | Peers come from the genesis roster and `net.toml`. A network that grows needs joiners to find seats, which is the operational half of the founding rule. |
 | View change over a real network | In process it is a retry loop with a fresh seed. With timeouts and partial delivery it is a protocol, and it is not designed. |
 | The lazy stamper, again | `lazy` is in the fault table because the testnet can *run* it, not because anything catches it. Still part three's open item. |

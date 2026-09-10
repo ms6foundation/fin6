@@ -65,6 +65,7 @@ class Seat:
                             self.chain_id, validators, counting)
         self.blocks: dict = {}        # block_hash -> body we hold
         self.pending: dict = {}       # block_hash -> header awaiting a body
+        self._signed_height = 0       # highest height a leader signed for
         self.validated = None         # (block_hash, ok, why)
         self.reacted = False
 
@@ -100,6 +101,15 @@ class Seat:
         self.blocks[digest] = block
         self.pending.pop(digest, None)
         return True
+
+    def signed_height(self) -> int:
+        """The highest height a verified leader signature has claimed.
+
+        The catch-up trigger, and the reason it cannot be forged: every header
+        counted here passed `_take_header`, which checks the roster key and
+        the signature before believing anything else about it.
+        """
+        return self._signed_height
 
     def absorb(self, payload: dict) -> int:
         """Merge one peer's envelope frame.  Returns how much was new."""
@@ -137,6 +147,10 @@ class Seat:
                                      header["epoch"], header["grid_seed"])
         if not verify_sig(header["public_hex"], msg, header["signature"]):
             return 0
+        # Signed by this epoch's leader, so the height it claims is a fact
+        # about the chain and not a claim about it.  A seat that is behind
+        # learns so here, and nowhere else it could trust.
+        self._signed_height = max(self._signed_height, int(header["height"]))
         body = self.blocks.get(digest)
         if body is not None:
             sp = SignedProposal(block=body, leader_id=header["leader_id"],
@@ -236,6 +250,13 @@ class Seat:
         if self.env.substantiated_equivocation() is not None:
             return "leader equivocated"
         if not self.env.proposals:
+            if self.pending:
+                # Worth distinguishing: a seat that has the leader's signed
+                # header and not its body is in a different situation from one
+                # that heard nothing, and reporting both as silence sent me
+                # looking at the wrong half of the protocol more than once.
+                return (f"header seen, waiting for the block body "
+                        f"({len(self.pending)} pending)")
             return "no proposal reached this seat"
         if len(self.env.proposals) > 1:
             return "conflicting proposals"

@@ -55,6 +55,13 @@ SCHEMA = (
     "CREATE INDEX IF NOT EXISTS nullifier_height ON nullifier(height)",
     "CREATE TABLE IF NOT EXISTS grid_register("
     "  grid_id TEXT PRIMARY KEY, blob BLOB NOT NULL)",
+    # The roll each grid produced in the epoch of the tip.  It has to be here
+    # because a block carries the roll of the epoch before it, so a node that
+    # cannot remember that roll cannot validate the next block at all — which
+    # is what made a restart unrecoverable quite apart from having no way to
+    # fetch the blocks it missed.
+    "CREATE TABLE IF NOT EXISTS grid_roll("
+    "  grid_id TEXT PRIMARY KEY, blob BLOB NOT NULL)",
     # `blob` is the whole header, canonically encoded.  The columns beside it
     # are for looking at; the blob is what a client is served, because a header
     # a node has reassembled from columns is a header a node could get wrong.
@@ -206,6 +213,19 @@ class ChainStore:
             "utxo": utxo, "utxo_dead": dead, "nullifiers": nfs,
             "history": spine})
 
+    def load_rolls(self) -> dict:
+        """The rolls of the tip's epoch, by grid.
+
+        Empty is a legitimate answer — a chain at genesis has produced none —
+        and is distinguishable from a lost one only by the height, which is why
+        this is written on every commit rather than only when it changes.
+        """
+        out = {}
+        for grid_id, blob in self.db.execute(
+                "SELECT grid_id, blob FROM grid_roll"):
+            out[grid_id] = codec.decode(blob)
+        return out
+
     def load_registers(self) -> dict:
         return {gid: GridRegister.load(codec.decode(blob))
                 for gid, blob in self.db.execute(
@@ -276,7 +296,7 @@ class ChainStore:
     # ── the commit ───────────────────────────────────────────────────────────
 
     def commit(self, *, block, delta, state: ChainState, undo: UndoRecord,
-               registers: dict | None = None):
+               registers: dict | None = None, rolls: dict | None = None):
         """One network block, applied or not applied.
 
         The caller has already moved its in-memory state forward; this makes
@@ -321,6 +341,8 @@ class ChainStore:
                  codec.encode(block.quorum_cert) if block.quorum_cert else None))
             if registers:
                 self._put_registers(registers)
+            if rolls is not None:
+                self._put_rolls(rolls)
             self.db.execute("INSERT INTO undo(height,blob) VALUES(?,?)",
                             (undo.height, codec.encode(_undo_dump(undo))))
             self._prune_undo(header.height)
@@ -427,6 +449,12 @@ class ChainStore:
 
     def _count(self, table) -> int:
         return self.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+
+    def _put_rolls(self, rolls: dict):
+        self.db.execute("DELETE FROM grid_roll")
+        self.db.executemany(
+            "INSERT INTO grid_roll(grid_id,blob) VALUES(?,?)",
+            [(gid, codec.encode(roll)) for gid, roll in rolls.items()])
 
     def _put_registers(self, registers: dict):
         self.db.executemany(

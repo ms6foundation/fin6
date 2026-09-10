@@ -32,6 +32,11 @@ CLIENT_MAX_FRAME = 1 << 20
 SKIPPED = object()
 
 KINDS = ("hello", "tx", "env", "getblock", "block",
+         # catch-up: bodies addressed by height rather than by hash, because a
+         # node that fell behind knows which heights it is missing and cannot
+         # know their hashes — that circularity was the whole reason there was
+         # no way back
+         "getblocks", "blocks",
          # what a client — a wallet — may ask a node
          "status", "status_reply", "getoutputs", "outputs_reply",
          "txstatus", "txstatus_reply", "submit_reply",
