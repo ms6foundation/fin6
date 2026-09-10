@@ -323,3 +323,66 @@ def test_a_paused_node_catches_up_when_it_is_let_go():
             net.down()
     finally:
         shutil.rmtree(root, ignore_errors=True)
+
+
+def _narrow_window(root, node_id, blocks):
+    """Give one node a tiny body window, so "past the window" is reachable in
+    a test rather than in twenty minutes of epochs."""
+    path = os.path.join(root, "net.json")
+    import json
+    with open(path) as fh:
+        net = json.load(fh)
+    net["nodes"][node_id]["body_window"] = blocks
+    with open(path, "w") as fh:
+        json.dump(net, fh, indent=2)
+
+
+def test_a_node_past_the_body_window_recovers_by_state():
+    """The boundary of the previous fix, and what is on the other side of it.
+
+    Bodies live only in memory, so replay reaches `BODY_WINDOW` blocks and no
+    further — beyond that a node was still permanently dead, which is the
+    honest thing that was left open. `store/snapshot.py` could already export
+    a state and certify it against a header; nothing carried one between
+    nodes. Now `getsnapshot` does.
+
+    Every node here gets the narrow window, because the victim has to be past
+    *its helpers'* window for replay to be impossible.
+    """
+    root = tempfile.mkdtemp(prefix="fin6-snapsync-")
+    base_port = 8900 + (os.getpid() % 30) * 10
+    try:
+        sv.new_testnet(root, nodes=4, preset="local", epoch_millis=2500,
+                       base_port=base_port, force=True)
+        for node_id in sorted(sv.Testnet(root).net["nodes"]):
+            _narrow_window(root, node_id, 2)
+        net = sv.Testnet(root)
+        net.up(start_in_ms=4000)
+        try:
+            net.wait_for_height(2, timeout=75)
+            victim = sorted(net.net["nodes"])[3]
+            assert net.kill(victim)
+            fell = max(s["height"] for s in net.status().values() if s)
+
+            # Well past a two-block window, so no peer can replay to it.
+            net.wait_for_height(fell + 6, timeout=90, quorum=3)
+            ahead = max(s["height"] for s in net.status().values() if s)
+
+            net.start(victim)
+            deadline = time.time() + 90
+            mine = None
+            while time.time() < deadline:
+                time.sleep(1.5)
+                mine = net.status().get(victim)
+                if mine and mine["height"] >= ahead:
+                    break
+            assert mine and mine["height"] >= ahead, (
+                f"{victim} stopped at "
+                f"{(mine or {}).get('height')} against {ahead}")
+            assert mine["snapshots"]["adopted"] > 0, \
+                "it caught up by replay, so this test proved nothing"
+            _assert_one_chain(net, expect=4)
+        finally:
+            net.down()
+    finally:
+        shutil.rmtree(root, ignore_errors=True)

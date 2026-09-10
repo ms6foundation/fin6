@@ -219,6 +219,28 @@ class TierWorld:
             self.nodes[nid].store = store
         return store
 
+    def adopt(self, state, registers: dict, rolls: dict | None = None):
+        """Take a snapshot's state as this world's, in memory.
+
+        The mirror of `restore_from`, and the difference is where the state
+        came from: `restore_from` reads what this node wrote, `adopt` takes
+        what a peer sent and a header proved. Everything else is the same, and
+        the mempools go for the same reason — they describe a chain this node
+        is no longer on.
+        """
+        for node in self.nodes.values():
+            node.state = state.copy()
+            node.mempool.clear()
+            node._verified.clear()
+            node._reserved_nf.clear()
+            node._reserved_cm.clear()
+        self.registers = dict(registers)
+        self.rolls = dict(rolls or {})
+        self.pending_rolls = {}
+        self.height = state.height
+        self.tip = state.tip
+        return self
+
     def restore_from(self, store):
         """Replace every node's ledger and the registers with what is on disk.
 

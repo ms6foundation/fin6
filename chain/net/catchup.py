@@ -50,6 +50,12 @@ BODY_WINDOW = 64
 #: request repeats.
 BATCH = 8
 
+#: What one frame will carry of a state.  A peer refuses to serve more rather
+#: than sending a frame nobody will accept; `store/snapshot.py` is chunked
+#: precisely so ranges can come from different peers, and a state past this
+#: needs that rather than a bigger frame.
+MAX_SNAPSHOT = 6 << 20
+
 
 class Catchup:
     """One node's buffer of blocks it is behind on, and the walk forward.

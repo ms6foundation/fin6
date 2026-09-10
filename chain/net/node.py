@@ -32,10 +32,12 @@ from ..crypto import Signer, h_bytes, h_hex
 from ..register import AttendanceRoll, Standing
 from ..hardening.history import NetworkHistory
 from ..hardening.pool import Era
+from ..store import snapshot as snap
 from ..store.db import ChainStore
 from ..tiers import SoloWorkload, run_tiered_epoch
 from .budget import EpochBudget, Priority, WorkQueue
-from .catchup import BATCH, BodyCache, Catchup
+from .catchup import (BATCH, BODY_WINDOW, MAX_SNAPSHOT, BodyCache,
+                      Catchup)
 from .clock import Clock
 from .limits import CLIENT_CAPACITY, CLIENT_RATE, Limiter
 from .peer import Mesh
@@ -109,8 +111,12 @@ class NodeProcess:
         # node saw was appended to — a leak, and an accidental answer to "how
         # far back can a peer be helped", which deserves a number.  That
         # number is now `catchup.BODY_WINDOW`.
-        self.bodies = BodyCache()
+        self.bodies = BodyCache(
+            int(self.settings.get("body_window", BODY_WINDOW)))
         self.catchup = Catchup()
+        self.snapshot_asked = 0
+        self.snapshot_asked_epoch = None
+        self.snapshot_adopted = 0
         # What a wallet needs and a validator does not — every output the chain
         # has produced and every nullifier it has published — lives in the
         # store, not in this process.  It is the same rows the ledger already
@@ -202,6 +208,8 @@ class NodeProcess:
             "work": self.work.stats(),
             "catchup": self.catchup.stats(),
             "gate": self.mesh.gate.stats(),
+            "snapshots": {"asked": self.snapshot_asked,
+                          "adopted": self.snapshot_adopted},
             "bodies": len(self.bodies),
             "hardened": self.history.height,
             "weight": self.history.cumulative_weight,
@@ -673,6 +681,101 @@ class NodeProcess:
         self.log(f"catch-up: served {len(bodies)} bodies "
                  f"({start}-{end}) to {who}")
 
+    def _serve_snapshot(self, who: str):
+        """Export this node's state and hand it over with the header that
+        proves it.
+
+        One frame, which is the simple first cut and not the end of the story:
+        `store/snapshot.py` is chunked precisely so that ranges can come from
+        different peers, and a state larger than a frame needs that rather
+        than a bigger frame.
+        """
+        rows, _ = self.store.headers(since=self.world.height,
+                                     to=self.world.height, limit=1)
+        if not rows:
+            return
+        height, header, cert = rows[0]
+        path = os.path.join(self.dir, "outbound.snap")
+        try:
+            snap.export(self.node.state, self.world.registers, path)
+            with open(path, "rb") as fh:
+                blob = fh.read()
+        except Exception as exc:                     # never die serving a peer
+            self.log(f"snapshot: cannot export: {type(exc).__name__}: {exc}")
+            return
+        if len(blob) > MAX_SNAPSHOT:
+            self.log(f"snapshot: {len(blob)} bytes is past what one frame "
+                     f"carries; chunked transfer is not built")
+            return
+        self.mesh.send(who, "snapshot", {"height": height, "header": header,
+                                         "cert": cert, "blob": blob})
+        self.log(f"snapshot: served height {height} ({len(blob)} bytes) "
+                 f"to {who}")
+
+    def _adopt_snapshot(self, who: str, payload: dict):
+        """Take a peer's state, having proved it against a header first.
+
+        The order is the whole of the security: the certificate is checked
+        against the roster's keys and a quorum, then the snapshot is folded and
+        refused unless it reproduces the three roots that header commits.  A
+        peer that sends a state it invented gets nothing but a log line.
+
+        What this trusts, and `snapshot.py` says it plainly: consensus.  The
+        node is not re-deriving the agreement, it is checking that it holds
+        exactly the state the agreement committed to.  Genesis sync trusts
+        nobody and needs an archive; this trusts the quorum that signed one
+        header.  The difference should never be blurred.
+        """
+        header, cert, blob = (payload.get("header"), payload.get("cert"),
+                              payload.get("blob"))
+        if header is None or cert is None or not blob:
+            return
+        height = int(getattr(header, "height", 0) or 0)
+        if height <= self.world.height:
+            return
+        gid = self.grid_id()
+        quorum = self.world.registers[gid].quorum(
+            self.world.params.quorum_num, self.world.params.quorum_den)
+        # The quorum figure comes from this node's own register, which is
+        # stale by definition here. Part eight already records the residual:
+        # membership survives a roll and standing does not, so across a
+        # founding this figure can be wrong by one. It is the same limitation
+        # a light client has and not a new one.
+        ok, why = cert.verify(quorum, header.hash(), validators=self.validators)
+        if not ok:
+            self.log(f"snapshot from {who} refused: certificate {why}")
+            return
+        path = os.path.join(self.dir, "inbound.snap")
+        try:
+            with open(path, "wb") as fh:
+                fh.write(blob)
+            state, registers = snap.load(path, self.world.params,
+                                         expect_roots=snap.roots_of(header))
+        except Exception as exc:
+            self.log(f"snapshot from {who} refused: "
+                     f"{type(exc).__name__}: {exc}")
+            return
+        if state.tip != header.hash():
+            self.log(f"snapshot from {who} refused: it names tip "
+                     f"{state.tip[:14]}…, the header is {header.hash()[:14]}…")
+            return
+
+        was = self.world.height
+        self.world.adopt(state, registers)
+        # The roll for the epoch of the adopted tip, recomputed from the
+        # adopted register, because the next block carries the roll of the
+        # epoch before it. Recomputed from the register *after* that epoch's
+        # roll was applied rather than before, which is exact whenever
+        # standing did not change in it and self-correcting when it did: the
+        # next block is refused and a fresher snapshot asked for.
+        self.world.rolls = {gid: self._roll_of_epoch(gid, header.epoch)}
+        self.store.adopt(state, registers, self.world.rolls)
+        self.history = NetworkHistory(self.era.spec, self.hardening)
+        self.catchup.forget(state.height)
+        self.snapshot_adopted += 1
+        self.log(f"snapshot: adopted height {state.height} from {who} "
+                 f"(was {was}); hardening weight starts again from here")
+
     def _ask_for_blocks(self):
         """Ask every connected peer for the next run of heights we are missing.
 
@@ -763,6 +866,16 @@ class NodeProcess:
                  f"{block.hash()[:16]}…")
         return True, "ok"
 
+    def _ask_for_snapshot(self):
+        if self.snapshot_asked_epoch == self.budget.epoch:
+            return
+        self.snapshot_asked_epoch = self.budget.epoch
+        self.snapshot_asked += 1
+        self.log(f"catch-up: behind by "
+                 f"{self.catchup.behind(self.world.height)}, past the "
+                 f"{self.bodies.window}-block body window; asking for state")
+        self.mesh.broadcast(self.mesh.connected, "getsnapshot", {})
+
     def _catch_up(self, deadline_ms: int) -> int:
         """Apply what has arrived, then ask for more.  Returns blocks applied.
 
@@ -774,6 +887,12 @@ class NodeProcess:
         """
         if self.catchup.behind(self.world.height) <= 0:
             return 0
+        if self.catchup.behind(self.world.height) > self.bodies.window:
+            # Further behind than any peer still holds bodies for, so replay
+            # cannot reach: ask for state instead.  Asked once per epoch, not
+            # once per drain, because a snapshot is a whole state and the
+            # request is not cheap for the peer that answers it.
+            self._ask_for_snapshot()
         applied = self.catchup.advance(
             self._apply_caught_up, lambda: self.world.height,
             budget=lambda: (self.clock.now_ms() < deadline_ms
@@ -836,6 +955,15 @@ class NodeProcess:
             if who in self.mesh.connected:
                 self._serve_blocks(who, payload if isinstance(payload, dict)
                                    else {})
+            return
+        if kind == "getsnapshot":
+            if who in self.mesh.connected:
+                self._serve_snapshot(who)
+            return
+        if kind == "snapshot":
+            if who in self.mesh.connected:
+                self._adopt_snapshot(who, payload if isinstance(payload, dict)
+                                     else {})
             return
         if kind == "blocks":
             if who in self.mesh.connected:

@@ -213,6 +213,48 @@ class ChainStore:
             "utxo": utxo, "utxo_dead": dead, "nullifiers": nfs,
             "history": spine})
 
+    def adopt(self, state: ChainState, registers: dict,
+              rolls: dict | None = None):
+        """Replace the whole chain on disk with an adopted snapshot.
+
+        `initialise` refuses a store that already holds a chain, and rightly:
+        every other path writes what a block changed. Adoption is the one case
+        that legitimately replaces everything, and it is a different method so
+        that it has to be asked for by name.
+
+        The hardened tables go too, and that is the real cost of syncing this
+        way rather than a detail. A snapshot proves the *state* against a
+        header; it says nothing about the turns that burned themselves on the
+        way here, so the accumulated weight cannot come with it and the node
+        starts re-accumulating from the snapshot point. Keeping the old rows
+        instead would leave a history whose tip is thousands of blocks below
+        the ledger's and which can never be extended, which is stuck rather
+        than wrong — but claiming a weight you cannot join to your own tip is
+        worse than admitting you have none.
+        """
+        dump = state.dump()
+        dead = set(dump["utxo_dead"])
+        with self._write():
+            for table in ("utxo", "nullifier", "txblock", "netblock", "undo",
+                          "grid_register", "grid_roll", "hardened",
+                          "spent_turn"):
+                self.db.execute(f"DELETE FROM {table}")
+            self.db.executemany(
+                "INSERT INTO utxo(pos,cm,dead,height,sealed,tag) "
+                "VALUES(?,?,?,?,NULL,NULL)",
+                [(i, cm, 1 if i in dead else 0, dump["height"])
+                 for i, cm in enumerate(dump["utxo"])])
+            self.db.executemany(
+                "INSERT INTO nullifier(pos,nf,height) VALUES(?,?,?)",
+                [(i, nf, dump["height"])
+                 for i, nf in enumerate(dump["nullifiers"])])
+            self.set_meta("chain_id", dump["chain_id"])
+            self.set_meta("height", dump["height"])
+            self.set_meta("tip", dump["tip"])
+            self.set_meta("burned_fees", dump["burned_fees"])
+            self._put_registers(registers)
+            self._put_rolls(rolls or {})
+
     def load_rolls(self) -> dict:
         """The rolls of the tip's epoch, by grid.
 
