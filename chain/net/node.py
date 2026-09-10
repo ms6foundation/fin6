@@ -96,7 +96,13 @@ class NodeProcess:
         self.mesh = Mesh(node_id, self.doc.chain_id,
                          tuple(self.settings["listen"]), peers, self.inbox,
                          log=self.log, on_request=self.answer,
-                         limiter=self.limiter)
+                         limiter=self.limiter,
+                         # A peer's budget is now reachable only by proving the
+                         # name it is keyed on, against the roster in the
+                         # genesis document.  No new key material: the chain id
+                         # is that document's hash.
+                         signer=self.signer, validators=self.validators,
+                         epoch_now=self.clock.epoch_now)
         self.seat: Seat | None = None
         self.bodies: dict = {}
         # What a wallet needs and a validator does not — every output the chain

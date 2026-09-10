@@ -1,6 +1,6 @@
 # Admission — fin6 design sketch, part nine
 
-*Stages 1 and 2 are built — see §10 for what changed on contact.*
+*Stages 1, 2 and 3 are built — see §10 for what changed on contact.*
 
 How a node decides to spend work on a stranger. Follows `testnet_design.md`
 (part six), whose open items included "no transport authentication", and
@@ -373,8 +373,8 @@ punishable — but it is unbounded until it is punished, and it should be capped
 | `transaction.py` | **built.** `authenticate(tx)` is steps 1–4 and returns an `Authenticated` carrying `(ts, v, beta)`; `verify_proof(tx, auth, backend)` is step 5 and reuses it. `verify_transaction` is now their composition, unchanged in behaviour and order of refusal |
 | `node.py` | **built.** `Node.authenticate` / `Node.verify_and_admit` are the two rungs, `submit` is both back to back; `proof_fingerprint` keys the negative cache on proof *content*; `strikes_against` / `suspect` are the budget's demotion signal. Mempool bound and fee eviction are stage 6 |
 | `net/limits.py` | byte-denominated costs, three keyspaces, sweep on a timer, per-kind frame ceilings, the refusal cap |
-| `net/handshake.py` | new: the challenge-response of §4.1, against `doc.public_keys()` |
-| `net/peer.py` | bounded accept and a worker pool, per-address connection cap, idle and partial-frame deadlines, the penalty box, meter before decode |
+| `net/handshake.py` | **built**, though not as a challenge-response — see §10. A self-authenticating signed hello, verified against the roster in the genesis document |
+| `net/peer.py` | **partly built.** The hello is signed on dial, authenticated on accept, and metered; a peer is keyed on the name it proved. Bounded accept, connection caps, deadlines and the penalty box are stage 4 |
 | `net/frame.py` | per-kind size ceilings; charge the announced length before parsing the body |
 | `net/budget.py` | **built.** `Meter` (EWMA of measured cost), `EpochBudget` (window, reserve, per-class floors), `WorkQueue` (bounded, priority-ordered, holds across epochs) |
 | `net/node.py` | **built.** `_offer_tx` authenticates inline and queues the proof; `_gossip` and `_serve_until` drain the queue out of the epoch's slack; `run_epoch` opens the budget; `status` reports both |
@@ -391,7 +391,7 @@ adopts none of it agree on exactly the same blocks.
 |---|---|---|
 | 1 | split `verify_transaction`; fingerprint negative cache | **built** |
 | 2 | the work budget and the scheduler; `_handle` off the inline path | **built** |
-| 3 | the `hello` handshake; peers metered under authenticated names | not started — ends escalation and squatting together |
+| 3 | the `hello` handshake; peers metered under authenticated names | **built** |
 | 4 | connection admission: caps, pool, deadlines, penalty box | not started — the layer the limiter has never seen |
 | 5 | byte-denominated costs and per-kind frame ceilings | not started — removes the 357 ms decode from paths that never needed it |
 | 6 | mempool bound and fee eviction; `pending` cap | not started — the memory half, which valid transactions cause |

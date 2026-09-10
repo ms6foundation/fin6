@@ -18,6 +18,7 @@ import socket
 import threading
 import time
 
+from . import handshake
 from .frame import CLIENT_KINDS, FrameError, Reader, pack
 
 CONNECT_RETRY = 0.5
@@ -28,7 +29,8 @@ class Mesh:
     """Outbound dialling, inbound accepting, one inbox."""
 
     def __init__(self, node_id: str, chain_id: str, listen, peers: dict,
-                 inbox, log=None, on_request=None, limiter=None):
+                 inbox, log=None, on_request=None, limiter=None,
+                 signer=None, validators=None, epoch_now=None):
         self.node_id = node_id
         self.chain_id = chain_id
         self.host, self.port = listen
@@ -41,6 +43,15 @@ class Mesh:
         # know whether it is alive.
         self.on_request = on_request
         self.limiter = limiter
+        # Transport authentication.  Absent a signer and a roster this falls
+        # back to the old behaviour of believing what a connection says about
+        # itself, which is what the unit tests that build a bare Mesh want and
+        # is never what a node wants.
+        self.signer = signer
+        self.epoch_now = epoch_now or (lambda: 0)
+        self.handshake = (
+            handshake.Verifier(chain_id, node_id, validators, self.epoch_now)
+            if signer is not None and validators else None)
         self._last_refusal = ""
         self.out: dict = {}                      # peer_id -> socket we dialled
         self._locks: dict = {pid: threading.Lock() for pid in self.peers}
@@ -116,11 +127,18 @@ class Mesh:
                 sock = socket.create_connection((host, port), timeout=2)
                 sock.settimeout(None)
                 sock.sendall(pack("hello", self.chain_id,
-                                  {"node_id": self.node_id}))
+                                  self._hello_for(peer_id)))
                 self.out[peer_id] = sock
                 self.log(f"dialled {peer_id} at {host}:{port}")
             except OSError:
                 time.sleep(CONNECT_RETRY)
+
+    def _hello_for(self, peer_id: str) -> dict:
+        """What this node says when it dials.  Signed when it can be."""
+        if self.signer is None:
+            return {"node_id": self.node_id}
+        return handshake.build(self.signer, self.chain_id, self.node_id,
+                               peer_id, self.epoch_now())
 
     def _accept_loop(self):
         while not self._stop.is_set():
@@ -138,6 +156,21 @@ class Mesh:
         if not ok:
             self._last_refusal = why
         return ok
+
+    def _greet(self, payload: dict, source: str):
+        """Authenticate a hello, or refuse the connection.  Returns the peer id.
+
+        Raises `FrameError` on a bad hello, which the read loop already treats
+        as fatal: a connection that cannot prove the name it opened with has no
+        claim on the next frame.  A wallet is unaffected — a client never sends
+        a hello at all, and stays on the address-keyed budget.
+        """
+        if self.handshake is None:
+            return payload.get("node_id")
+        ok, why, who = self.handshake.check(payload)
+        if not ok:
+            raise FrameError(f"hello from {source}: {why}")
+        return who
 
     def _read_loop(self, conn, addr=None):
         reader = Reader(self.chain_id)
@@ -158,8 +191,13 @@ class Mesh:
                     break
                 for msg in reader.feed(data):
                     if msg["kind"] == "hello":
-                        payload = msg["payload"] or {}
-                        who = payload.get("node_id")
+                        # Metered before it is checked, because checking it is
+                        # not free either — and unmetered was exactly what it
+                        # used to be, the one kind that reached `continue`
+                        # before the limiter was ever consulted.
+                        if not self._afford(("client", source), "hello", False):
+                            continue
+                        who = self._greet(msg["payload"] or {}, source)
                         continue
                     seated = who is not None and who in self.peers
                     # Two keyspaces, not one.  On a testnet — and behind any
@@ -167,7 +205,12 @@ class Mesh:
                     # same host, and keying on the host alone let the
                     # validator's promotion hand its budget to everyone else
                     # dialling from there.  A peer is metered under the name it
-                    # claims; everybody else under the address they came from.
+                    # *proved*; everybody else under the address they came from.
+                    #
+                    # Proved is the word that changed in part nine.  While this
+                    # was the name a connection merely claimed, a stranger
+                    # could spend out of any validator's bucket and throttle it
+                    # out of the ceremony.
                     key = ("peer", who) if seated else ("client", source)
                     if not self._afford(key, msg["kind"], seated):
                         if msg["kind"] in CLIENT_KINDS:

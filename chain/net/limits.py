@@ -33,6 +33,11 @@ import time
 #: it costs the node: a status is a dictionary, an inclusion proof is 32 hashes,
 #: a page of outputs is a table scan, and a submission is a proof.
 COSTS = {
+    # Authenticating a hello is two dictionary lookups and, if those pass, one
+    # signature.  Priced like any other small request because it used to be
+    # priced at nothing: the handshake was the one kind that bypassed the
+    # meter entirely, so replaying it was free.
+    "hello": 5,
     "status": 1,
     "params": 1,
     "tip": 1,
