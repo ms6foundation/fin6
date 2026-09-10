@@ -11,7 +11,8 @@ turns from a finite, single-use pool have burned themselves on it.
     params.py  the 12-hour era and what it forces about the block interval
 """
 from .draw import PoolExhausted, blocks_left, draw_turns, max_fork_depth
-from .history import GENESIS, HardenedBlock, HardeningError, NetworkHistory
+from .history import (GENESIS, HardenedBlock, HardeningError,
+                      NetworkHistory, hardened_from_row)
 from .params import DEMO, FAST, PRESETS, PRODUCTION, HardeningParams
 from .pool import Era, EraSpec, new_era, next_era, verify_membership
 from .stamp import (MiningFailed, Stamp, anchor_bytes, equivocation_evidence,
@@ -24,4 +25,5 @@ __all__ = [
     "Stamp", "mine", "verify_stamp", "anchor_bytes", "equivocation_evidence",
     "MiningFailed",
     "NetworkHistory", "HardenedBlock", "HardeningError", "GENESIS",
+    "hardened_from_row",
 ]

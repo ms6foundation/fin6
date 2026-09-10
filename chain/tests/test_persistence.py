@@ -17,6 +17,9 @@ from ..state import ChainState, UtxoDelta, merge_deltas
 from ..store import snapshot as snap
 from ..store.db import ChainStore, StoreError
 from ..store.high_water import HighWater, HighWaterError
+from ..hardening.history import NetworkHistory, hardened_from_row
+from ..hardening.params import DEMO as HARDENING
+from ..hardening.pool import Era
 from ..store.undo import UndoError, apply_undo, capture, retention_depth
 from ..tiers import bootstrap_world, run_tiered_epoch
 
@@ -426,3 +429,121 @@ class _FakeBlock:
 
     def hash(self):
         return f"nb:{self.header.height}"
+
+
+# ── hardened history across a restart ────────────────────────────────────────
+
+class _Block:
+    """Enough of a block for the hardening layer, which only wants its hash."""
+
+    def __init__(self, tag):
+        self.tag = tag
+
+    def hash(self):
+        return f"nb:{self.tag}"
+
+
+def _era_history():
+    era = Era(0, b"restart-seed", tree_height=HARDENING.tree_height,
+              turns=HARDENING.turns)
+    return era, NetworkHistory(era.spec, HARDENING)
+
+
+def _hardened(path, blocks=4):
+    """A store with `blocks` hardened blocks in it, and the history that
+    produced them."""
+    store = ChainStore(path)
+    store.initialise(ChainState(PARAMS))
+    era, hist = _era_history()
+    for i in range(blocks):
+        hb = hist.harden(_Block(f"b{i}"), era)
+        ok, why = hist.accept(hb)
+        assert ok, why
+        store.commit_hardened(hb)
+    return store, era, hist
+
+
+def test_a_restarted_node_keeps_the_weight_it_accumulated():
+    """The claim part three stands on, which used to be lost on every restart.
+
+    `commit_hardened` always wrote these rows; nothing ever read them back into
+    the history, so a restarted node reported a cumulative weight of zero.
+    Fork choice compares cumulative weight, so a node with none follows
+    whatever branch reaches it first.
+    """
+    root = tempfile.mkdtemp(prefix="fin6-hard-")
+    try:
+        store, era, hist = _hardened(os.path.join(root, "chain.db"))
+        before = (hist.height, hist.cumulative_weight, hist.tip_hash)
+        store.close()
+
+        reopened = ChainStore(os.path.join(root, "chain.db"))
+        _, back = _era_history()
+        rows, more = reopened.hardened_range(since=1, limit=512)
+        assert back.restore(rows) == 4 and not more
+        assert (back.height, back.cumulative_weight, back.tip_hash) == before
+        reopened.close()
+    finally:
+        import shutil
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_a_restored_history_can_be_hardened_onto():
+    """Not just the numbers: the branch has to be walkable, or the next block
+    cannot find its parent or know which turns are already spent."""
+    root = tempfile.mkdtemp(prefix="fin6-hard-")
+    try:
+        store, era, hist = _hardened(os.path.join(root, "chain.db"))
+        spent_before = len(hist.spent_upto(hist.tip_hash))
+        store.close()
+
+        reopened = ChainStore(os.path.join(root, "chain.db"))
+        _, back = _era_history()
+        rows, _ = reopened.hardened_range(since=1, limit=512)
+        back.restore(rows)
+        assert len(back.spent_upto(back.tip_hash)) == spent_before
+        ok, why = back.accept(back.harden(_Block("b4"), era))
+        assert ok, why
+        assert back.height == 5
+        assert back.confirmations("nb:b0") == 5
+        reopened.close()
+    finally:
+        import shutil
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_restoring_can_re_verify_what_it_reads():
+    """Off by default — these are rows this node already checked, on the same
+    trust `ChainState` is restored on — but a node with reason to doubt its
+    disk can check every stamp again."""
+    root = tempfile.mkdtemp(prefix="fin6-hard-")
+    try:
+        store, era, hist = _hardened(os.path.join(root, "chain.db"), blocks=2)
+        rows, _ = store.hardened_range(since=1, limit=512)
+        _, back = _era_history()
+        assert back.restore(rows, verify=True) == 2
+        assert back.cumulative_weight == hist.cumulative_weight
+        store.close()
+    finally:
+        import shutil
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_a_hardened_row_widens_the_integers_it_was_stored_as():
+    """SQLite has no integer this big, so weight, cumulative and the spent root
+    go to disk as text.  A row that came back as strings would compare unequal
+    to everything and `check` would refuse the node's own history."""
+    root = tempfile.mkdtemp(prefix="fin6-hard-")
+    try:
+        store, era, hist = _hardened(os.path.join(root, "chain.db"), blocks=1)
+        rows, _ = store.hardened_range(since=1, limit=8)
+        hb = hardened_from_row(rows[0])
+        assert isinstance(hb.cumulative, int) and isinstance(hb.weight, int)
+        assert isinstance(hb.spent_root, int)
+        assert all(isinstance(t, int) for t in hb.drawn)
+        assert hb.cumulative == hist.tip.cumulative
+        assert hb.block is None, "the ledger block is not in this row"
+        store.close()
+    finally:
+        import shutil
+        shutil.rmtree(root, ignore_errors=True)

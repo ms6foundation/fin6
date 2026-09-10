@@ -62,6 +62,24 @@ class HardeningError(Exception):
     pass
 
 
+def hardened_from_row(row: dict) -> HardenedBlock:
+    """One `hardened` row back into the object it was written from.
+
+    The big integers are stored as text — SQLite has no 64-bit-plus integer —
+    so they come back as strings and have to be widened here rather than
+    wherever they are next compared.  `block` is not stored and stays None:
+    nothing in `check` or in fork choice looks at it, and the ledger block
+    itself is in the `block` table if anyone ever wants it.
+    """
+    return HardenedBlock(
+        block_hash=row["block_hash"], height=int(row["height"]),
+        prev_hash=row["prev"], era_id=int(row["era_id"]),
+        drawn=tuple(int(t) for t in row["drawn"]),
+        stamps=tuple(row["stamps"]),
+        weight=int(row["weight"]), cumulative=int(row["cumulative"]),
+        spent_root=int(row["spent_root"]))
+
+
 class NetworkHistory:
     """The hardened chain.  Holds every branch it has seen and picks the heaviest."""
 
@@ -244,6 +262,46 @@ class NetworkHistory:
         if hb.spent_root != seal_root("turns", sorted(spent | set(hb.drawn))):
             return False, "spent-turn root does not match"
         return True, "ok"
+
+    # ── coming back ──────────────────────────────────────────────────────────
+
+    def restore(self, rows, verify: bool = False) -> int:
+        """Rehydrate from the store's `hardened` rows, in height order.
+
+        Part three's whole claim is that agreed history becomes expensive to
+        unsay, and the weight that makes it expensive lived only here, in
+        memory.  `ChainStore.commit_hardened` has always written these rows —
+        they were read back only to answer clients — so a node that restarted
+        reported a cumulative weight of zero and started accepting history from
+        height 1 again.  Fork choice compares cumulative weight, so a restarted
+        node would follow whatever branch reached it first, and two honest
+        nodes at the same tip could disagree about what was final.  That is the
+        one way this system could contradict itself rather than merely stall,
+        which is why it is fixed before the cheaper things.
+
+        `verify=False` by default, and deliberately: these rows are this node's
+        own durable record of blocks it already checked, and `ChainState` is
+        restored from the same store on the same trust. Re-checking is
+        available because it is nearly free to offer and it is what a node
+        should do if it ever has reason to doubt its disk — but it is
+        `p.threshold` WOTS verifications a block, about 16 ms, which is half a
+        minute for an era and not something to do on every boot.
+        """
+        restored = 0
+        for row in rows:
+            hb = hardened_from_row(row)
+            if hb.block_hash in self.blocks:
+                continue
+            if verify:
+                ok, why = self.check(hb)
+                if not ok:
+                    raise HardeningError(
+                        f"stored hardened block at height {hb.height}: {why}")
+            self.blocks[hb.block_hash] = hb
+            self.children.setdefault(hb.prev_hash, []).append(hb.block_hash)
+            restored += 1
+        self._retip()
+        return restored
 
     def accept(self, hb: HardenedBlock):
         ok, why = self.check(hb)

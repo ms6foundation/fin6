@@ -129,6 +129,14 @@ class NodeProcess:
         self.owned = {i for i in range(self.hardening.turns)
                       if roster[i % len(roster)] == node_id}
         self.history = NetworkHistory(self.era.spec, self.hardening)
+        # And what it had already hardened before it was stopped.  Without
+        # this a restart reported weight zero and re-entered history at
+        # height 1, which makes fork choice follow whatever it sees first.
+        restored = self._restore_history()
+        if restored:
+            self.log(f"restored {restored} hardened blocks to height "
+                     f"{self.history.height}, cumulative "
+                     f"{self.history.cumulative_weight:,}")
         self.stamp_pool: dict = {}         # block_hash -> {leaf_index: Stamp}
         self.pending_hard: dict = {}       # height -> the block awaiting turns
         self.stamped: set = set()          # blocks this node has mined for
@@ -143,6 +151,19 @@ class NodeProcess:
         # the epoch's slack.
         self.budget = EpochBudget(self.clock)
         self.work = WorkQueue()
+
+    def _restore_history(self, page: int = 512) -> int:
+        """Page the store's hardened rows back into `self.history`."""
+        restored, since = 0, 1
+        while True:
+            rows, more = self.store.hardened_range(since=since, limit=page)
+            if not rows:
+                break
+            restored += self.history.restore(rows)
+            since = int(rows[-1]["height"]) + 1
+            if not more:
+                break
+        return restored
 
     # ── plumbing ─────────────────────────────────────────────────────────────
 

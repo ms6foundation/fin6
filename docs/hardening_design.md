@@ -270,7 +270,7 @@ what keeps it usable as a backstop for that hierarchy's own failures.
 | Interaction with instant consensus finality | The supreme grid says a block is final; hardening says it becomes final. Applications need a stated rule for which to act on, and at what depth. |
 | Era genesis | Era n+1 is authorised by era n; era 0 is a trusted setup and should be named as one. |
 | Stateful signing | One-time keys must never be reused; a holder restored from backup can destroy its own turn. |
-| Reorg mechanics | If a fork does win, ledger state has to roll back — `ChainState` currently only moves forward. |
+| Reorg mechanics | If a fork does win, ledger state has to roll back. Part four added undo records and `ChainStore.rollback`, kept to `retention_depth` — 729 blocks at a third of the pool. Beyond that ceiling there is nothing, and a node that cannot roll back that far diverges permanently from one that can. |
 
 ## Implemented
 

@@ -294,7 +294,7 @@ networked; only the parts that were pretending to be a network do.**
 | No peer discovery | Peers come from the genesis roster and `net.toml`. A network that grows needs joiners to find seats, which is the operational half of the founding rule. |
 | View change over a real network | In process it is a retry loop with a fresh seed. With timeouts and partial delivery it is a protocol, and it is not designed. |
 | The lazy stamper, again | `lazy` is in the fault table because the testnet can *run* it, not because anything catches it. Still part three's open item. |
-| Hardened history is not wired | The store has the tables; `NetworkHistory` still keeps branches in memory. A testnet that restarts a node forgets its accumulated weight. |
+| ~~Hardened history is not wired~~ | **Fixed in part nine.** `NetworkHistory.restore` pages the `hardened` rows back in at boot, so a restarted node keeps its height, its tip and its cumulative weight. The rows were always written; nothing read them back, and fork choice compares weight — so a restarted node followed whichever branch reached it first. |
 | What a green run means | "Seven nodes agreed for an hour" is not a test suite. The chaos stages need assertions — a partition heals within N epochs, a killed node rejoins at the right height — or the testnet is a demo. |
 
 ## Rendered version
