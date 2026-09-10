@@ -18,6 +18,26 @@ from ..net import supervisor as sv
 from ..net.catchup import BATCH, BodyCache, Catchup
 
 
+def _assert_one_chain(net, expect):
+    """Every node answered, and those at the top height agree on everything.
+
+    Deliberately not "every node has the same tip": the nodes are separate
+    processes on a 2.5 s epoch, so one of them being a block ahead at the
+    instant of sampling is the protocol working, not a disagreement. What must
+    never happen is two nodes at the same height with different roots.
+    """
+    ok, height, detail = net.agreement()
+    assert ok, detail
+    status = net.status()
+    live = {n: s for n, s in status.items() if s}
+    assert len(live) == expect, f"{len(live)} of {expect} answered"
+    top = max(s["height"] for s in live.values())
+    at_top = [s for s in live.values() if s["height"] == top]
+    for field in ("tip", "utxo_root", "nf_root", "registers_root"):
+        seen = {s[field] for s in at_top}
+        assert len(seen) == 1, f"{len(at_top)} nodes at {top} disagree on {field}"
+
+
 class _Body:
     """A stand-in block: the buffer and the cache only ever ask for a height,
     a hash, and whether it carries a certificate."""
@@ -257,14 +277,11 @@ def test_a_killed_node_comes_back_and_catches_up():
                 "it reached the height without ever catching up, which means "\
                 "this test is not testing anything"
 
-            # And it is the same chain, not merely the same number.
-            ok, height, detail = net.agreement()
-            assert ok, detail
-            live = [s for s in net.status().values() if s]
-            assert len(live) == 4
-            assert len({s["tip"] for s in live}) == 1
-            assert len({s["utxo_root"] for s in live}) == 1
-            assert len({s["registers_root"] for s in live}) == 1
+            # And it is the same chain, not merely the same number.  One
+            # sample, and compared only among the nodes standing at the top
+            # height: two `status()` calls are two moments, and on a 2.5 s
+            # epoch a node can legitimately be a block apart between them.
+            _assert_one_chain(net, expect=4)
         finally:
             net.down()
     finally:
@@ -301,10 +318,7 @@ def test_a_paused_node_catches_up_when_it_is_let_go():
                 mine = net.status().get(victim)
                 if mine and mine["height"] >= ahead:
                     break
-            ok, height, detail = net.agreement()
-            assert ok, detail
-            live = [s for s in net.status().values() if s]
-            assert len(live) == 4 and len({s["tip"] for s in live}) == 1
+            _assert_one_chain(net, expect=4)
         finally:
             net.down()
     finally:

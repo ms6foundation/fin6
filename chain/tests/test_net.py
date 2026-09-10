@@ -183,7 +183,7 @@ def seated_world(n=7):
     return world, wallets
 
 
-def build_seats(world, epoch=1):
+def build_seats(world, epoch=1, lazy=()):
     gid = world.topology.grid_ids()[0]
     reg = world.registers[gid]
     members = world.grid_members(gid)
@@ -194,11 +194,131 @@ def build_seats(world, epoch=1):
     seats = {n: Seat(world.nodes[n], grid,
                      SoloWorkload(world, gid, epoch, "mpcith"),
                      epoch=epoch, quorum=reg.quorum(2, 3), validators=validators,
-                     counting=set(reg.attesters()), grid_id=gid)
+                     counting=set(reg.attesters()), grid_id=gid,
+                     lazy=n in lazy)
              for n in grid.seats}
     meta = CeremonyMeta(epoch=epoch, leader_id=grid.leader, rows=grid.n_rows,
                         row_size=grid.row_size, grid_seed=seed)
     return grid, seats, meta
+
+
+class _Rejects:
+    """A workload that refuses whatever it is shown.
+
+    Standing in for the case that matters and is awkward to stage honestly: a
+    block that does not validate.  What is being tested is what an honest seat
+    does about the *attestations* over such a block, not how it came to exist.
+    """
+
+    name = "rejects"
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.asked = 0
+
+    def build(self, *a, **kw):
+        return self.inner.build(*a, **kw)
+
+    def validate(self, node, block):
+        self.asked += 1
+        return False, "the sum row does not conserve"
+
+
+def test_a_lazy_seat_attests_without_looking():
+    """Part three's open item was that nothing could even run this. It has one
+    behaviour and it is the whole of it: sign the statement, skip the check."""
+    world, _ = seated_world()
+    grid, seats, meta = build_seats(world, lazy={"n00", "n01", "n02", "n03",
+                                                 "n04", "n05", "n06"})
+    sp = seats[grid.leader].propose(meta)
+    seat = next(s for n, s in seats.items() if n != grid.leader)
+    seat.workload = _Rejects(seat.workload)
+    seat.absorb(seats[grid.leader].wire())
+    seat.offer_block(seats[grid.leader].blocks[sp.block_hash])
+    seat.react()
+    assert seat.workload.asked == 0, "a lazy seat asked the validator"
+    assert seat.node.id in seat.env.attestations or \
+        seat.node.id in seat.env.shadow, "and did not attest"
+
+
+def test_an_attestation_over_an_invalid_block_is_evidence():
+    """The one thing that can be proved about laziness, and it has the same
+    shape as equivocation: a signed statement its author could not have made
+    honestly.  Any third party can re-run the check."""
+    world, _ = seated_world()
+    grid, seats, meta = build_seats(world)
+    sp = seats[grid.leader].propose(meta)
+    body = seats[grid.leader].blocks[sp.block_hash]
+
+    honest = next(s for n, s in seats.items() if n != grid.leader)
+    honest.workload = _Rejects(honest.workload)
+    honest.absorb(seats[grid.leader].wire())
+    honest.offer_block(body)
+    honest.react()
+    assert honest.validated is not None and not honest.validated[1]
+    assert honest.catch_lazy() == (), "nobody has attested yet"
+
+    # Now the lazy ones speak.
+    lazies = [n for n in grid.seats if n not in (grid.leader, honest.node.id)]
+    for nid in lazies[:3]:
+        seats[nid].lazy = True
+        seats[nid].absorb(seats[grid.leader].wire())
+        seats[nid].offer_block(body)
+        seats[nid].react()
+        honest.absorb(seats[nid].wire())
+
+    caught = honest.catch_lazy()
+    assert set(caught) == set(lazies[:3]), (caught, lazies[:3])
+    faults = [f for f in honest.env.faults.values()
+              if f.kind == "lazy_attestation"]
+    assert len(faults) == 1, faults
+    assert faults[0].verify(), "the report must be signed"
+    assert set(a.node_id for a in faults[0].evidence) == set(lazies[:3])
+
+
+def test_a_lazy_attester_is_reported_once_and_not_every_round():
+    world, _ = seated_world()
+    grid, seats, meta = build_seats(world)
+    sp = seats[grid.leader].propose(meta)
+    body = seats[grid.leader].blocks[sp.block_hash]
+    honest = next(s for n, s in seats.items() if n != grid.leader)
+    honest.workload = _Rejects(honest.workload)
+    honest.absorb(seats[grid.leader].wire())
+    honest.offer_block(body)
+    honest.react()
+    culprit = next(n for n in grid.seats
+                   if n not in (grid.leader, honest.node.id))
+    seats[culprit].lazy = True
+    seats[culprit].absorb(seats[grid.leader].wire())
+    seats[culprit].offer_block(body)
+    seats[culprit].react()
+    honest.absorb(seats[culprit].wire())
+    assert honest.catch_lazy() == (culprit,)
+    assert honest.catch_lazy() == (), "reported twice"
+
+
+def test_a_valid_block_produces_no_lazy_report():
+    """The honest limit: laziness is only catchable when there is something to
+    catch.  A lazy seat in a network whose blocks are all valid is invisible,
+    which is also to say it has done no harm."""
+    world, wallets = seated_world()
+    tx, _ = transfer(wallets["alice"], wallets["bob"], 100, 5, PARAMS)
+    world.submit(tx)
+    grid, seats, meta = build_seats(world)
+    sp = seats[grid.leader].propose(meta)
+    body = seats[grid.leader].blocks[sp.block_hash]
+    for nid, seat in seats.items():
+        if nid == grid.leader:
+            continue
+        seat.absorb(seats[grid.leader].wire())
+        seat.offer_block(body)
+        seat.react()
+    watcher = next(s for n, s in seats.items() if n != grid.leader)
+    for nid, seat in seats.items():
+        watcher.absorb(seat.wire())
+    assert watcher.catch_lazy() == ()
+    assert not [f for f in watcher.env.faults.values()
+                if f.kind == "lazy_attestation"]
 
 
 def test_the_leader_has_neighbours():

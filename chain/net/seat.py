@@ -46,7 +46,7 @@ class Seat:
 
     def __init__(self, node, grid, workload, *, epoch: int, quorum: int,
                  validators: dict, counting=None, grid_id: str = "",
-                 chain_id: str | None = None, height: int | None = None):
+                 chain_id: str | None = None, height: int | None = None, lazy: bool = False):
         self.node = node
         self.grid = grid
         self.workload = workload
@@ -66,6 +66,13 @@ class Seat:
         self.blocks: dict = {}        # block_hash -> body we hold
         self.pending: dict = {}       # block_hash -> header awaiting a body
         self._signed_height = 0       # highest height a leader signed for
+        self._reported_lazy: set = set()
+        # Part three's open item, made runnable.  A lazy seat attests without
+        # validating: it is in the fault table because the design names it,
+        # and until now `behaviour` had one branch on the network path —
+        # `silent` — so nothing could even produce the fault, let alone catch
+        # it.  A fault nobody can run is a fault nobody can test.
+        self.lazy = lazy
         self.validated = None         # (block_hash, ok, why)
         self.reacted = False
 
@@ -189,6 +196,15 @@ class Seat:
         sp = env.sole_proposal()
         if sp is None or self.validated is not None:
             return
+        if self.lazy:
+            # The whole of the behaviour: sign the statement without checking
+            # it.  Cheaper than honesty, indistinguishable from it while every
+            # block happens to be valid, and self-incriminating the moment one
+            # is not — see `catch_lazy`.
+            self.validated = (sp.block_hash, True, "not checked")
+            env.add_attestation(node.attest(sp.block_hash, self.height,
+                                            self.epoch, self.grid.seed))
+            return
         ok, why = self.workload.validate(node, sp.block)
         self.validated = (sp.block_hash, ok, why)
         if ok:
@@ -245,6 +261,48 @@ class Seat:
         block = self.blocks[sp.block_hash]
         block.quorum_cert = cert
         return block, cert
+
+    def catch_lazy(self):
+        """Attesters that signed a block this seat found invalid.
+
+        The one thing that *can* be proved about laziness, and it has the same
+        shape as equivocation: the evidence is a signed statement whose author
+        could not have made it honestly.  An attestation names a block hash and
+        is signed by a roster key; if that block does not validate, then either
+        the attester did not check it or it checked and lied, and neither is a
+        thing an honest seat does.  Any third party can re-run the check.
+
+        What this does *not* do, and the boundary is deliberate: the report
+        does not change anyone's standing.  `GridRegister.apply` takes a
+        `faulted` set and the network path passes none, because acting on a
+        fault means every node agreeing about it, and that means the fault
+        travelling in the block — a format change nobody has designed. So this
+        makes laziness *provable* and leaves it unpunished, which is one step
+        and not two.
+
+        And the honest limit on top of that: laziness is only catchable when
+        there is something to catch.  A lazy seat in a network whose blocks are
+        all valid attests to valid blocks and is invisible, which is also to
+        say it has done no harm.
+        """
+        if self.validated is None or self.validated[1]:
+            return ()
+        block_hash, _, why = self.validated
+        culprits = []
+        for att in list(self.env.attestations.values()) + \
+                list(self.env.shadow.values()):
+            if att.block_hash != block_hash or att.node_id == self.node.id:
+                continue
+            if att.node_id in self._reported_lazy:
+                continue
+            self._reported_lazy.add(att.node_id)
+            culprits.append(att)
+        if culprits:
+            self.env.add_fault(self.node.report(
+                "lazy_attestation", self.height, self.epoch,
+                f"attested to a block that does not validate: {why[:70]}",
+                tuple(culprits)))
+        return tuple(a.node_id for a in culprits)
 
     def why_not(self) -> str:
         if self.env.substantiated_equivocation() is not None:

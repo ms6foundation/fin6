@@ -435,7 +435,8 @@ class NodeProcess:
                                    self.world.params.quorum_den),
             validators={n: self.validators[n] for n in grid.seats},
             counting=set(attesters), grid_id=gid,
-            chain_id=self.doc.chain_id)
+            chain_id=self.doc.chain_id,
+            lazy=self.behaviour == "lazy")
 
         if grid.leader != self.id:
             self.log(f"epoch {epoch}: leader is {grid.leader}")
@@ -597,6 +598,10 @@ class NodeProcess:
         while self.clock.now_ms() < deadline and not self.stop.is_set():
             self._drain(timeout=0.02)
             self.seat.react()
+            lazy = self.seat.catch_lazy()
+            if lazy:
+                self.log(f"epoch {epoch}: {', '.join(lazy)} attested to a "
+                         f"block that does not validate")
             self.work.drain(self.budget, self.clock.now_ms, max_items=4)
             got = self.seat.accepted()
             if got is not None:

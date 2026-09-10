@@ -265,7 +265,7 @@ what keeps it usable as a backstop for that hierarchy's own failures.
 | item | why it is open |
 |---|---|
 | How the 70,000 turns are distributed | Still the most important unanswered question, and now quantitative: the attacker's share of the pool *is* the rewrite ceiling. Needs a mapping across independent operators, and a way to verify it. |
-| The lazy stamper | A turn stamped without checking is a turn donated. Committing to sampled proof digests proves fetching, not checking. |
+| The lazy stamper | A turn stamped without checking is a turn donated. Committing to sampled proof digests proves fetching, not checking. The *attester* half of this is now provable — see `Seat.catch_lazy`: an attestation over a block that does not validate is a signed statement its author could not have made honestly, which is the same shape as equivocation. The stamper half is not, because a stamp commits to a block hash and nothing about having checked it. |
 | Difficulty in a permissioned setting | Retargeting assumes a competitive rate to measure. With a known roster and consume-on-draw the rate is closer to fixed; the retarget rule may need to be schedule-driven rather than race-driven. |
 | Interaction with instant consensus finality | The supreme grid says a block is final; hardening says it becomes final. Applications need a stated rule for which to act on, and at what depth. |
 | Era genesis | Era n+1 is authorised by era n; era 0 is a trusted setup and should be named as one. |
