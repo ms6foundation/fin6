@@ -86,6 +86,30 @@ A ceremony for block h runs a fixed `T = R + C` rounds — enough for data to de
 
 Per-round cost is fixed at two edges per node regardless of N — O(N) messages per round, not O(N²). Liveness comes from the schedule (a ceremony runs every epoch, on the clock); safety comes from the ring's built-in equivocation detection plus a 2/3 quorum — a lightweight reliable-broadcast over a purpose-built topology, not a race.
 
+## 4b. What a nullifier binds
+
+Worth stating separately because getting it wrong was exploitable. The
+nullifier is a public quadratic form over the note's coordinates, carried as
+one row of the proof so that the published marker is provably derived from the
+note actually being spent. That much is by design.
+
+What the form cannot do is *identify* a note. It maps every note onto a single
+field element, it is homogeneous of degree 2 — so Q(-x) = Q(x) — and solving
+Q(x) = t for one unconstrained blinder is a single square root mod P. Fibres
+that large and that easy to walk are not an identity.
+
+And the party best placed to exploit that is not the spender: it is the
+**payer**, who chooses every coordinate of the note it creates for someone
+else, blinders included. A malicious payer could hand you a note whose
+nullifier matched one it already held, spend its own note, and leave yours
+permanently unspendable — live and unspent in the UTXO set, refused by every
+node as a double spend. One payment, and a stranger's funds are frozen for
+good.
+
+So the published id hashes the commitment in alongside the form. A nullifier
+collision now requires a commitment collision, which is the property that was
+wanted all along.
+
 ## 5. Open items
 
 | Item | Why it's open |

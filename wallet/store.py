@@ -52,7 +52,7 @@ class Held:
         return self.note.value
 
     def nullifier(self, params: ChainParams) -> str:
-        return nullifier_id(nullifier_value(self.note.coords()))
+        return nullifier_id(self.cm, nullifier_value(self.note.coords()))
 
 
 class Wallet:

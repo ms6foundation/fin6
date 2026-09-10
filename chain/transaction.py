@@ -222,7 +222,7 @@ def build_transaction(spends, outputs, fee: int, params: ChainParams,
     msg = sig_message(beta)
     tx_inputs = tuple(
         TxInput(cm=cm,
-                nullifier=nullifier_id(v[ts.nf_rows[j]]),
+                nullifier=nullifier_id(cm, v[ts.nf_rows[j]]),
                 owner_pub=signers[j].public_hex,
                 signature=signers[j].sign(msg))
         for j, cm in enumerate(in_cms))
@@ -345,7 +345,7 @@ def authenticate(tx: Transaction, params: ChainParams, *,
         # 4. nullifiers and spend authorisation
         msg = sig_message(beta)
         for j, tin in enumerate(tx.inputs):
-            if nullifier_id(v[ts.nf_rows[j]]) != tin.nullifier:
+            if nullifier_id(tin.cm, v[ts.nf_rows[j]]) != tin.nullifier:
                 return False, f"input {j}: nullifier not derived from the note", None
             if v[ts.owner_rows[j]] != owner_field(tin.owner_pub):
                 return False, f"input {j}: spending key is not the note's owner", None

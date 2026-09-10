@@ -86,7 +86,7 @@ def forge_transaction(spends, outputs, params, declared_fee=0, chain_id=None,
     msg = sig_message(beta)
     keys = sign_with or signers
     inputs = tuple(
-        TxInput(cm=cm, nullifier=nullifier_id(v[ts.nf_rows[j]]),
+        TxInput(cm=cm, nullifier=nullifier_id(cm, v[ts.nf_rows[j]]),
                 owner_pub=keys[j].public_hex, signature=keys[j].sign(msg))
         for j, cm in enumerate(in_cms))
     return Transaction(version=TX_VERSION, chain_id=chain_id, fee=declared_fee,

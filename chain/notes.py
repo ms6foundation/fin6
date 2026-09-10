@@ -141,7 +141,8 @@ class Note:
         return note_id(v), v
 
     def nullifier(self, params: ChainParams) -> str:
-        return nullifier_id(nullifier_value(self.coords()))
+        return nullifier_id(note_id(note_vector(self, params)),
+                            nullifier_value(self.coords()))
 
     def __repr__(self):
         return f"Note(value={self.value}, asset={hex(self.asset)[:8]}…)"
@@ -170,6 +171,25 @@ def note_id(v_note) -> str:
 # transaction proof carries it as one more row, so the published nullifier is
 # provably derived from the coordinates of the note actually being spent,
 # without those coordinates ever appearing.
+#
+# **And the published id binds the commitment as well as that form**, which
+# part nine added and which the form alone cannot do.  A quadratic form maps
+# every note — eight coordinates at DEMO, forty-eight at STRONG — onto a
+# single field element, so its fibres are enormous and, worse, easy to walk:
+# the form is homogeneous of degree 2, so Q(-x) = Q(x), and solving Q(x) = t
+# for one unconstrained blinder is a single square root mod P.
+#
+# That was exploitable, and not in the direction the design worried about.  A
+# payer chooses every coordinate of the note it hands you, blinders included.
+# So it could craft your note to have the same nullifier as a note it already
+# held, spend its own note, and leave yours permanently unspendable: live and
+# unspent in the UTXO set, and refused by every node as a double spend.  One
+# payment to freeze a stranger's funds for good.
+#
+# Hashing the commitment in with the form makes the published id as
+# discriminating as `cm` itself, so a collision now needs a collision in the
+# note commitment vector.  It costs one extra hash input and it is why
+# `nullifier_id` takes `cm`.
 
 @lru_cache(maxsize=None)
 def nullifier_coeffs(n_note: int) -> tuple:
@@ -192,5 +212,11 @@ def nullifier_value(coords) -> int:
     return acc % P
 
 
-def nullifier_id(fe: int) -> str:
-    return "nf:" + h_hex("nf-id", int(fe))
+def nullifier_id(cm: str, fe: int) -> str:
+    """The published spend marker for the note committed as `cm`.
+
+    Both inputs, and `cm` is the one that makes it injective.  See the note
+    above: the quadratic form on its own has walkable fibres, and a payer
+    controls the coordinates of the note it pays you.
+    """
+    return "nf:" + h_hex("nf-id", cm, int(fe))
