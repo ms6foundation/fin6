@@ -516,7 +516,7 @@ class NodeProcess:
         self.epochs_run += 1
         self.last_reason = "ok"
         self.log(f"epoch {epoch}: height {block.height} "
-                 f"{block.hash()[:16]}… {len(cert.attestations)} attestations, "
+                 f"{block.hash()[:16]}… {len(cert)} attestations, "
                  f"{sum(1 for _ in block.transactions())} tx")
         self._serve_until(self.clock.commit_deadline(epoch), epoch)
 

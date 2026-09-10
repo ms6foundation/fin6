@@ -48,17 +48,25 @@ class TrustList:
 
     # ── observation ──────────────────────────────────────────────────────────
 
-    def observe(self, roll, finalised_hash: str | None, attestations: dict):
-        """Fold one ceremony this node witnessed into its private view."""
+    def observe(self, roll, finalised_hash: str | None, agreed_with=()):
+        """Fold one ceremony this node witnessed into its private view.
+
+        `agreed_with` is the seats that attested to the block that finalised.
+        It used to be a map of whole attestations, from which this asked each
+        one what block it had signed — a question a certificate answers once
+        for all of its signers, since they all sign the same statement. Part
+        nine's compact certificate no longer carries per-seat copies of it, so
+        the caller resolves it and passes the names.
+        """
         attended = set(roll.attended)
+        agreed_with = set(agreed_with)
         for nid in roll.seated:
             if nid == self.owner:
                 continue
             e = self._entry(nid)
             e.seen += 1
             if nid in attended:
-                att = attestations.get(nid)
-                if finalised_hash and att is not None and att.block_hash == finalised_hash:
+                if finalised_hash and nid in agreed_with:
                     e.agreed += 1
                 e.score = min(self.cap, e.score + self.increase)
             else:

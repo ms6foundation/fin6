@@ -645,10 +645,10 @@ class LocalWorkload:
         if cert.height != self.world.height:
             return False, (f"certificate is for height {cert.height}, the "
                            f"chain is at {self.world.height}")
-        if not cert.attestations:
+        if not cert.signers:
             return False, "previous certificate carries no attestations"
         ok, why = cert.verify(1, cert.block_hash,
-                              validators=self.world.roster or None)
+                              validators=self.world.roster)
         if not ok:
             return False, f"previous certificate: {why}"
         return True, "ok"
@@ -704,7 +704,8 @@ class SuperWorkload:
             reg = self.world.registers.get(child.header.grid_id)
             quorum = reg.quorum(self.world.params.quorum_num,
                                 self.world.params.quorum_den) if reg else 1
-            ok, why = child.quorum_cert.verify(quorum, child.hash())
+            ok, why = child.quorum_cert.verify(quorum, child.hash(),
+                                               validators=self.world.roster)
             if not ok:
                 return False, f"{child.header.grid_id}: {why}"
             for tx in child.transactions:
@@ -896,7 +897,8 @@ class SupremeWorkload:
         for sup in block.supers:
             if sup.quorum_cert is None:
                 return False, f"{sup.header.super_id}: no quorum certificate"
-            ok, why = sup.quorum_cert.verify(1, sup.hash())
+            ok, why = sup.quorum_cert.verify(1, sup.hash(),
+                                             validators=self.world.roster)
             if not ok:
                 return False, f"{sup.header.super_id}: {why}"
 
@@ -1069,11 +1071,11 @@ def _run_solo_epoch(world: TierWorld, epoch: int, base_seed: str,
     local = PhaseResult(tier="local")
     local.ceremonies[gid] = result
     world.pending_rolls[gid] = result.roll
-    atts = ({a.node_id: a for a in result.quorum_cert.attestations}
-            if result.quorum_cert else {})
+    agreed = (set(result.quorum_cert.voters())
+              if result.quorum_cert else set())
     head = result.block.hash() if result.block else None
     for nid in grid.seats:
-        world.trust[nid].observe(result.roll, head, atts)
+        world.trust[nid].observe(result.roll, head, agreed)
 
     if not result.finalised:
         return TieredEpochResult(epoch, "aborted", f"the only grid: {result.reason}",
@@ -1123,11 +1125,11 @@ def run_tiered_epoch(world: TierWorld, epoch: int, base_seed: str,
             local.blocks[gid] = result.block
 
         # Every seat folds what it watched into its own private trust list.
-        atts = ({a.node_id: a for a in result.quorum_cert.attestations}
-                if result.quorum_cert else {})
+        agreed = (set(result.quorum_cert.voters())
+                  if result.quorum_cert else set())
         head = result.block.hash() if result.block else None
         for nid in grid.seats:
-            world.trust[nid].observe(result.roll, head, atts)
+            world.trust[nid].observe(result.roll, head, agreed)
 
     if not local.blocks:
         return TieredEpochResult(epoch, "aborted", "no local grid finalised", 1,

@@ -277,8 +277,9 @@ def prev_cert_digest(cert) -> str:
         return ""
     return h_hex("prev-cert", cert.chain_id, cert.height, cert.block_hash,
                  cert.epoch, cert.grid_seed,
-                 sorted(a.digest() for a in cert.attestations),
-                 sorted(a.digest() for a in cert.shadow))
+                 [f"{n}:{s}" for n, s in zip(cert.signers, cert.signatures)],
+                 [f"{n}:{s}" for n, s in zip(cert.shadow_signers,
+                                             cert.shadow_signatures)])
 
 
 def faults_digest(faults) -> str:

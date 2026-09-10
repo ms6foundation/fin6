@@ -130,7 +130,7 @@ class LightClient:
             registers=registers, checked_at=header.height,
             utxo_count=header.utxo_count, nf_count=header.nf_count)
         return {"height": header.height, "tip": header.hash(),
-                "attestations": len(cert.attestations),
+                "attestations": len(cert),
                 "grids": len(registers), "ancestry": steps}
 
     def _registers(self, header) -> dict:
@@ -165,21 +165,16 @@ class LightClient:
         for reg in registers.values():
             seats.update(reg.seated_members())
             quorum = max(quorum, reg.quorum())
-        seen = set()
-        for att in cert.attestations:
-            if not att.verify():
-                return False, f"bad signature from {att.node_id}"
-            if (att.block_hash != cert.block_hash or att.height != cert.height
-                    or att.chain_id != cert.chain_id
-                    or att.epoch != cert.epoch):
-                return False, f"{att.node_id} signed a different statement"
-            if att.node_id in seen:
-                return False, f"{att.node_id} attested twice"
-            if att.node_id not in seats and att.node_id not in self.known:
-                return False, f"{att.node_id} holds no seat on this chain"
-            seen.add(att.node_id)
-        if len(seen) < quorum:
-            return False, f"{len(seen)} attestations, quorum is {quorum}"
+        # A certificate no longer carries the keys it was signed with, which
+        # this client is better placed than most to appreciate: it holds the
+        # roster from the genesis document, and a key a certificate carried
+        # about itself was never evidence of anything.
+        ok, why = cert.verify(quorum, cert.block_hash, validators=self.known)
+        if not ok:
+            return False, why
+        for node_id in cert.attended():
+            if node_id not in seats and node_id not in self.known:
+                return False, f"{node_id} holds no seat on this chain"
         return True, "ok"
 
     def _check_ancestry(self, header) -> int:

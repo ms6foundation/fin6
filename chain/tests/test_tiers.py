@@ -168,7 +168,7 @@ def test_apprentice_attestations_do_not_count_toward_quorum():
         apprentices = set(reg.apprentices())
         if not apprentices or not res.quorum_cert:
             continue
-        signers = {a.node_id for a in res.quorum_cert.attestations}
+        signers = set(res.quorum_cert.voters())
         assert not (signers & apprentices), "an apprentice reached the quorum cert"
         return
     raise AssertionError("no grid had an apprentice to check")

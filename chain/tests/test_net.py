@@ -462,11 +462,17 @@ def test_a_real_network_reaches_agreement():
             ok, height, detail = net.agreement(status)
             assert ok, sv.render_status(status, (ok, height, detail))
             assert height >= 2, detail
-            live = [s for s in status.values() if s]
+            live = {n: s for n, s in status.items() if s}
             assert len(live) == 4, "every node answered"
-            assert len({s["tip"] for s in live}) == 1
-            assert len({s["utxo_root"] for s in live}) == 1
-            assert len({s["registers_root"] for s in live}) == 1
+            # Compared only among the nodes standing at the top height. Four
+            # processes on a 2.5 s epoch can legitimately be a block apart at
+            # the instant of sampling; what must never happen is two nodes at
+            # the same height with different roots.
+            top = max(s["height"] for s in live.values())
+            at_top = [s for s in live.values() if s["height"] == top]
+            for field in ("tip", "utxo_root", "nf_root", "registers_root"):
+                assert len({s[field] for s in at_top}) == 1, \
+                    f"{len(at_top)} nodes at {top} disagree on {field}"
         finally:
             net.down()
     finally:

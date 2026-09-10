@@ -54,12 +54,19 @@ def test_quorum_certificate_verifies_independently():
 def test_quorum_certificate_rejects_a_swapped_attestation_set():
     nodes, wallets, tx = funded_network(validators=IDS)
     cert = run_epoch(nodes, DEMO, height=1, epoch=1, base_seed="s").result.quorum_cert
-    trimmed = dataclasses.replace(cert, attestations=cert.attestations[:2])
-    ok, why = trimmed.verify(DEMO.quorum_size(len(IDS)))
+    validators = {n.id: n.public_hex for n in nodes.values()}
+    trimmed = dataclasses.replace(cert, signers=cert.signers[:2],
+                                  signatures=cert.signatures[:2])
+    ok, why = trimmed.verify(DEMO.quorum_size(len(IDS)),
+                             validators=validators)
     assert not ok, "a certificate below quorum was accepted"
     padded = dataclasses.replace(cert, root=cert.root + 1)
-    ok, why = padded.verify(DEMO.quorum_size(len(IDS)))
+    ok, why = padded.verify(DEMO.quorum_size(len(IDS)),
+                            validators=validators)
     assert not ok and "root" in why, why
+    ok, why = cert.verify(DEMO.quorum_size(len(IDS)))
+    assert not ok and "roster" in why, \
+        "a certificate carries no keys and must not pretend to"
 
 
 def test_silent_leader_triggers_a_view_change():

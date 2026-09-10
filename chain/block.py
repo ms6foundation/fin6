@@ -194,79 +194,151 @@ class FaultReport:
 
 @dataclass(frozen=True)
 class QuorumCert:
-    """The attestations that finalised a block, committed with a seal tree."""
+    """The attestations that finalised a block, in the shape an aggregate
+    signature needs.
+
+    A certificate used to be a tuple of whole `Attestation` objects, and it was
+    almost entirely repetition: each one restated the chain id, the height, the
+    block hash, the epoch and the grid seed that the certificate itself states
+    once, and carried a 32-byte public key that the roster already holds. 225
+    bytes a seat, of which about 70 were load-bearing.
+
+    That is a size problem at scale and it was a *format* problem sooner. Part
+    one has listed "quorum signature scheme" as unchosen since the beginning,
+    with threshold BLS as the example — and an aggregate signature cannot be a
+    list of self-describing attestations. It is one signature plus the identity
+    of who is in it, checked against keys the verifier already has. So the
+    shape here is `signers` and `signatures` verified against the roster: the
+    same information, a third of the bytes, and the seam an aggregate scheme
+    drops into. When signatures aggregate, `signatures` becomes length one and
+    nothing else about this moves.
+
+    Which is the whole argument for doing it now. Choosing the shape before a
+    chain exists costs an afternoon; changing it afterwards is every stored
+    certificate, every archive segment and every light client.
+
+    `signers` is sorted, so it is a bitmap over the roster in all but encoding
+    — and the codec interns repeated strings, so the ids cost little.
+    """
+
     chain_id: str
     height: int
     block_hash: str
     epoch: int
     grid_seed: str
-    attestations: tuple = field(repr=False)
+    #: Seats whose attestations count toward quorum, sorted, with their
+    #: signatures aligned to them.
+    signers: tuple = ()
+    signatures: tuple = field(default=(), repr=False)
+    #: Seats that attested without counting — apprentices, whose shadow moves
+    #: their own counter and nothing else. Quorum never sees them.
+    shadow_signers: tuple = ()
+    shadow_signatures: tuple = field(default=(), repr=False)
     root: int = 0
-    #: Attestations from seats that do not count toward quorum — apprentices,
-    #: whose shadow attestations move their own counter and nothing else.
-    #:
-    #: Carried because the attendance roll is now derived from the certificate,
-    #: and an apprentice that never appears in one is an apprentice that is
-    #: never promoted. Quorum still means what it meant: `verify` counts only
-    #: `attestations`, and a shadow can never make a block final.
-    shadow: tuple = field(default=(), repr=False)
+
+    # ── building ─────────────────────────────────────────────────────────────
 
     @staticmethod
     def build(chain_id, height, block_hash, epoch, grid_seed, attestations,
               shadow=()):
-        atts = tuple(sorted(attestations, key=lambda a: a.node_id))
+        """From whole attestations, keeping only what is not already here."""
+        atts = sorted(attestations, key=lambda a: a.node_id)
         counting = {a.node_id for a in atts}
-        shad = tuple(sorted((a for a in shadow if a.node_id not in counting),
-                            key=lambda a: a.node_id))
-        return QuorumCert(chain_id=chain_id, height=height,
-                          block_hash=block_hash, epoch=epoch,
-                          grid_seed=grid_seed, attestations=atts,
-                          root=seal_root("quorum", [a.digest() for a in atts]),
-                          shadow=shad)
+        shad = sorted((a for a in shadow if a.node_id not in counting),
+                      key=lambda a: a.node_id)
+        return QuorumCert(
+            chain_id=chain_id, height=height, block_hash=block_hash,
+            epoch=epoch, grid_seed=grid_seed,
+            signers=tuple(a.node_id for a in atts),
+            signatures=tuple(a.signature for a in atts),
+            shadow_signers=tuple(a.node_id for a in shad),
+            shadow_signatures=tuple(a.signature for a in shad),
+            root=QuorumCert.compute_root(
+                [a.node_id for a in atts], [a.signature for a in atts]))
+
+    @staticmethod
+    def compute_root(signers, signatures) -> int:
+        """Over the pairs, so neither a signer nor a signature can be swapped
+        for another without the root moving."""
+        return seal_root("quorum", [f"{n}:{s}" for n, s
+                                    in zip(signers, signatures)])
+
+    # ── reading ──────────────────────────────────────────────────────────────
+
+    def message(self) -> bytes:
+        """The statement every signature in this certificate is over.
+
+        One message for the whole certificate, which is exactly why the
+        per-attestation copies of it were redundant — and exactly what makes
+        aggregation possible later: aggregate schemes need one message and many
+        keys.
+        """
+        return Attestation.message(self.chain_id, self.height, self.block_hash,
+                                   self.epoch, self.grid_seed)
+
+    def voters(self) -> tuple:
+        return self.signers
 
     def attended(self) -> tuple:
         """Every seat this certificate proves said something, of either kind."""
-        return tuple(sorted({a.node_id for a in self.attestations}
-                            | {a.node_id for a in self.shadow}))
+        return tuple(sorted(set(self.signers) | set(self.shadow_signers)))
+
+    def __len__(self):
+        return len(self.signers)
 
     def verify(self, quorum: int, block_hash: str | None = None,
                validators: dict | None = None):
-        """(ok, reason).  validators maps node_id -> public key, when known."""
+        """(ok, reason).  `validators` maps node_id -> public key.
+
+        Required, not optional, and that is the price of the shape: a
+        certificate no longer carries the keys it was signed with, so it cannot
+        be checked in isolation. That is not a loss — a key carried by the
+        thing it authenticates was never evidence of anything, and every caller
+        that verified without a roster was checking that a signature matched a
+        key the signer had chosen for itself.
+        """
         if block_hash is not None and block_hash != self.block_hash:
             return False, "certificate is for a different block"
+        if validators is None:
+            return False, ("a certificate carries no keys; it can only be "
+                           "checked against the roster")
+        if len(self.signers) != len(self.signatures):
+            return False, "signers and signatures do not correspond"
+        if len(self.shadow_signers) != len(self.shadow_signatures):
+            return False, "shadow signers and signatures do not correspond"
+        msg = self.message()
         seen = set()
-        for a in self.attestations:
-            if not a.verify():
-                return False, f"bad attestation signature from {a.node_id}"
-            if (a.block_hash != self.block_hash or a.height != self.height
-                    or a.epoch != self.epoch or a.chain_id != self.chain_id):
-                return False, f"attestation from {a.node_id} is off-statement"
-            if a.node_id in seen:
-                return False, f"duplicate attestation from {a.node_id}"
-            if validators is not None and validators.get(a.node_id) != a.public_hex:
-                return False, f"{a.node_id} is not a known validator"
-            seen.add(a.node_id)
+        for node_id, signature in zip(self.signers, self.signatures):
+            key = validators.get(node_id)
+            if key is None:
+                return False, f"{node_id} is not a known validator"
+            if node_id in seen:
+                return False, f"duplicate attestation from {node_id}"
+            if not verify_sig(key, msg, signature):
+                return False, f"bad attestation signature from {node_id}"
+            seen.add(node_id)
         if len(seen) < quorum:
             return False, f"{len(seen)} attestations, quorum is {quorum}"
-        expect = seal_root("quorum", [a.digest() for a in self.attestations])
-        if expect != self.root:
-            return False, "certificate root does not match its attestations"
-        # Shadows are checked as carefully as the rest, because the register
+        # Shadows are checked as carefully as votes, because the register
         # credits them: an unverified shadow would be a way to hand an
-        # apprentice a promotion it did not earn.  What they cannot do is
-        # count — `seen` is not extended, so quorum is untouched.
-        for a in self.shadow:
-            if not a.verify():
-                return False, f"bad shadow attestation signature from {a.node_id}"
-            if (a.block_hash != self.block_hash or a.height != self.height
-                    or a.epoch != self.epoch or a.chain_id != self.chain_id):
-                return False, f"shadow from {a.node_id} is off-statement"
-            if a.node_id in seen:
-                return False, f"{a.node_id} attested twice, once as a shadow"
-            if validators is not None and validators.get(a.node_id) != a.public_hex:
-                return False, f"{a.node_id} is not a known validator"
+        # apprentice a promotion it did not earn. What they cannot do is count
+        # — `seen` is not extended, so quorum is untouched.
+        for node_id, signature in zip(self.shadow_signers,
+                                      self.shadow_signatures):
+            key = validators.get(node_id)
+            if key is None:
+                return False, f"{node_id} is not a known validator"
+            if node_id in seen:
+                return False, f"{node_id} attested twice, once as a shadow"
+            if not verify_sig(key, msg, signature):
+                return False, f"bad shadow attestation signature from {node_id}"
+            seen.add(node_id)
+        if self.compute_root(self.signers, self.signatures) != self.root:
+            return False, "certificate root does not match its attestations"
         return True, "ok"
 
     def __repr__(self):
-        return (f"QuorumCert(h={self.height}, {len(self.attestations)} seats, "
-                f"{self.block_hash[:14]}…)")
+        return (f"QuorumCert(h={self.height}, {len(self.signers)} seats"
+                + (f" +{len(self.shadow_signers)} shadow"
+                   if self.shadow_signers else "")
+                + f", {self.block_hash[:14]}…)")

@@ -38,6 +38,10 @@ def _cert(counting, shadow=()):
                             shadow=shadow)
 
 
+def _roster(*names):
+    return {n: Signer.from_seed(f"validator:{n}").public_hex for n in names}
+
+
 # ── the roll a certificate proves ────────────────────────────────────────────
 
 def test_attendance_is_who_signed_the_certificate():
@@ -73,7 +77,7 @@ def test_an_apprentices_shadow_still_counts_as_attendance():
     s = _signers(["a", "b", "new"])
     cert = _cert([_att(s["a"], "a"), _att(s["b"], "b")],
                  shadow=[_att(s["new"], "new")])
-    assert len(cert.attestations) == 2, "and it still cannot make quorum"
+    assert len(cert) == 2, "and it still cannot make quorum"
     roll = AttendanceRoll.from_cert("g0", cert, ["a", "b", "new"], "a")
     assert "new" in roll.attended
 
@@ -85,7 +89,7 @@ def test_a_shadow_is_verified_as_carefully_as_a_vote():
     good = _att(s["new"], "new")
     forged = dataclasses.replace(good, signature=_att(s["a"], "a").signature)
     cert = _cert([_att(s["a"], "a"), _att(s["b"], "b")], shadow=[forged])
-    ok, why = cert.verify(1, "nb:one")
+    ok, why = cert.verify(1, "nb:one", validators=_roster("a", "b", "new"))
     assert not ok and "shadow" in why, why
 
 
@@ -93,7 +97,8 @@ def test_a_shadow_cannot_be_smuggled_in_twice():
     s = _signers(["a"])
     att = _att(s["a"], "a")
     cert = QuorumCert.build(CHAIN, 1, "nb:one", 1, SEED, [att], shadow=[att])
-    assert cert.shadow == (), "the same seat cannot be counted and shadowed"
+    assert cert.shadow_signers == (), \
+        "the same seat cannot be counted and shadowed"
 
 
 def test_the_certificate_digest_covers_the_shadows_too():
@@ -213,3 +218,66 @@ def test_faulting_changes_the_register_root():
     clean.apply(roll)
     dirty.apply(roll, faulted=("cheat",))
     assert clean.root() != dirty.root()
+
+
+# ── the shape a certificate has to be in for signatures to aggregate ────────
+
+def test_a_certificate_carries_no_keys():
+    """The point of the shape, and its price. A key carried by the thing it
+    authenticates was never evidence of anything, and an aggregate signature
+    cannot carry one per signer — so the roster is now mandatory."""
+    s = _signers(["a", "b"])
+    cert = _cert([_att(s["a"], "a"), _att(s["b"], "b")])
+    assert not hasattr(cert, "attestations")
+    ok, why = cert.verify(1, "nb:one")
+    assert not ok and "roster" in why, why
+    ok, why = cert.verify(1, "nb:one", validators=_roster("a", "b"))
+    assert ok, why
+
+
+def test_one_statement_for_the_whole_certificate():
+    """Every signature is over the same message, which is why the per-seat
+    copies of the chain id, height, block hash, epoch and grid seed were
+    redundant — and what an aggregate scheme requires: one message, many
+    keys."""
+    s = _signers(["a", "b"])
+    cert = _cert([_att(s["a"], "a"), _att(s["b"], "b")])
+    msg = cert.message()
+    assert msg == Attestation.message(CHAIN, 1, "nb:one", 1, SEED)
+    from ..crypto import verify_sig
+    for node_id, sig in zip(cert.signers, cert.signatures):
+        assert verify_sig(_roster(node_id)[node_id], msg, sig)
+
+
+def test_a_signature_cannot_be_moved_to_another_signer():
+    """The root is over the pairs, not over two independent lists."""
+    s = _signers(["a", "b"])
+    cert = _cert([_att(s["a"], "a"), _att(s["b"], "b")])
+    swapped = dataclasses.replace(cert, signatures=cert.signatures[::-1])
+    ok, why = swapped.verify(1, "nb:one", validators=_roster("a", "b"))
+    assert not ok, why
+
+
+def test_a_signer_outside_the_roster_is_refused():
+    s = _signers(["a", "stranger"])
+    cert = _cert([_att(s["a"], "a"), _att(s["stranger"], "stranger")])
+    ok, why = cert.verify(1, "nb:one", validators=_roster("a"))
+    assert not ok and "not a known validator" in why, why
+
+
+def test_lists_that_do_not_correspond_are_refused():
+    s = _signers(["a", "b"])
+    cert = _cert([_att(s["a"], "a"), _att(s["b"], "b")])
+    ragged = dataclasses.replace(cert, signatures=cert.signatures[:1])
+    ok, why = ragged.verify(1, "nb:one", validators=_roster("a", "b"))
+    assert not ok and "correspond" in why, why
+
+
+def test_the_signers_are_sorted_so_the_list_is_a_bitmap_in_all_but_encoding():
+    """What is left before signatures can collapse to one: `signers` is a
+    canonical order already, so replacing it with an actual bitmap over the
+    grid's seats is an encoding change rather than a format one."""
+    s = _signers(["c", "a", "b"])
+    cert = _cert([_att(s["c"], "c"), _att(s["a"], "a"), _att(s["b"], "b")])
+    assert cert.signers == ("a", "b", "c")
+    assert list(cert.signers) == sorted(cert.signers)
