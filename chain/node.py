@@ -62,6 +62,18 @@ MAX_OUTPUTS = 16
 #: entries go, which loses the cheap `no` for those and nothing else.
 MAX_REFUSED_PROOFS = 4096
 
+#: How many transactions a node will hold.  Unbounded was the state of this
+#: until part nine: every entry carries its proofs — 60 KB at LOCAL, 568 KB
+#: with all three backends — and every one of them is gossiped on to the rest
+#: of the roster, so one node's pool is every node's pool.  Worse, the traffic
+#: that fills it is *valid*: the epoch budget bounds how much verification a
+#: node will do, and nothing bounded how much of the result it would keep.
+#:
+#: 4,096 at LOCAL is about 250 MB of proof, which is the wrong side of
+#: comfortable on a small machine and is meant to be: the cap exists to be
+#: reached, and what matters is what happens then.
+MAX_MEMPOOL = 4096
+
 #: How many failed proofs against one body make it suspect.  Note what this
 #: is NOT: a threshold at which the body is refused.  Refusing it would hand
 #: an attacker a censorship primitive — watch a transaction go past in gossip,
@@ -82,7 +94,7 @@ def _bounded_put(store: dict, key, value):
 
 class Node:
     def __init__(self, node_id: str, signer: Signer, params: ChainParams,
-                 state: ChainState, store=None):
+                 state: ChainState, store=None, max_mempool: int = MAX_MEMPOOL):
         self.id = node_id
         self.signer = signer
         self.params = params
@@ -93,6 +105,8 @@ class Node:
         # re-admit transactions the chain has since invalidated.
         self.store = store
         self.mempool: dict = {}
+        self.max_mempool = max_mempool
+        self.evicted = 0
         self._verified: dict = {}          # txid -> fingerprint
         self.admitted = 0
         self.refused = 0
@@ -165,6 +179,20 @@ class Node:
             if holder is not None:
                 return False, (f"conflicts with {holder[:14]}…: note "
                                f"{cm[:14]}… is already being spent")
+        if len(self.mempool) >= self.max_mempool:
+            # Full, so admission is a competition rather than a queue.  Note
+            # what is *not* being claimed here: this is not a fee market.  A
+            # fee market is a rule the chain agrees about what a block must
+            # contain, and nobody has written one.  This is a node's own
+            # eviction order, it changes no consensus rule, and two nodes with
+            # different caps still agree on every block — which is exactly why
+            # it can be added now and a fee market cannot.
+            floor_txid, floor_fee = self._cheapest()
+            if floor_txid is None:
+                return False, "the mempool is full"
+            if tx.fee <= floor_fee:
+                return False, (f"the mempool is full and {tx.fee} does not "
+                               f"beat the {floor_fee} already held")
         return True, "ok"
 
     def authenticate(self, tx: Transaction, backend: str | None = None):
@@ -238,6 +266,15 @@ class Node:
             self.bad_proofs += 1
             self._remember_refusal(tx, backend_name)
             return False, why
+        # Room is made at the last possible moment: `admissible` established
+        # that this transaction beats the floor, and evicting before the proof
+        # was checked would have let a bad proof displace a good transaction.
+        while len(self.mempool) >= self.max_mempool:
+            floor_txid, _ = self._cheapest()
+            if floor_txid is None or floor_txid == tx.txid:
+                break
+            self._evict(floor_txid)
+            self.evicted += 1
         self.mempool[tx.txid] = tx
         self.admitted += 1
         self._verified[tx.txid] = tx_fingerprint(tx)
@@ -276,6 +313,18 @@ class Node:
         _bounded_put(self._strikes, tx.txid, self._strikes[tx.txid])
         _bounded_put(self._refused_proofs,
                      proof_fingerprint(tx, backend_name), True)
+
+    def _cheapest(self):
+        """The transaction this node would give up first.  (txid, fee)
+
+        Lowest fee, and the oldest of those on a tie — so a flood of identical
+        zero-fee transactions displaces itself rather than the pool.
+        """
+        floor_txid, floor_fee = None, None
+        for txid, held in self.mempool.items():
+            if floor_fee is None or held.fee < floor_fee:
+                floor_txid, floor_fee = txid, held.fee
+        return floor_txid, floor_fee
 
     def _evict(self, txid):
         tx = self.mempool.pop(txid, None)

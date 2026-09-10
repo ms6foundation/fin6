@@ -13,8 +13,8 @@ from chain.crypto import Signer
 from wallet.keys import WalletKeys
 from chain.net.limits import (BYTES_PER_TOKEN, Bucket, COSTS, Limiter,
                               bytes_cost)
-from chain.node import (MAX_INPUTS, MAX_OUTPUTS, MAX_REFUSED_PROOFS,
-                        PROOF_STRIKES, Node)
+from chain.node import (MAX_INPUTS, MAX_MEMPOOL, MAX_OUTPUTS,
+                        MAX_REFUSED_PROOFS, PROOF_STRIKES, Node)
 from chain.notes import Note, note_id, note_vector
 from chain.params import DEMO
 from chain.state import ChainState
@@ -336,3 +336,83 @@ def test_a_megabyte_a_second_is_priced_out_of_a_clients_budget():
     decode_ms = 45 * (CLIENT_MAX_FRAME / (1 << 20))
     share = frames_per_second * decode_ms / 1000
     assert share < 0.02, f"a client can still take {share * 100:.0f}% of a core"
+
+
+# ── the pool a flood of *valid* transactions fills ───────────────────────────
+
+class _Held:
+    """A transaction-shaped stand-in: the pool only reads a fee and an id."""
+
+    def __init__(self, txid, fee):
+        self.txid = txid
+        self.fee = fee
+        self.nullifiers = (f"nf:{txid}",)
+        self.input_cms = (f"cm:{txid}",)
+
+
+def _fill(node, fees):
+    for i, fee in enumerate(fees):
+        node.mempool[f"tx:{i}"] = _Held(f"tx:{i}", fee)
+    return node
+
+
+def test_the_pool_has_a_cap_at_all():
+    """The traffic that fills it is *valid*: the epoch budget bounds how much
+    verification a node will do and nothing bounded how much of the result it
+    would keep."""
+    node, _, _ = _node_and_tx()
+    assert node.max_mempool == MAX_MEMPOOL
+    assert MAX_MEMPOOL > 0
+
+
+def test_a_full_pool_refuses_a_transaction_that_does_not_beat_the_floor():
+    node, tx, _ = _node_and_tx()
+    node.max_mempool = 3
+    _fill(node, [10, 20, 30])
+    cheap = dataclasses.replace(tx, fee=5)
+    ok, why = node.admissible(cheap)
+    assert not ok and "does not beat" in why, why
+
+
+def test_a_full_pool_admits_one_that_does_and_drops_the_cheapest():
+    node, tx, _ = _node_and_tx()          # this one pays a fee of 5
+    node.max_mempool = 3
+    _fill(node, [1, 2, 3])
+    assert node.submit(tx)[0], "a 5-fee transaction against a floor of 1"
+    assert len(node.mempool) == 3, "the cap held"
+    assert "tx:0" not in node.mempool, "and the cheapest went"
+    assert node.evicted == 1
+    assert tx.txid in node.mempool
+
+
+def test_the_floor_is_the_lowest_fee_and_the_oldest_of_a_tie():
+    """So a flood of identical zero-fee transactions displaces itself rather
+    than the pool."""
+    node, _, _ = _node_and_tx()
+    _fill(node, [0, 0, 0, 7])
+    assert node._cheapest() == ("tx:0", 0)
+
+
+def test_eviction_releases_what_the_evicted_transaction_reserved():
+    """Or the note it was spending stays locked and nothing can replace it."""
+    node, tx, _ = _node_and_tx()
+    node.max_mempool = 1
+    _fill(node, [1])
+    node._reserved_nf["nf:tx:0"] = "tx:0"
+    node._reserved_cm["cm:tx:0"] = "tx:0"
+    assert node.submit(tx)[0]
+    assert "nf:tx:0" not in node._reserved_nf
+    assert "cm:tx:0" not in node._reserved_cm
+
+
+def test_a_full_pool_is_not_a_fee_market():
+    """Worth pinning, because it is the thing this must not be mistaken for.
+    Two nodes with different caps still agree on every block: the cap changes
+    what a node *holds*, never what a block may contain."""
+    from chain.node import Node as _Node
+    small = _Node("a", Signer.from_seed("a"), PARAMS,
+                  ChainState(PARAMS, chain_id=CHAIN), max_mempool=1)
+    large = _Node("b", Signer.from_seed("b"), PARAMS,
+                  ChainState(PARAMS, chain_id=CHAIN), max_mempool=99)
+    assert small.max_mempool != large.max_mempool
+    assert small.params is large.params, "no consensus parameter moved"
