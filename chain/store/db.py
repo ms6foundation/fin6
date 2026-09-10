@@ -62,6 +62,12 @@ SCHEMA = (
     # fetch the blocks it missed.
     "CREATE TABLE IF NOT EXISTS grid_roll("
     "  grid_id TEXT PRIMARY KEY, blob BLOB NOT NULL)",
+    # The certificate that finalised each grid's last block, and who led it.
+    # The next block's attendance roll is derived from these two, so a node
+    # that restarts without them cannot validate the next block at all — the
+    # lesson `grid_roll` taught, arriving a second time.
+    "CREATE TABLE IF NOT EXISTS grid_cert("
+    "  grid_id TEXT PRIMARY KEY, leader TEXT, blob BLOB NOT NULL)",
     # `blob` is the whole header, canonically encoded.  The columns beside it
     # are for looking at; the blob is what a client is served, because a header
     # a node has reassembled from columns is a header a node could get wrong.
@@ -214,7 +220,8 @@ class ChainStore:
             "history": spine})
 
     def adopt(self, state: ChainState, registers: dict,
-              rolls: dict | None = None):
+              rolls: dict | None = None, certs: dict | None = None,
+              leaders: dict | None = None):
         """Replace the whole chain on disk with an adopted snapshot.
 
         `initialise` refuses a store that already holds a chain, and rightly:
@@ -236,8 +243,8 @@ class ChainStore:
         dead = set(dump["utxo_dead"])
         with self._write():
             for table in ("utxo", "nullifier", "txblock", "netblock", "undo",
-                          "grid_register", "grid_roll", "hardened",
-                          "spent_turn"):
+                          "grid_register", "grid_roll", "grid_cert",
+                          "hardened", "spent_turn"):
                 self.db.execute(f"DELETE FROM {table}")
             self.db.executemany(
                 "INSERT INTO utxo(pos,cm,dead,height,sealed,tag) "
@@ -254,6 +261,7 @@ class ChainStore:
             self.set_meta("burned_fees", dump["burned_fees"])
             self._put_registers(registers)
             self._put_rolls(rolls or {})
+            self._put_certs(certs or {}, leaders or {})
 
     def load_rolls(self) -> dict:
         """The rolls of the tip's epoch, by grid.
@@ -338,7 +346,8 @@ class ChainStore:
     # ── the commit ───────────────────────────────────────────────────────────
 
     def commit(self, *, block, delta, state: ChainState, undo: UndoRecord,
-               registers: dict | None = None, rolls: dict | None = None):
+               registers: dict | None = None, rolls: dict | None = None,
+               certs: dict | None = None, leaders: dict | None = None):
         """One network block, applied or not applied.
 
         The caller has already moved its in-memory state forward; this makes
@@ -385,6 +394,8 @@ class ChainStore:
                 self._put_registers(registers)
             if rolls is not None:
                 self._put_rolls(rolls)
+            if certs is not None:
+                self._put_certs(certs, leaders or {})
             self.db.execute("INSERT INTO undo(height,blob) VALUES(?,?)",
                             (undo.height, codec.encode(_undo_dump(undo))))
             self._prune_undo(header.height)
@@ -491,6 +502,22 @@ class ChainStore:
 
     def _count(self, table) -> int:
         return self.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+
+    def load_certs(self):
+        """(certs, leaders) by grid — everything a roll is derived from."""
+        certs, leaders = {}, {}
+        for grid_id, leader, blob in self.db.execute(
+                "SELECT grid_id, leader, blob FROM grid_cert"):
+            certs[grid_id] = codec.decode(blob)
+            leaders[grid_id] = leader or ""
+        return certs, leaders
+
+    def _put_certs(self, certs: dict, leaders: dict):
+        self.db.execute("DELETE FROM grid_cert")
+        self.db.executemany(
+            "INSERT INTO grid_cert(grid_id,leader,blob) VALUES(?,?,?)",
+            [(gid, leaders.get(gid, ""), codec.encode(cert))
+             for gid, cert in certs.items()])
 
     def _put_rolls(self, rolls: dict):
         self.db.execute("DELETE FROM grid_roll")

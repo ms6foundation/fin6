@@ -46,6 +46,24 @@ class TierWorld:
     registers: dict
     rolls: dict = field(default_factory=dict)          # roll a block may carry now
     pending_rolls: dict = field(default_factory=dict)  # roll this epoch produced
+    #: The certificate that finalised the last network block, and who led the
+    #: ceremony that produced it.  Together these are everything the next
+    #: block's roll is derived from, and both come off the chain rather than
+    #: out of a seat's memory of what it saw.
+    prev_certs: dict = field(default_factory=dict)   # grid_id -> QuorumCert
+    prev_leaders: dict = field(default_factory=dict)  # grid_id -> node_id
+    #: The roster, so a certificate's signatures are checked against the keys
+    #: the genesis document names rather than the keys the certificate carries
+    #: about itself.  A real node sets this from the document; the simulation
+    #: leaves it empty and `roster` derives it from the nodes it holds, which
+    #: is the same set and stays right when a newcomer is admitted mid-run.
+    validator_keys: dict = field(default_factory=dict)
+    #: Fault reports observed in the epoch just finished, waiting to be
+    #: carried by the next block.  Not persisted, and the cost is small and
+    #: worth stating: an equivocation seen in the last seconds before a
+    #: restart is not punished, because the report that would have carried it
+    #: was in memory.  Re-observing it needs the leader to do it again.
+    pending_faults: tuple = ()
     trust: dict = field(default_factory=dict)
     height: int = 0
     tip: str = GENESIS_NETWORK
@@ -58,8 +76,26 @@ class TierWorld:
         return [n for n in self.topology.members(grid_id)
                 if reg.standing_of(n) in (Standing.ATTESTER, Standing.APPRENTICE)]
 
+    @property
+    def roster(self) -> dict:
+        if self.validator_keys:
+            return self.validator_keys
+        return {nid: n.public_hex for nid, n in self.nodes.items()}
+
     def roll_for(self, grid_id: str) -> AttendanceRoll:
-        return self.rolls.get(grid_id) or AttendanceRoll(grid_id, -1, "")
+        """The roll the last epoch's certificate proves, for this grid.
+
+        Derived rather than remembered.  This used to return `self.rolls`,
+        which was whatever the seat in this process had assembled from its own
+        envelope — objective in the simulation, where one process holds every
+        seat, and not objective anywhere else.
+        """
+        cert = self.prev_certs.get(grid_id)
+        if cert is None:
+            return AttendanceRoll(grid_id, -1, "")
+        return AttendanceRoll.from_cert(grid_id, cert,
+                                        self.grid_members(grid_id),
+                                        self.prev_leaders.get(grid_id, ""))
 
     def register_roots(self) -> dict:
         return {gid: reg.root() for gid, reg in self.registers.items()}
@@ -109,16 +145,40 @@ class TierWorld:
             node.state.record_block(block.header.height, block.hash())
             for tx in block.transactions():
                 node._evict(tx.txid)
+        from .tiered import faulted_from
         for child in block.ceremony_blocks():
             reg = self.registers[child.header.grid_id]
             if child.roll is not None and child.roll.epoch >= 0:
-                reg.apply(child.roll)
+                # The faulted set comes out of the block, so every node
+                # computes the same one and the register root agrees.  This is
+                # the first time anything has passed `faulted` at all: the
+                # parameter has been on `apply` since part two and the network
+                # path always passed nothing, so a provable fault cost its
+                # author exactly nothing.
+                reg.apply(child.roll, faulted=faulted_from(child.faults))
         for founding in block.foundings:
             self._found_grid(founding)
         self.height = block.header.height
         self.tip = block.hash()
         self.rolls = dict(self.pending_rolls)
         self.pending_rolls = {}
+        # What the *next* block's roll is derived from.  Taken off the block
+        # that was just applied rather than out of a seat's memory, which is
+        # what makes a node that was absent for the ceremony able to validate
+        # the next one.
+        # Per grid, because a grid's roll is proved by *its* certificate. The
+        # network block's certificate is the supreme grid's attestations, and
+        # crediting a local grid's members from it would credit the wrong
+        # seats entirely — which is only invisible when there is one grid and
+        # the two are the same thing.
+        for child in block.ceremony_blocks():
+            gid = child.header.grid_id
+            cert = child.quorum_cert or block.quorum_cert
+            if cert is not None:
+                self.prev_certs[gid] = cert
+            if child.header.leader_id:
+                self.prev_leaders[gid] = child.header.leader_id
+        self.pending_faults = ()
         if block.foundings:
             self.reroute_mempools()
         for nid, record in records.items():
@@ -131,7 +191,13 @@ class TierWorld:
                               # back without this cannot validate the next
                               # block, whether it is catching up or was never
                               # behind at all.
-                              rolls=self.rolls)
+                              rolls=self.rolls,
+                              # The next block's roll is derived from these,
+                              # so a node that comes back without them cannot
+                              # validate anything — the same lesson `rolls`
+                              # taught, and the same fix.
+                              certs=self.prev_certs,
+                              leaders=self.prev_leaders)
 
     # ── growing ──────────────────────────────────────────────────────────────
 
@@ -219,7 +285,8 @@ class TierWorld:
             self.nodes[nid].store = store
         return store
 
-    def adopt(self, state, registers: dict, rolls: dict | None = None):
+    def adopt(self, state, registers: dict, rolls: dict | None = None,
+              certs: dict | None = None, leaders: dict | None = None):
         """Take a snapshot's state as this world's, in memory.
 
         The mirror of `restore_from`, and the difference is where the state
@@ -236,7 +303,10 @@ class TierWorld:
             node._reserved_cm.clear()
         self.registers = dict(registers)
         self.rolls = dict(rolls or {})
+        self.prev_certs = dict(certs or {})
+        self.prev_leaders = dict(leaders or {})
         self.pending_rolls = {}
+        self.pending_faults = ()
         self.height = state.height
         self.tip = state.tip
         return self
@@ -258,7 +328,9 @@ class TierWorld:
             node._reserved_cm.clear()
         self.registers = store.load_registers()
         self.rolls = store.load_rolls()
+        self.prev_certs, self.prev_leaders = store.load_certs()
         self.pending_rolls = {}
+        self.pending_faults = ()
         self.height = state.height
         self.tip = state.tip
         return self
@@ -397,20 +469,33 @@ class LocalWorkload:
         self.partition = world.topology.partition_of(grid_id)
         self.n_partitions = world.topology.n_partitions
 
-    def _header(self, chosen, delta, roll, register_root, chain_id):
+    def _header(self, chosen, delta, roll, register_root, chain_id,
+                leader_id="", prev_cert=None, faults=()):
         from .seal import seal_root
+        from .tiered import faults_digest, prev_cert_digest
         return CeremonyBlockHeader(
             grid_id=self.grid_id, partition=self.partition,
             n_partitions=self.n_partitions, epoch=self.epoch, chain_id=chain_id,
             prev_network_hash=self.world.tip,
             tx_root=seal_root("tx", [tx.txid for tx in chosen]),
             delta_digest=delta.digest(), roll_digest=roll.digest(),
-            register_root=register_root)
+            register_root=register_root, leader_id=leader_id,
+            prev_cert_digest=prev_cert_digest(prev_cert),
+            faults_digest=faults_digest(faults))
 
-    def _register_after(self, roll):
+    def roll_from(self, block):
+        """The roll a block's own certificate proves, for this grid."""
+        if block.prev_cert is None:
+            return AttendanceRoll(self.grid_id, -1, "")
+        return AttendanceRoll.from_cert(
+            self.grid_id, block.prev_cert,
+            self.world.grid_members(self.grid_id),
+            block.roll.leader_id if block.roll is not None else "")
+
+    def _register_after(self, roll, faulted=()):
         reg = self.world.registers[self.grid_id].clone()
         if roll.epoch >= 0:
-            reg.apply(roll)
+            reg.apply(roll, faulted=faulted)
         return reg.root()
 
     def build(self, leader: Node, meta, limit=None) -> CeremonyBlock:
@@ -429,12 +514,21 @@ class LocalWorkload:
             seen_cm.update(tx.input_cms)
             seen_out.update(tx.output_cms)
 
+        from .tiered import faulted_from
         delta = UtxoDelta.from_txs(chosen)
         roll = self.world.roll_for(self.grid_id)
-        header = self._header(chosen, delta, roll, self._register_after(roll),
-                              leader.chain_id)
+        prev_cert = self.world.prev_certs.get(self.grid_id)
+        faults = tuple(fr for fr in self.world.pending_faults
+                       if fr.substantiated() and fr.verify())
+        faulted = faulted_from(faults)
+        header = self._header(
+            chosen, delta, roll,
+            self._register_after(roll, faulted), leader.chain_id,
+            leader_id=getattr(meta, "leader_id", "") or leader.id,
+            prev_cert=prev_cert, faults=faults)
         return CeremonyBlock(header=header, transactions=tuple(chosen),
-                             delta=delta, roll=roll)
+                             delta=delta, roll=roll, prev_cert=prev_cert,
+                             faults=faults)
 
     def validate(self, node: Node, block: CeremonyBlock):
         h = block.header
@@ -459,13 +553,104 @@ class LocalWorkload:
         if delta.digest() != h.delta_digest or block.delta.digest() != h.delta_digest:
             return False, "delta digest does not match the transactions"
 
-        roll = self.world.roll_for(self.grid_id)
-        if block.roll is None or block.roll.digest() != roll.digest():
-            return False, "attendance roll is not the one this grid produced"
+        # The certificate of the epoch before, and everything that follows
+        # from it.  Checked before the roll, because the roll is now derived
+        # from it: a certificate that does not belong to this chain cannot be
+        # allowed to define who attended.
+        from .tiered import faulted_from
+        ok, why = self._check_prev_cert(node, block)
+        if not ok:
+            return False, why
+        if h.prev_cert_digest != block.compute_prev_cert_digest():
+            return False, "prev_cert digest does not match the certificate"
+        if h.faults_digest != block.compute_faults_digest():
+            return False, "faults digest does not match the reports"
+        for fr in block.faults:
+            if not fr.verify():
+                return False, f"fault report from {fr.reporter} is not signed"
+            if not fr.substantiated():
+                # A leader that could have a claim believed without evidence
+                # could suspend anyone it disliked, so a report that does not
+                # prove itself does not travel — it fails the block.
+                return False, (f"fault report from {fr.reporter} does not "
+                               f"substantiate itself ({fr.kind})")
+        faulted = faulted_from(block.faults)
+
+        # Derived from the certificate *in the block*, not from anything this
+        # node assembled: that is what makes it the same for everyone.
+        if block.roll is None:
+            return False, "no attendance roll"
+        roll = self.roll_from(block)
+        if block.roll.digest() != roll.digest():
+            return False, "attendance roll is not the one the certificate proves"
         if h.roll_digest != roll.digest():
             return False, "roll digest does not match the roll"
-        if h.register_root != self._register_after(roll):
+        if h.register_root != self._register_after(roll, faulted):
             return False, "register_root does not follow from the roll"
+        return True, "ok"
+
+    def _check_prev_cert(self, node, block):
+        """Verify the certificate the block derived its roll from.
+
+        The thing to get right here is *where agreement comes from*, and I got
+        it wrong once by assuming it came from every node holding the same
+        certificate. It does not, and `Seat.roll` says so: each seat assembles
+        its own certificate from its own envelope, so a network of four nodes
+        holds four certificates for the same block — three attestations here,
+        four there — and nothing assembled after agreement is agreed. Checking
+        the leader's certificate against the one this node happened to build
+        stalled the network within six epochs.
+
+        Agreement comes from the block *carrying* the evidence. Every node
+        derives the roll from the same bytes because they are in the block, so
+        there is nothing left to differ about. What this method has to
+        establish is only that those bytes are not invented:
+
+          * every attestation verifies, against a key in the roster, for this
+            chain, this height, and the block the certificate names;
+          * the certificate is for the height this block follows, so a leader
+            cannot reach back for an older epoch's attenders.
+
+        What is deliberately *not* checked is the quorum count, and that is
+        not laziness. Quorum is over attesters and apprentices get promoted,
+        so a grid's attester count rises over its life: a certificate made
+        when there were seven attesters met the quorum of seven, and asking
+        whether it meets the quorum of fifteen is a question no register this
+        node holds can answer. It also does not need answering — this node
+        holds the block that certificate finalised, and accepting that block
+        required the certificate to carry the quorum of its own epoch.
+
+        The residual, stated rather than buried: a leader may present a
+        certificate missing attestations it saw, under-crediting seats that
+        did attend. That is griefing and not theft — every node agrees on the
+        roll, the harm is one epoch of one seat's attendance streak, and the
+        leadership rotates next epoch. The same is true of an omitted shadow
+        and of the leader named in the roll, which only moves a counter.
+        """
+        cert = block.prev_cert
+        if self.world.height == 0 or self.world.prev_certs.get(
+                self.grid_id) is None:
+            # Genesis, or a grid founded this epoch: no ceremony of its own has
+            # happened yet, so there is no certificate to follow. Safe to read
+            # as "never" rather than "forgotten" only because certificates are
+            # persisted.
+            if cert is not None:
+                return False, ("this grid has produced no block, so it "
+                               "follows no certificate")
+            return True, "ok"
+        if cert is None:
+            return False, "no certificate for the previous epoch"
+        if cert.chain_id != node.chain_id:
+            return False, "previous certificate is for another chain"
+        if cert.height != self.world.height:
+            return False, (f"certificate is for height {cert.height}, the "
+                           f"chain is at {self.world.height}")
+        if not cert.attestations:
+            return False, "previous certificate carries no attestations"
+        ok, why = cert.verify(1, cert.block_hash,
+                              validators=self.world.roster or None)
+        if not ok:
+            return False, f"previous certificate: {why}"
         return True, "ok"
 
 

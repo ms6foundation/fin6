@@ -202,14 +202,32 @@ class QuorumCert:
     grid_seed: str
     attestations: tuple = field(repr=False)
     root: int = 0
+    #: Attestations from seats that do not count toward quorum — apprentices,
+    #: whose shadow attestations move their own counter and nothing else.
+    #:
+    #: Carried because the attendance roll is now derived from the certificate,
+    #: and an apprentice that never appears in one is an apprentice that is
+    #: never promoted. Quorum still means what it meant: `verify` counts only
+    #: `attestations`, and a shadow can never make a block final.
+    shadow: tuple = field(default=(), repr=False)
 
     @staticmethod
-    def build(chain_id, height, block_hash, epoch, grid_seed, attestations):
+    def build(chain_id, height, block_hash, epoch, grid_seed, attestations,
+              shadow=()):
         atts = tuple(sorted(attestations, key=lambda a: a.node_id))
+        counting = {a.node_id for a in atts}
+        shad = tuple(sorted((a for a in shadow if a.node_id not in counting),
+                            key=lambda a: a.node_id))
         return QuorumCert(chain_id=chain_id, height=height,
                           block_hash=block_hash, epoch=epoch,
                           grid_seed=grid_seed, attestations=atts,
-                          root=seal_root("quorum", [a.digest() for a in atts]))
+                          root=seal_root("quorum", [a.digest() for a in atts]),
+                          shadow=shad)
+
+    def attended(self) -> tuple:
+        """Every seat this certificate proves said something, of either kind."""
+        return tuple(sorted({a.node_id for a in self.attestations}
+                            | {a.node_id for a in self.shadow}))
 
     def verify(self, quorum: int, block_hash: str | None = None,
                validators: dict | None = None):
@@ -233,6 +251,20 @@ class QuorumCert:
         expect = seal_root("quorum", [a.digest() for a in self.attestations])
         if expect != self.root:
             return False, "certificate root does not match its attestations"
+        # Shadows are checked as carefully as the rest, because the register
+        # credits them: an unverified shadow would be a way to hand an
+        # apprentice a promotion it did not earn.  What they cannot do is
+        # count — `seen` is not extended, so quorum is untouched.
+        for a in self.shadow:
+            if not a.verify():
+                return False, f"bad shadow attestation signature from {a.node_id}"
+            if (a.block_hash != self.block_hash or a.height != self.height
+                    or a.epoch != self.epoch or a.chain_id != self.chain_id):
+                return False, f"shadow from {a.node_id} is off-statement"
+            if a.node_id in seen:
+                return False, f"{a.node_id} attested twice, once as a shadow"
+            if validators is not None and validators.get(a.node_id) != a.public_hex:
+                return False, f"{a.node_id} is not a known validator"
         return True, "ok"
 
     def __repr__(self):

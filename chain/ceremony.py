@@ -623,13 +623,19 @@ class Ceremony:
 
         block_hash = hashes.pop()
         winner = next(env[d.node_id].sole_proposal() for d in accepted)
-        atts = {}
+        atts, shadow = {}, {}
         for d in accepted:
             for a in env[d.node_id].attestations_for(block_hash):
                 atts[a.node_id] = a
+            # Apprentices too.  They cannot make a block final and they are
+            # carried anyway, because the register credits them and the roll
+            # is now read off the certificate rather than off a seat's view.
+            for a in env[d.node_id].shadow.values():
+                if a.block_hash == block_hash:
+                    shadow[a.node_id] = a
         cert = QuorumCert.build(winner.block.header.chain_id, self.height,
                                 block_hash, self.epoch, self.grid.seed,
-                                atts.values())
+                                atts.values(), shadow=shadow.values())
         block = winner.block
         block.quorum_cert = cert
         base["status"] = "finalised"

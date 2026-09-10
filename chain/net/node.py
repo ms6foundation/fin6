@@ -29,7 +29,7 @@ from .. import genesis as genesis_mod
 from ..block import CeremonyMeta
 from ..ceremony import Grid
 from ..crypto import Signer, h_bytes, h_hex
-from ..register import AttendanceRoll, Standing
+from ..register import Standing
 from ..hardening.history import NetworkHistory
 from ..hardening.pool import Era
 from ..store import snapshot as snap
@@ -68,6 +68,11 @@ class NodeProcess:
         # A node speaks only for itself.  The rest of the roster is a set of
         # public keys and an address, not a set of objects.
         self.validators = {n.node_id: n.public_hex for n in self.doc.nodes}
+        # So a certificate's signatures are checked against the keys the
+        # genesis document names, not the keys the certificate carries about
+        # itself.  `world.nodes` holds only this node, which is why this
+        # cannot come from there.
+        self.world.validator_keys = dict(self.validators)
         self.node = self.world.nodes[node_id]
         self.world.nodes = {node_id: self.node}
 
@@ -489,6 +494,17 @@ class NodeProcess:
             return
 
         block, cert = accepted
+        # Faults observed this epoch, for the next block to carry.  Only the
+        # ones that prove themselves: `faulted_from` will ignore the rest and
+        # `validate` refuses a block that carries them, so sending them on
+        # would only get the next leader's block rejected.
+        self.world.pending_faults = tuple(
+            fr for fr in self.seat.env.faults.values()
+            if fr.substantiated() and fr.verify())
+        if self.world.pending_faults:
+            self.log(f"epoch {epoch}: carrying "
+                     f"{len(self.world.pending_faults)} substantiated fault "
+                     f"report(s) into the next block")
         # Explicitly, and not by relying on `Seat.accepted` having set the
         # certificate in place on the object the cache happens to hold: that
         # aliasing is what left peers serving pre-agreement proposals to a
@@ -707,8 +723,17 @@ class NodeProcess:
             self.log(f"snapshot: {len(blob)} bytes is past what one frame "
                      f"carries; chunked transfer is not built")
             return
-        self.mesh.send(who, "snapshot", {"height": height, "header": header,
-                                         "cert": cert, "blob": blob})
+        self.mesh.send(who, "snapshot",
+                       {"height": height, "header": header, "cert": cert,
+                        "blob": blob,
+                        # What the next block's roll is derived from. Not
+                        # proved by the header, and it does not need to be:
+                        # it is checkable one block later, because a wrong
+                        # leader or certificate makes the next block's
+                        # register_root disagree and the node asks for a
+                        # fresher snapshot.
+                        "certs": self.world.prev_certs,
+                        "leaders": self.world.prev_leaders})
         self.log(f"snapshot: served height {height} ({len(blob)} bytes) "
                  f"to {who}")
 
@@ -761,15 +786,11 @@ class NodeProcess:
             return
 
         was = self.world.height
-        self.world.adopt(state, registers)
-        # The roll for the epoch of the adopted tip, recomputed from the
-        # adopted register, because the next block carries the roll of the
-        # epoch before it. Recomputed from the register *after* that epoch's
-        # roll was applied rather than before, which is exact whenever
-        # standing did not change in it and self-correcting when it did: the
-        # next block is refused and a fresher snapshot asked for.
-        self.world.rolls = {gid: self._roll_of_epoch(gid, header.epoch)}
-        self.store.adopt(state, registers, self.world.rolls)
+        certs = payload.get("certs") or {gid: cert}
+        leaders = payload.get("leaders") or {}
+        self.world.adopt(state, registers, certs=certs, leaders=leaders)
+        self.store.adopt(state, registers, self.world.rolls,
+                         certs=certs, leaders=leaders)
         self.history = NetworkHistory(self.era.spec, self.hardening)
         self.catchup.forget(state.height)
         self.snapshot_adopted += 1
@@ -794,27 +815,6 @@ class NodeProcess:
         self.mesh.broadcast(self.mesh.connected, "getblocks",
                             {"from": start, "to": end})
         return True
-
-    def _roll_of_epoch(self, gid: str, epoch: int) -> AttendanceRoll:
-        """The roll the ceremony of `epoch` produced, recomputed.
-
-        `Seat.roll` is a pure function of the grid's seats, and the seats are a
-        pure function of the register and the epoch seed — which is the one
-        property of that stopgap worth having: a node that was absent for the
-        ceremony can still work out what every node present wrote down.  Called
-        with the register as it stands *before* the block is applied, which is
-        where the live path calls it from too.
-        """
-        members = self.world.grid_members(gid)
-        register = self.world.registers[gid]
-        seed = h_hex("view", self.doc.first_seed, epoch, gid, 0)
-        grid = Grid.seat(members, self.world.params.row_size, seed,
-                         standing={n: register.standing_of(n)
-                                   for n in members})
-        return AttendanceRoll(grid_id=gid, epoch=epoch,
-                              leader_id=grid.leader,
-                              seated=tuple(sorted(grid.seats)),
-                              attended=tuple(sorted(grid.seats)))
 
     def _apply_caught_up(self, block):
         """Validate one fetched block exactly as a seat would, then apply it.
@@ -851,14 +851,13 @@ class NodeProcess:
         if not ok:
             return False, why
 
-        # Exactly what the live path does at this point, and for the same
-        # reason: a block carries the roll of the epoch *before* it, so the
-        # roll this epoch produced has to be standing in `pending_rolls` before
-        # the block is applied or the next block cannot be validated. Setting
-        # it to the roll the block *carries* is the tempting wrong answer — it
-        # is one epoch stale, and the next block is then refused with
-        # "attendance roll is not the one this grid produced".
-        self.world.pending_rolls[gid] = self._roll_of_epoch(gid, header.epoch)
+        # Nothing to reconstruct any more.  This used to recompute the roll
+        # of the block's own epoch from the register and hope the standing had
+        # not moved, because the roll lived in a seat's memory and a node
+        # catching up had never been in the room.  The block now carries the
+        # certificate the roll is derived from, so applying it in order is
+        # exact and this method has nothing to say about attendance at all.
+        self.world.pending_rolls[gid] = self.world.roll_for(gid)
         self.world.apply_network_block(block)
         self.bodies.put(block)
         self._stamp(block)

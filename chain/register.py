@@ -43,6 +43,28 @@ class AttendanceRoll:
         return h_hex("roll", self.grid_id, self.epoch, self.leader_id,
                      sorted(self.seated), sorted(self.attended))
 
+    @staticmethod
+    def from_cert(grid_id: str, cert, members, leader_id: str):
+        """The roll a certificate proves.
+
+        `attended` is exactly the seats that signed the certificate, which is
+        the point of this whole change: attendance stops being what one seat
+        happened to observe and becomes what the agreement was made of. Every
+        node derives the same roll from the same bytes, so there is nothing
+        left for seven views to disagree about.
+
+        `seated` is the grid's membership from the committed register, and
+        that is the residual worth naming rather than hiding: across a
+        founding it is the membership *after* the change, so a member admitted
+        between the two epochs is counted as having missed one ceremony. It is
+        deterministic and it is committed, which the old roll was not, and the
+        error is one epoch of one member's attendance streak.
+        """
+        return AttendanceRoll(
+            grid_id=grid_id, epoch=cert.epoch, leader_id=leader_id,
+            seated=tuple(sorted(members)),
+            attended=cert.attended())
+
 
 @dataclass
 class MemberRecord:

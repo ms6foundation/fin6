@@ -69,13 +69,23 @@ class CeremonyBlockHeader:
     delta_digest: str
     roll_digest: str
     register_root: int
+    #: Who led this ceremony.  Recorded because the roll of epoch e is needed
+    #: to validate the block of epoch e+1, and `leader_id` is part of a roll —
+    #: so a node that was not present has to be able to read it off the chain
+    #: rather than recompute it from a register that has since moved.
+    leader_id: str = ""
+    #: The certificate of the previous epoch, and the faults it substantiated,
+    #: committed here so that neither can be swapped after agreement.
+    prev_cert_digest: str = ""
+    faults_digest: str = ""
 
     def hash(self) -> str:
         return "cb:" + h_hex("ceremony-header", self.grid_id, self.partition,
                              self.n_partitions, self.epoch, self.chain_id,
                              self.prev_network_hash, self.tx_root,
                              self.delta_digest, self.roll_digest,
-                             self.register_root)
+                             self.register_root, self.leader_id,
+                             self.prev_cert_digest, self.faults_digest)
 
 
 @dataclass(eq=False)
@@ -85,9 +95,28 @@ class CeremonyBlock:
     delta: UtxoDelta = field(default_factory=UtxoDelta)
     roll: AttendanceRoll | None = None
     quorum_cert: object = field(default=None, repr=False)
+    #: The certificate that finalised the *previous* epoch's network block.
+    #:
+    #: This is the field the roll was always missing.  `Seat.roll` used to
+    #: build attendance from whatever that one seat happened to see, and seven
+    #: seats see seven different things — which is why the first networked run
+    #: died at epoch 2 with "attendance roll is not the one this grid
+    #: produced", and why the stopgap that replaced it credits everyone seated
+    #: in a ceremony that finalised whether they said anything or not.  A
+    #: certificate is the one artefact that is *agreed* about who attested,
+    #: because it is what the agreement was made of.
+    prev_cert: object = field(default=None, repr=False)
+    #: Fault reports from the previous epoch that prove themselves.
+    faults: tuple = field(default=(), repr=False)
 
     def compute_tx_root(self) -> int:
         return seal_root("tx", [tx.txid for tx in self.transactions])
+
+    def compute_prev_cert_digest(self) -> str:
+        return prev_cert_digest(self.prev_cert)
+
+    def compute_faults_digest(self) -> str:
+        return faults_digest(self.faults)
 
     def hash(self) -> str:
         return self.header.hash()
@@ -239,6 +268,42 @@ class NetworkBlock:
         return (f"NetworkBlock(h={self.header.height}, {len(self.supers)} supers, "
                 f"{sum(1 for _ in self.ceremony_blocks())} grids, "
                 f"{sum(1 for _ in self.transactions())} txs, {self.hash()[:13]}…)")
+
+
+def prev_cert_digest(cert) -> str:
+    """A digest over the previous epoch's certificate, or "" when there is
+    none — which is only true of the first block after genesis."""
+    if cert is None:
+        return ""
+    return h_hex("prev-cert", cert.chain_id, cert.height, cert.block_hash,
+                 cert.epoch, cert.grid_seed,
+                 sorted(a.digest() for a in cert.attestations),
+                 sorted(a.digest() for a in cert.shadow))
+
+
+def faults_digest(faults) -> str:
+    """A digest over the fault reports a block carries.  Order-independent,
+    because two leaders that saw the same faults in a different order agreed
+    about the same thing."""
+    return h_hex("faults", sorted(fr.key() for fr in faults or ()))
+
+
+def faulted_from(faults) -> tuple:
+    """Who a block's fault reports prove to be at fault.
+
+    A pure function of the block, which is the whole requirement: the
+    `faulted` set feeds `GridRegister.apply` and therefore the register root,
+    so every node has to derive the same set from the same bytes.  Only
+    self-substantiating reports count — `FaultReport.substantiated` is
+    `kind == "equivocation"` and evidence that proves the claim on its own —
+    because a claim a validator cannot check is a claim a leader could invent
+    about anyone it disliked.
+    """
+    out = set()
+    for fr in faults or ():
+        if fr.substantiated() and fr.verify():
+            out.add(fr.evidence[0].leader_id)
+    return tuple(sorted(out))
 
 
 def registers_root(register_roots: dict) -> int:

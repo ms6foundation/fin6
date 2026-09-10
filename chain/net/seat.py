@@ -256,11 +256,110 @@ class Seat:
         if len(atts) < self.quorum:
             return None
         from ..block import QuorumCert
-        cert = QuorumCert.build(self.chain_id, self.height, sp.block_hash,
-                                self.epoch, self.grid.seed, atts)
+        cert = QuorumCert.build(
+            self.chain_id, self.height, sp.block_hash, self.epoch,
+            self.grid.seed, atts,
+            shadow=[a for a in self.env.shadow.values()
+                    if a.block_hash == sp.block_hash])
         block = self.blocks[sp.block_hash]
         block.quorum_cert = cert
         return block, cert
+
+    def catch_lazy(self):
+        """Attesters that signed a block this seat found invalid.
+
+        The one thing that *can* be proved about laziness, and it has the same
+        shape as equivocation: the evidence is a signed statement whose author
+        could not have made it honestly.  An attestation names a block hash and
+        is signed by a roster key; if that block does not validate, then either
+        the attester did not check it or it checked and lied, and neither is a
+        thing an honest seat does.  Any third party can re-run the check.
+
+        What this does *not* do, and the boundary is deliberate: the report
+        does not change anyone's standing.  `GridRegister.apply` takes a
+        `faulted` set and the network path passes none, because acting on a
+        fault means every node agreeing about it, and that means the fault
+        travelling in the block — a format change nobody has designed. So this
+        makes laziness *provable* and leaves it unpunished, which is one step
+        and not two.
+
+        And the honest limit on top of that: laziness is only catchable when
+        there is something to catch.  A lazy seat in a network whose blocks are
+        all valid attests to valid blocks and is invisible, which is also to
+        say it has done no harm.
+        """
+        if self.validated is None or self.validated[1]:
+            return ()
+        block_hash, _, why = self.validated
+        culprits = []
+        for att in list(self.env.attestations.values()) + \
+                list(self.env.shadow.values()):
+            if att.block_hash != block_hash or att.node_id == self.node.id:
+                continue
+            if att.node_id in self._reported_lazy:
+                continue
+            self._reported_lazy.add(att.node_id)
+            culprits.append(att)
+        if culprits:
+            self.env.add_fault(self.node.report(
+                "lazy_attestation", self.height, self.epoch,
+                f"attested to a block that does not validate: {why[:70]}",
+                tuple(culprits)))
+        return tuple(a.node_id for a in culprits)
+
+    def why_not(self) -> str:
+        if self.env.substantiated_equivocation() is not None:
+            return "leader equivocated"
+        if not self.env.proposals:
+            if self.pending:
+                # Worth distinguishing: a seat that has the leader's signed
+                # header and not its body is in a different situation from one
+                # that heard nothing, and reporting both as silence sent me
+                # looking at the wrong half of the protocol more than once.
+                return (f"header seen, waiting for the block body "
+                        f"({len(self.pending)} pending)")
+            return "no proposal reached this seat"
+        if len(self.env.proposals) > 1:
+            return "conflicting proposals"
+        if self.pending:
+            return f"waiting for the block body ({len(self.pending)} pending)"
+        if self.validated is None:
+            return "not validated yet"
+        if not self.validated[1]:
+            return f"block rejected: {self.validated[2]}"
+        sp = self.env.sole_proposal()
+        n = len(self.env.attestations_for(sp.block_hash))
+        return f"{n} attestations, quorum is {self.quorum}"
+
+    def roll(self, cert) -> AttendanceRoll:
+        """Who attended, from the certificate that finalised the block.
+
+        This method used to carry a long apology, and part nine spent it. The
+        history is worth keeping because it explains the shape:
+
+        The simulation built the roll from the *union* of every seat's view,
+        which is objective there because one process holds them all. A real
+        node holds one view, and seven views differ — on the first networked
+        run epoch 1 finalised and epoch 2 died with "attendance roll is not
+        the one this grid produced", because one seat had collected five
+        attestations and another six. The certificate was no better as a
+        *local* object, and that was the second attempt: each seat assembles
+        its own from its own envelope, so the certs differ too.
+
+        What was missing was not a better local view but a place to put the
+        evidence. The block at epoch e now carries the certificate of e-1, so
+        the roll is derived from bytes every node reads out of the same block
+        rather than from anything a seat remembers. Nothing assembled after
+        agreement is agreed — so the thing that decides attendance is no
+        longer assembled after agreement, it is carried into the next one.
+
+        This is still the seat's own certificate, and it is still what this
+        node will offer if it leads next epoch. The difference is that it is
+        no longer what this node *checks against*: `LocalWorkload.roll_from`
+        derives the expected roll from the block's copy.
+        """
+        return AttendanceRoll.from_cert(
+            self.grid_id, cert, self.grid.seats, self.grid.leader)
 
     def catch_lazy(self):
         """Attesters that signed a block this seat found invalid.
