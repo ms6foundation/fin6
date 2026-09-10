@@ -201,6 +201,7 @@ class NodeProcess:
             "budget": self.budget.stats(),
             "work": self.work.stats(),
             "catchup": self.catchup.stats(),
+            "gate": self.mesh.gate.stats(),
             "bodies": len(self.bodies),
             "hardened": self.history.height,
             "weight": self.history.cumulative_weight,

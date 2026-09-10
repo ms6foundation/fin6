@@ -19,7 +19,8 @@ MODULES = ["test_notes", "test_transaction", "test_state", "test_grid",
            # genesis
            "test_genesis", "test_growth",
            # the network, and what it will do for a stranger
-           "test_net", "test_handshake", "test_limits", "test_budget",
+           "test_net", "test_handshake", "test_gate", "test_limits",
+           "test_budget",
            "test_catchup",
            # hardening
            "test_hardening"]

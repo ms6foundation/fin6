@@ -21,6 +21,7 @@ import time
 from . import handshake
 from .frame import (CLIENT_KINDS, CLIENT_MAX_FRAME, MAX_FRAME,
                     FrameError, Reader, pack)
+from .gate import IDLE_SECONDS, PARTIAL_SECONDS, Deadlines, Gate
 
 CONNECT_RETRY = 0.5
 SOCKET_TIMEOUT = 1.0
@@ -44,7 +45,9 @@ class Mesh:
 
     def __init__(self, node_id: str, chain_id: str, listen, peers: dict,
                  inbox, log=None, on_request=None, limiter=None,
-                 signer=None, validators=None, epoch_now=None):
+                 signer=None, validators=None, epoch_now=None, gate=None,
+                 gate_idle: float = IDLE_SECONDS,
+                 gate_partial: float = PARTIAL_SECONDS):
         self.node_id = node_id
         self.chain_id = chain_id
         self.host, self.port = listen
@@ -57,6 +60,14 @@ class Mesh:
         # know whether it is alive.
         self.on_request = on_request
         self.limiter = limiter
+        # Connection admission.  The limiter charges for frames that arrive;
+        # this charges for the socket itself, which is what an attacker that
+        # sends nothing was never charged for at all.
+        self.gate = gate or Gate()
+        # Exposed rather than hard-wired so a test can run a minute's patience
+        # in a second.  A node has no reason to change them.
+        self.idle_seconds = gate_idle
+        self.partial_seconds = gate_partial
         # Transport authentication.  Absent a signer and a roster this falls
         # back to the old behaviour of believing what a connection says about
         # itself, which is what the unit tests that build a bare Mesh want and
@@ -99,6 +110,12 @@ class Mesh:
         thread = threading.Thread(target=fn, args=args, name=name, daemon=True)
         thread.start()
         self._threads.append(thread)
+        if len(self._threads) > 64:
+            # Reaped here rather than never: the list used to grow for the
+            # life of the process, one entry per connection ever accepted, so
+            # a node that had served a million clients held a million dead
+            # Thread objects and `stop` tried to join all of them.
+            self._threads = [t for t in self._threads if t.is_alive()]
 
     # ── sending ──────────────────────────────────────────────────────────────
 
@@ -160,6 +177,14 @@ class Mesh:
                 conn, addr = self._server.accept()
             except (socket.timeout, OSError):
                 continue
+            source = addr[0] if addr else "?"
+            ok, why = self.gate.admit(source)
+            if not ok:
+                # Closed immediately, which costs a syscall instead of a
+                # thread and an 8 MB-capable buffer.
+                self.log(f"refusing a connection from {source}: {why}")
+                _close(conn)
+                continue
             conn.settimeout(SOCKET_TIMEOUT)
             self._spawn(self._read_loop, "read", conn, addr)
 
@@ -216,17 +241,28 @@ class Mesh:
         # An unauthenticated connection starts on the client ceiling.  8 MB is
         # for a block body and nothing a wallet sends is a block.
         reader = Reader(self.chain_id, max_frame=CLIENT_MAX_FRAME, gate=gate)
+        clock = Deadlines(self.idle_seconds, self.partial_seconds)
         try:
             while not self._stop.is_set():
                 try:
                     data = conn.recv(65536)
                 except socket.timeout:
+                    # Not `continue` unconditionally, which is what let a
+                    # connection that said nothing hold this worker for ever.
+                    done, why = clock.expired()
+                    if done:
+                        self.log(f"closing {who or source}: {why}")
+                        break
                     continue
                 except OSError:
                     break
                 if not data:
                     break
+                clock.saw_data()
+                had = None
                 for msg in reader.feed(data):
+                    clock.saw_frame()
+                    had = True
                     if msg["kind"] == "hello":
                         # The first hello is what opening a connection means.
                         # Every one after it is metered, in its own keyspace,
@@ -273,9 +309,17 @@ class Mesh:
                                 reply(conn, self.chain_id, answer[0], answer[1])
                         continue
                     self.inbox.put((who or "?", msg, None))
+                if had is None and reader.buffered:
+                    # Bytes arrived and did not finish a frame.  Holding a
+                    # buffer against a promise is more suspicious than
+                    # silence, and gets a shorter rope.
+                    clock.saw_partial()
         except FrameError as exc:
-            self.log(f"closing a connection from {who or 'a stranger'}: {exc}")
+            wait = self.gate.penalise(source)
+            self.log(f"closing a connection from {who or 'a stranger'}: "
+                     f"{exc} ({source} waits {wait:.0f}s)")
         finally:
+            self.gate.release(source)
             _close(conn)
 
 

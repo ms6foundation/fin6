@@ -118,6 +118,11 @@ class Reader:
         self.skipped = 0
         self._buf = bytearray()
 
+    @property
+    def buffered(self) -> int:
+        """Bytes held that do not yet make a frame."""
+        return len(self._buf)
+
     def feed(self, data: bytes):
         """Append bytes; yield every complete frame they finish."""
         self._buf += data
