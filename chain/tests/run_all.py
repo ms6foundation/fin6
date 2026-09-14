@@ -21,6 +21,7 @@ MODULES = ["test_notes", "test_nullifiers", "test_transaction", "test_state", "t
            "test_genesis", "test_growth",
            # the network, and what it will do for a stranger
            "test_net", "test_handshake", "test_gate", "test_limits",
+           "test_authgaps",
            "test_budget",
            "test_catchup",
            # hardening

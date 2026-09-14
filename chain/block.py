@@ -155,22 +155,40 @@ class FaultReport:
     detail: str
     evidence: tuple = field(default=(), repr=False)
     signature: str = ""
+    chain_id: str = ""
 
     @staticmethod
-    def message(reporter, kind, height, epoch, detail, evidence_hashes) -> bytes:
-        return h_bytes("fault", reporter, kind, height, epoch, detail,
-                       list(evidence_hashes))
+    def message(chain_id, reporter, kind, height, epoch, detail,
+                evidence_hashes) -> bytes:
+        """The statement a reporter signs.
+
+        `chain_id` is first because every other signed statement in this
+        codebase binds it — an attestation, a proposal, a hello, a spend — and
+        this one did not.  A fault report signed on one fin6 network verified
+        on any other: the same replay the hello's `chain_id` field exists to
+        stop, in the one signed object that had been left out of the rule.
+
+        Nothing on chain depended on that, because faults are not yet carried
+        in blocks (the register takes a `faulted` set and the network path
+        passes none).  Which is the argument for fixing it now rather than
+        after: the shape of a signed statement is a format decision, and this
+        one is still free.
+        """
+        return h_bytes("fault", chain_id, reporter, kind, height, epoch,
+                       detail, list(evidence_hashes))
 
     def evidence_hashes(self):
         return [sp.block_hash for sp in self.evidence]
 
     def key(self) -> str:
-        return h_hex("fault-key", self.reporter, self.kind, self.height,
-                     self.epoch, self.detail, self.evidence_hashes())
+        return h_hex("fault-key", self.chain_id, self.reporter, self.kind,
+                     self.height, self.epoch, self.detail,
+                     self.evidence_hashes())
 
     def verify(self) -> bool:
-        msg = self.message(self.reporter, self.kind, self.height, self.epoch,
-                           self.detail, self.evidence_hashes())
+        msg = self.message(self.chain_id, self.reporter, self.kind,
+                           self.height, self.epoch, self.detail,
+                           self.evidence_hashes())
         if not verify_sig(self.public_hex, msg, self.signature):
             return False
         if self.kind == "equivocation":

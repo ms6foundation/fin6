@@ -60,6 +60,27 @@ CLIENT_KINDS = frozenset({"status", "getoutputs", "txstatus",
                           "inclusion", "register", "tags", "weight"})
 
 
+#: What a connection that has not proved a seat is allowed to send.
+#:
+#: `CLIENT_KINDS` are requests answered on the asking connection.  Two more
+#: belong here and are not requests: `hello`, which is how a connection proves
+#: anything at all, and `tx`, because submitting a transaction is the one thing
+#: a wallet *pushes* rather than asks — it is unauthenticated on purpose and
+#: metered instead (`Node.admissible`, then the budget).
+#:
+#: Everything else is a peer-to-peer message, and part nine authenticated the
+#: name a connection claims without ever requiring that a peer message come
+#: from an authenticated one.  The handshake decided the *budget*; it did not
+#: decide who may take part.  This set is what makes participation follow
+#: identity, at the same boundary `CLIENT_KINDS` is enforced rather than in
+#: each handler, because a rule enforced in eight places is a rule with eight
+#: chances to be forgotten.
+OPEN_KINDS = CLIENT_KINDS | {"hello", "tx"}
+
+#: The complement: a frame that only a proved seat may send.
+PEER_KINDS = frozenset(k for k in KINDS if k not in OPEN_KINDS)
+
+
 class FrameError(Exception):
     """Malformed, oversized, or for another chain.  Always fatal to the
     connection: a peer that sent one bad frame has no claim on the next."""

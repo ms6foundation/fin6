@@ -405,11 +405,12 @@ class Node:
     def report(self, kind: str, height: int, epoch: int, detail: str,
                evidence=()) -> FaultReport:
         evidence = tuple(evidence)
-        msg = FaultReport.message(self.id, kind, height, epoch, detail,
-                                  [sp.block_hash for sp in evidence])
+        msg = FaultReport.message(self.chain_id, self.id, kind, height, epoch,
+                                  detail, [sp.block_hash for sp in evidence])
         return FaultReport(reporter=self.id, public_hex=self.public_hex,
                            kind=kind, height=height, epoch=epoch, detail=detail,
-                           evidence=evidence, signature=self.signer.sign(msg))
+                           evidence=evidence, chain_id=self.chain_id,
+                           signature=self.signer.sign(msg))
 
     # ── chain advance ────────────────────────────────────────────────────────
 

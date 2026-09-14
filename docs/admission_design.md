@@ -497,6 +497,69 @@ is 0.8% — so the test is doing exactly what the mathematics says and the
 assertion is stated as though it were certain. Nothing to do with this stage;
 it wants more rounds or a seeded prover.
 
+## 8b. What the handshake decided, and what it did not
+
+A review of the authentication path after part nine shipped. The handshake
+itself held up — the signature is domain-separated under its own tag, binds the
+chain, both parties, the epoch and a nonce, and the cheap checks run before the
+74 µs of verification. Three things around it did not, and each is a test that
+fails on the code as it stood.
+
+**The handshake chose the budget, not who may take part.** `hello` proved a
+name and the limiter keyed a peer's bucket on the proved name — and then every
+peer message was still accepted from a connection that had never proved
+anything. Every *reply* path in `node.py` did check (`who in mesh.connected`
+guards `getblocks`, `getsnapshot`, `snapshot` and `getblock`), so nothing was
+ever served to a stranger; four *ingest* paths did not check at all. A stranger
+could push an `env` into a live seat, a `block` body into the bounded cache, or
+a page of `stamps` into the hardening pool.
+
+Signatures meant none of it could be forged. What it could do is spend
+verification time — an envelope is 74 µs an attestation, a stamp is 0.44 ms —
+and evict from a bounded cache the block body a node actually needed, which is
+the more interesting of the two because part nine bounded those caches for
+exactly the opposite reason.
+
+The fix is one line at the boundary rather than a check in eight handlers:
+`frame.OPEN_KINDS` names what an unauthenticated connection may send — the
+client requests, plus `hello` because it is how a connection proves anything,
+plus `tx` because submission is unauthenticated on purpose and metered instead
+— and everything else from an unproved connection ends the connection. A rule
+enforced in eight places is a rule with eight chances to be forgotten.
+
+**A fault report was the one signed statement that did not name its chain.**
+An attestation, a proposal, a hello and a spend all bind `chain_id`.
+`FaultReport.message` bound the reporter, kind, height, epoch, detail and
+evidence, and nothing else — so a complaint made on one fin6 network was a
+valid complaint on every other. Nothing on chain depended on it, because faults
+are not yet carried in blocks; which is the argument for fixing it now rather
+than later, since the shape of a signed statement is a format decision and this
+one was still free.
+
+**The replay window could be emptied.** The nonce cache evicted by insertion
+order when it hit its cap, including entries still inside the epoch window —
+turning the cache that stops replay into the way to defeat it: fill it, evict a
+captured hello's nonce, replay the hello. Reaching it needs a roster key,
+because nothing is recorded until a signature verifies, so it was never an
+outsider's attack. It is now fail-closed: aged-out entries are swept, and a
+window that is genuinely full refuses rather than forgets.
+
+### What is still not authenticated
+
+The handshake authenticates a **frame**, not a **stream**. Frames are plaintext
+over TCP; an attacker on the path reads everything and can take the connection
+over once the hello has passed, inheriting the seat, the budget and the
+attribution. Binding the stream needs a transport (TLS, Noise) or a shared
+secret to MAC frames with, and the roster holds Ed25519 keys for signing rather
+than keys for agreement — so neither is available without new key material or a
+new dependency.
+
+Two things make the residual smaller and neither closes it: every consensus
+object carries its own signature, so a hijacker can drop and delay but not
+forge; and peer messages now require a proved seat, so the exposure is a
+hijacked connection rather than any connection. **A deployment runs this on a
+private network or inside a tunnel** — a requirement, not a recommendation.
+
 ## 9. Open items
 
 | item | why it is open |
@@ -507,4 +570,5 @@ it wants more rounds or a seeded prover.
 | **The penalty box is a keyspace too** | Remembering offending addresses is state an attacker can grow by offending from many addresses. Bounded, and then it is a cache with an eviction policy, which is a thing to get wrong |
 | **Owner metering leaks** | Which owner slot a submission names is already public — this is the confidential-transactions model — but metering on it makes the node's *behaviour* depend on it, which is a side channel a network observer can query |
 | **Nothing measures any of this** | Part six's question again: "the node did not fall over" is not a test. The suite needs a load harness that asserts the decide deadline was met while a flood was running, or this document is a hypothesis |
+| **No channel binding** | The hello authenticates the first frame and nothing binds the rest of the socket to the same party. The fix is a transport or per-frame MACs, and the roster has no agreement keys — so it is a key-material decision, which makes it a genesis-phase one |
 | **One machine, one core** | The budget assumes verification is the scarce resource and that it is serial. Both are true today and neither is a design decision anybody made |

@@ -47,6 +47,30 @@ The epoch rather than a wall-clock timestamp because nodes already agree on
 epochs and a node whose clock is far enough out to fail this is a node that
 cannot take a seat anyway.  `EPOCH_SLACK` of 1 covers a hello in flight across
 a boundary.
+
+## What this authenticates, and what it does not
+
+It authenticates **a frame**, not **a stream**.  The hello proves that whoever
+composed it holds the roster key it names; nothing after it on that socket is
+bound to the same party.  Frames are plaintext over TCP, so an attacker on the
+network path can read every byte, and can take the connection over once the
+hello has passed — inheriting the seat, the budget and the attribution.
+
+Binding the stream needs either a transport (TLS, Noise) or a shared secret to
+MAC each frame with, and the roster holds Ed25519 keys for signing rather than
+keys for agreement — so neither is available without new key material or a new
+dependency, and both are larger decisions than this module.
+
+Two things make the residual smaller than it sounds, and neither closes it.
+Every *consensus* object carries its own signature, so a hijacker can drop and
+delay but cannot forge a proposal, an attestation or a spend.  And peer
+messages are now refused outright from a connection that never proved a seat
+(`frame.OPEN_KINDS`), so the exposure is a hijacked connection rather than any
+connection.
+
+**A deployment runs this on a private network or inside a tunnel.**  That is a
+requirement, not a recommendation, and it is stated here because this module
+is the place a reader will look for it.
 """
 from __future__ import annotations
 
@@ -150,6 +174,17 @@ class Verifier:
         key = (claimed, nonce)
         if key in self._seen:
             return self._no("nonce already used")
+        if self._full():
+            # Fail closed.  The eviction below used to drop the oldest entries
+            # by insertion order when every one of them was still inside the
+            # replay window, which quietly turns the cache into a way to
+            # *defeat* the cache: fill it, evict somebody's nonce, replay their
+            # captured hello.  Reaching this needs a roster key — nothing is
+            # recorded until a signature verifies — so it was never an
+            # outsider's attack, but a replay window that can be emptied is not
+            # a replay window.  Refusing is the safe direction: a peer retries
+            # with a fresh nonce next epoch, when the window has aged out.
+            return self._no("replay window is full this epoch")
         signature = payload.get("signature")
         if not isinstance(signature, str):
             return self._no("no signature")
@@ -169,16 +204,30 @@ class Verifier:
         self.refused += 1
         return False, why, None
 
+    def _sweep(self, now: int):
+        """Drop every nonce that has aged out of the window."""
+        stale = [k for k, e in self._seen.items() if abs(now - e) > self.slack]
+        for k in stale:
+            del self._seen[k]
+        return len(stale)
+
+    def _full(self) -> bool:
+        """True when the cache is at its cap *and* nothing in it has aged out.
+
+        Sweeping first, because the cap exists to bound memory against
+        strangers and the window exists to bound replay: an entry that has left
+        the window costs nothing to forget, and one that has not must not be
+        forgotten at any price.
+        """
+        if len(self._seen) < self.max_seen:
+            return False
+        self._sweep(self.epoch_now())
+        return len(self._seen) >= self.max_seen
+
     def _remember(self, key, epoch: int, now: int):
         self._seen[key] = epoch
         if len(self._seen) > self.max_seen:
-            stale = [k for k, e in self._seen.items()
-                     if abs(now - e) > self.slack]
-            for k in stale:
-                del self._seen[k]
-            if len(self._seen) > self.max_seen:       # all still in window
-                for k in list(self._seen)[:len(self._seen) - self.max_seen]:
-                    del self._seen[k]
+            self._sweep(now)
 
     def stats(self) -> dict:
         return {"accepted": self.accepted, "refused": self.refused,

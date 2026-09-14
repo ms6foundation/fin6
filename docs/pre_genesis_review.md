@@ -209,6 +209,7 @@ to say how many founders are enough, and that something is governance, not code
 | B2 | **No canonical seat order in the header** | Medium-High | The prerequisite for a signer bitmap, and therefore for A3's best case: 0.2 KB a certificate instead of 6.8 KB. |
 | B3 | **Cross-partition transactions have no home** | High | A spend touching two partitions can be included by no grid. It does not bite today only because `Wallet.send` spends exactly one note — and multi-note spends are a named open item, so shipping them makes this live. |
 | B4 | **The register is one roll late** | Medium | A certificate is checked against a register whose roll has already been applied, so a client's quorum figure can be off by one across a founding. |
+| B6 | **Nothing binds a connection after its hello** | High | The handshake authenticates a frame, not a stream. Closing it needs either a transport or an agreement key per validator — and a key in the roster is a genesis decision, which is why a transport-layer answer sits in class B rather than class D. |
 | B5 | **The nullifier set may not need to exist** | Medium | Part nine's finding: the spend graph is public, so `tin.cm not in utxo` already refuses a replay before the nullifier check is reached. Keeping, scoping or dropping it is now a free choice — but `nf_root` is in every header, so making it is a format change. |
 
 **B1 deserves the emphasis.** Everything in parts two and five — attendance,

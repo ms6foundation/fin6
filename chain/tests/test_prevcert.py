@@ -149,11 +149,11 @@ def _proposal(signer, leader, block_hash, height=1, epoch=1):
 def _equivocation(reporter_signer, reporter, leader_signer, leader):
     a = _proposal(leader_signer, leader, "nb:x")
     b = _proposal(leader_signer, leader, "nb:y")
-    msg = FaultReport.message(reporter, "equivocation", 1, 1, "two blocks",
-                              [a.block_hash, b.block_hash])
+    msg = FaultReport.message(CHAIN, reporter, "equivocation", 1, 1,
+                              "two blocks", [a.block_hash, b.block_hash])
     return FaultReport(reporter=reporter, public_hex=reporter_signer.public_hex,
                        kind="equivocation", height=1, epoch=1,
-                       detail="two blocks", evidence=(a, b),
+                       detail="two blocks", evidence=(a, b), chain_id=CHAIN,
                        signature=reporter_signer.sign(msg))
 
 
@@ -169,10 +169,12 @@ def test_a_claim_that_cannot_be_checked_never_faults_anyone():
     could suspend anyone it disliked, which is a worse failure than the one
     being fixed."""
     s = _signers(["watcher"])
-    msg = FaultReport.message("watcher", "lazy_attestation", 1, 1, "lazy", [])
+    msg = FaultReport.message(CHAIN, "watcher", "lazy_attestation", 1, 1,
+                              "lazy", [])
     fr = FaultReport(reporter="watcher", public_hex=s["watcher"].public_hex,
                      kind="lazy_attestation", height=1, epoch=1, detail="lazy",
-                     evidence=(), signature=s["watcher"].sign(msg))
+                     evidence=(), chain_id=CHAIN,
+                     signature=s["watcher"].sign(msg))
     assert fr.verify() and not fr.substantiated()
     assert faulted_from([fr]) == ()
 

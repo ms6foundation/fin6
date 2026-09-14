@@ -19,7 +19,7 @@ import threading
 import time
 
 from . import handshake
-from .frame import (CLIENT_KINDS, CLIENT_MAX_FRAME, MAX_FRAME,
+from .frame import (CLIENT_KINDS, CLIENT_MAX_FRAME, MAX_FRAME, OPEN_KINDS,
                     FrameError, Reader, pack)
 from .gate import IDLE_SECONDS, PARTIAL_SECONDS, Deadlines, Gate
 
@@ -284,6 +284,20 @@ class Mesh:
                             reader.max_frame = MAX_FRAME
                         continue
                     seated = who is not None and who in self.peers
+                    if not seated and msg["kind"] not in OPEN_KINDS:
+                        # A peer message from a connection that never proved a
+                        # seat.  Every *reply* path in `node.py` already checked
+                        # `who in mesh.connected` before answering, so nothing
+                        # was ever served to a stranger — but four ingest paths
+                        # did not check at all, and a stranger could push an
+                        # envelope, a block body, or a page of stamps straight
+                        # into a seat.  Signatures meant none of it could be
+                        # *forged*; what it could do is cost verification time
+                        # and evict from bounded caches the bodies a node
+                        # actually needed.
+                        raise FrameError(
+                            f"{msg['kind']!r} from a connection that has not "
+                            f"proved a seat")
                     # Two keyspaces, not one.  On a testnet — and behind any
                     # shared address — a validator and a wallet arrive from the
                     # same host, and keying on the host alone let the
