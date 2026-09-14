@@ -1,0 +1,38 @@
+{
+  "note": "Known answers for the scheme named in `params.scheme`.  A replacement implementation is a drop-in only if it reproduces every value here from the same seeds; see docs/wots_decision.md.",
+  "master_seed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "pub_seed": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+  "params": {
+    "scheme": "fin6-wots-t-sha256-w16-n32",
+    "hash": "sha256",
+    "n": 32,
+    "w": 16,
+    "len_1": 64,
+    "len_2": 3,
+    "len": 67,
+    "signature_bytes": 2144
+  },
+  "vectors": [
+    {
+      "index": 0,
+      "message": "0000000000000000000000000000000000000000000000000000000000000000",
+      "public_key": "19a2ffcc78f415c72634971b5a2cc0e7fbf9bca5c3a6c6438bc17225ca20de63",
+      "signature_sha256": "a49b3372df01c20bab98bc9fdab762e3746982417fada9dec68c8f802cdc9aee",
+      "signature_prefix": "a9df1a91f56388f90d62a532b3d72aab9a4ff161a0b05dbbb2498bd01c7d4fed"
+    },
+    {
+      "index": 1,
+      "message": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "public_key": "915f655843c5412ccc6dd406f75bb1128ba23cfd2139a2fc224a69208708088b",
+      "signature_sha256": "99b4d89f175571184832644969fc7f20ec67b46a54c6bffca8873cec8b9a34c1",
+      "signature_prefix": "70d05c4d76a251a7b5cd4d25686c5b5bf3f728b9e83daebe1d669a6f79b2e306"
+    },
+    {
+      "index": 69999,
+      "message": "f817551a5223bc0c1804a6163ab82813173b2a65ad69868fdda47d0ec1ca54f3",
+      "public_key": "c9572920f63c988aaeccaff59e29109a13f097f8f629a5e1469ae2852e9a7fe5",
+      "signature_sha256": "d353c01dd0f9e39db9da1f692949294eea1998ded2ec04b8a530366ac396503a",
+      "signature_prefix": "a64391cf77b39f01a8cb4f21e56463a4e71dffa5e1668afccc34f4ade114da37"
+    }
+  ]
+}

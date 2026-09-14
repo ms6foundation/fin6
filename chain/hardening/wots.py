@@ -21,6 +21,15 @@ from __future__ import annotations
 
 import hashlib
 
+#: What this implementation *is*, as a value.  Era 0's leaves are committed at
+#: genesis, so the parameters stop being negotiable the moment a chain exists:
+#: a replacement implementation that differs in any of them produces different
+#: public keys from the same seeds, and every stamp in history stops verifying.
+#: Naming the scheme turns that from a silent mismatch into a refusal, and it
+#: is what makes adopting a reviewed implementation a *check* rather than a
+#: leap — see docs/wots_decision.md.
+SCHEME = "fin6-wots-t-sha256-w16-n32"
+
 N = 32                      # bytes of hash output
 WINTERNITZ = 16             # base
 LOG_W = 4
@@ -50,7 +59,19 @@ def _chain(x: bytes, start: int, steps: int, pub_seed: bytes, addr: bytes) -> by
 
 
 def _digits(message: bytes) -> list:
-    """Base-w digits of the message, followed by the checksum digits."""
+    """Base-w digits of the message, followed by the checksum digits.
+
+    The message is a digest, and it has to be exactly one: `LEN_1` digits are
+    read out of `N` bytes, so a shorter message silently produced a shorter
+    signature — which then failed to verify, with nothing anywhere saying why.
+    Found while writing the known-answer vectors (review A7), and the reason a
+    length check is a correctness fix rather than a nicety: a caller that hands
+    this a 4-byte message gets an object shaped like a signature that no
+    verifier will ever accept.
+    """
+    if len(message) != N:
+        raise ValueError(f"message must be the {N}-byte digest, got "
+                         f"{len(message)} bytes")
     out = []
     for byte in message:
         out.append(byte >> 4)
@@ -112,3 +133,10 @@ def verify(signature: bytes, pub_seed: bytes, index: int, message: bytes,
 
 
 SIGNATURE_BYTES = LEN * N
+
+
+def params() -> dict:
+    """The parameters a replacement implementation has to match, as data."""
+    return {"scheme": SCHEME, "hash": "sha256", "n": N, "w": WINTERNITZ,
+            "len_1": LEN_1, "len_2": LEN_2, "len": LEN,
+            "signature_bytes": SIGNATURE_BYTES}

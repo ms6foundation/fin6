@@ -43,6 +43,9 @@ class EraSpec:
     turns: int
     pub_seed: bytes
     root: bytes
+    #: The one-time signature scheme these leaves are public keys in.  Part of
+    #: the era's identity, because a leaf is only a key relative to a scheme.
+    scheme: str = wots.SCHEME
 
     @property
     def leaves(self) -> int:
@@ -51,7 +54,7 @@ class EraSpec:
     def digest(self) -> str:
         return _h(b"fin6-era", str(self.era_id).encode(),
                   str(self.tree_height).encode(), str(self.turns).encode(),
-                  self.pub_seed, self.root).hex()
+                  self.pub_seed, self.root, self.scheme.encode()).hex()
 
     def __repr__(self):
         return (f"EraSpec(#{self.era_id}, {self.turns:,} turns of "

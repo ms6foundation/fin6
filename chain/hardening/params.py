@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from . import wots
+
 
 @dataclass(frozen=True)
 class HardeningParams:
@@ -25,6 +27,12 @@ class HardeningParams:
     threshold_den: int = 3
     difficulty_bits: int = 20      # expected 2^bits hashes per stamp
     tree_height: int = 17          # 131,072 leaves covers 70,000 turns
+    #: The one-time signature scheme era leaves are keys in.  A parameter of
+    #: the *chain*, not of the build: it travels in the genesis document, so it
+    #: is inside the chain id, and a node whose implementation does not answer
+    #: to this name refuses to build an era rather than quietly producing
+    #: leaves nobody else's turns match.  See docs/wots_decision.md.
+    wots_scheme: str = wots.SCHEME
 
     def __post_init__(self):
         if self.turns > (1 << self.tree_height):
@@ -32,6 +40,10 @@ class HardeningParams:
                 f"{self.turns:,} turns need a tree taller than {self.tree_height}")
         if self.width < 1:
             raise ValueError("width must be at least 1")
+        if self.wots_scheme != wots.SCHEME:
+            raise ValueError(
+                f"this build signs turns with {wots.SCHEME!r}, the chain "
+                f"specifies {self.wots_scheme!r}")
 
     @property
     def blocks_per_era(self) -> int:

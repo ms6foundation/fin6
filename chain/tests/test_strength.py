@@ -202,3 +202,38 @@ def test_a_document_with_no_purpose_field_reads_as_launch():
     raw.pop("chain_id")
     assert genesis_mod.GenesisDocument.from_json(
         json.dumps(raw)).purpose == LAUNCH_PURPOSE
+
+
+# ── who is enough to found it (A8) ───────────────────────────────────────────
+
+def test_a_launch_document_is_ratified_by_every_founder_it_names():
+    weak = ratify_all(draft("t", IDS, LAUNCH, PRODUCTION, SUPPLY,
+                            ratification_threshold=5))
+    ok, problems, _ = weak.verify()
+    assert not ok
+    assert any("every founder it names" in p for p in problems), problems
+
+
+def test_a_threshold_below_the_quorum_rule_is_refused():
+    """A set of founders too small to finalise a block cannot be enough to
+    agree what the chain is."""
+    weak = ratify_all(draft("t", IDS, LAUNCH, PRODUCTION, SUPPLY,
+                            purpose=TEST_PURPOSE, ratification_threshold=2))
+    assert any("finalise a block" in p for p in weak.verify()[1])
+
+
+def test_an_unreachable_threshold_is_refused():
+    odd = ratify_all(draft("t", IDS, LAUNCH, PRODUCTION, SUPPLY,
+                           ratification_threshold=9))
+    assert any("unreachable" in p for p in odd.verify()[1])
+
+
+def test_the_shipped_document_is_unanimous():
+    doc = load(GENESIS_7)
+    assert doc.ratification_threshold == len(doc.nodes) == 7
+    assert len(doc.ratifications) == 7
+
+
+def test_what_the_threshold_cannot_settle_is_said_out_loud():
+    assert any("who is in the roster at all" in c
+               for c in _doc(LAUNCH).verify()[2])

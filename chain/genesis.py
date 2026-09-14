@@ -237,6 +237,46 @@ class GenesisDocument:
             problems.append(f"{len(good)} valid ratifications, "
                             f"{self.ratification_threshold} required")
 
+        # 4a. and the threshold itself, which the document also declares.
+        #
+        # The review's A8: a document that says how many signatures it needs is
+        # circular, and something outside the document has to say how many
+        # founders are enough.  That something is governance and cannot be
+        # code — but the *range* is not a governance question, and leaving it
+        # unbounded meant a seven-node document could be founded by one
+        # signature and still verify.
+        #
+        # Two bounds, and then the residual is named rather than hidden.  The
+        # floor is the chain's own safety rule: a set of founders too small to
+        # finalise a block has no business agreeing what the chain is.  At
+        # launch the rule is stricter and the argument is simpler — before a
+        # chain exists there is no history to protect and no cost to waiting,
+        # so every founder the document names signs it.  A founder that will
+        # not sign is a founder that should not be in the roster, and redrawing
+        # the roster costs nothing at this point and is impossible later.
+        n_founders = len(self.nodes)
+        floor = self.chain_params().quorum_size(n_founders)
+        if self.ratification_threshold > n_founders:
+            problems.append(
+                f"{self.ratification_threshold} ratifications required of "
+                f"{n_founders} founders: unreachable")
+        elif self.ratification_threshold < floor:
+            problems.append(
+                f"{self.ratification_threshold} ratifications required, but "
+                f"{floor} founders are needed to finalise a block: a set too "
+                f"small to agree a block cannot be enough to agree the chain")
+        elif (self.purpose == LAUNCH_PURPOSE
+                and self.ratification_threshold != n_founders):
+            problems.append(
+                f"a launch document is ratified by every founder it names; "
+                f"this one names {n_founders} and requires "
+                f"{self.ratification_threshold}")
+        caveats.append(
+            "what the threshold cannot settle is who is in the roster at all: "
+            "unanimity among seven founders is unanimity among whoever chose "
+            "the seven. That is governance, and it is outside this document "
+            "by construction (review A8)")
+
         # 4b. the upgrade schedule.
         try:
             schedule = self.schedule()
@@ -457,9 +497,11 @@ def draft(network: str, node_ids, params: ChainParams,
         turn_holders=tuple(x.node_id for x in nodes),
         supply=dict(supply),
         declared_total=sum(sum(v) for v in supply.values()),
-        ratification_threshold=(ratification_threshold
-                                if ratification_threshold is not None
-                                else params.quorum_size(n)),
+        ratification_threshold=(
+            ratification_threshold if ratification_threshold is not None
+            # Every founder, for a launch; the safety floor for a test
+            # document, which is what the suite's fixtures want.
+            else (n if purpose == LAUNCH_PURPOSE else params.quorum_size(n))),
         purpose=purpose,
     )
 

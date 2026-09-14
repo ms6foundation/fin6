@@ -248,11 +248,43 @@ parameters are not negotiable afterwards.
 *Fix now:* adopt a reviewed implementation. *Fix live:* possible only if the
 parameters happen to match.
 
+> **Resolved as a seam, not a swap.** `docs/wots_decision.md`. Adopting RFC 8391
+> means a dependency or a second hand-written construction, and this chain's
+> step function is WOTS-T style rather than RFC 8391's, so a byte-compatible
+> swap was never available. What ships instead makes the swap *checkable*: the
+> scheme has a name (`wots.SCHEME`), the name is a `HardeningParams` field and
+> therefore inside the chain id, `EraSpec` carries it into the era's identity,
+> and `chain/hardening/vectors/wots.json` pins known answers a replacement must
+> reproduce byte for byte. A build whose implementation answers to another name
+> refuses to construct hardening parameters rather than producing leaves nobody
+> else's turns match.
+>
+> Writing the vectors found a live bug: `sign` accepted a message that was not
+> the 32-byte digest and produced a short signature that no verifier could
+> accept, with the `ValueError` swallowed into a `False`. Every caller in the
+> chain passes a digest, so it was latent — but it is precisely the class of
+> defect A7 is about, found by the cheapest available means. Fixed.
+
 ### A8 · The ratification threshold is circular · **High**
 
 The document declares how many ratifications the document needs. Something has
 to say how many founders are enough, and that something is governance, not code
 — which is §0 again, arriving from a different direction.
+
+> **Bounded, and the residual named.** The *range* was never a governance
+> question, and leaving it unbounded meant a seven-node document could be
+> founded by one signature and still verify clean. `verify()` now refuses a
+> threshold above the roster (unreachable), or below the chain's own quorum
+> rule — a set of founders too small to finalise a block cannot be enough to
+> agree what the chain is. And a document marked `purpose: launch` must be
+> ratified by **every founder it names**: before a chain exists there is no
+> history to protect and no cost to waiting, so a founder that will not sign is
+> a founder that should not be in the roster, and redrawing the roster is free
+> now and impossible later. `config/genesis-7.json` is 7-of-7.
+>
+> What no rule settles is who is in the roster at all — unanimity among seven
+> is unanimity among whoever chose the seven. `verify()` says so as a caveat
+> rather than leaving the silence to be read as a check.
 
 ### A9 · Three proof backends do not fit through the client frame · **High**
 
