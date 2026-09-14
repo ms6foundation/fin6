@@ -229,6 +229,7 @@ simulation with no clock.
 
 ## Documents
 
+- [`docs/succession_design.md`](docs/succession_design.md) — freezing a chain, and carrying its notes into a successor with a different protocol *(sketch)*
 - [`docs/pre_genesis_review.md`](docs/pre_genesis_review.md) — **what has to be right before the chain exists**: every open item ranked by severity and by what genesis makes permanent
 
 - [`docs/private_chain_design.md`](docs/private_chain_design.md) — the ledger and the single-grid ceremony
