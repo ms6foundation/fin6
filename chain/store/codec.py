@@ -42,6 +42,7 @@ from ..block import (Attestation, Block, BlockHeader, CeremonyMeta,
 from ..hardening.history import HardenedBlock
 from ..hardening.stamp import Stamp
 from ..register import AttendanceRoll
+from ..viewchange import ViewChange, ViewChangeCert
 from ..state import UtxoDelta
 from ..tiered import (CeremonyBlock, CeremonyBlockHeader, NetworkBlock,
                       NetworkBlockHeader, SuperBlock, SuperBlockHeader)
@@ -56,6 +57,9 @@ TYPES = (
     QuorumCert, FaultReport, SignedProposal, AttendanceRoll, UtxoDelta,
     CeremonyBlockHeader, CeremonyBlock, SuperBlockHeader, SuperBlock,
     NetworkBlockHeader, NetworkBlock, Stamp, HardenedBlock,
+    # Appended, never inserted: the wire
+    # type tag is this tuple's index.
+    ViewChange, ViewChangeCert,
 )
 _TYPE_INDEX = {cls: i for i, cls in enumerate(TYPES)}
 _FIELDS = {cls: tuple(f.name for f in dataclasses.fields(cls)) for cls in TYPES}

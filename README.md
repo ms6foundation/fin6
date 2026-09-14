@@ -237,6 +237,7 @@ simulation with no clock.
 
 ## Documents
 
+- [`docs/view_change_design.md`](docs/view_change_design.md) — what a dead leader costs, and the lock that keeps changing view from forking the height *(built)*
 - [`docs/succession_design.md`](docs/succession_design.md) — freezing a chain, and carrying its notes into a successor with a different protocol *(sketch)*
 - [`docs/address_format_decision.md`](docs/address_format_decision.md) — the scheme byte that lets the viewing key start rotating later without reissuing every address *(built)*
 - [`docs/wots_decision.md`](docs/wots_decision.md) — why the teaching one-time signature ships, and the name and known answers that make replacing it a check rather than a leap *(built)*

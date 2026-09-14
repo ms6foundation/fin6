@@ -20,7 +20,7 @@ MODULES = ["test_notes", "test_nullifiers", "test_transaction", "test_state", "t
            # genesis
            "test_genesis", "test_growth",
            # the network, and what it will do for a stranger
-           "test_net", "test_handshake", "test_gate", "test_limits",
+           "test_net", "test_viewchange", "test_handshake", "test_gate", "test_limits",
            "test_authgaps", "test_protocol", "test_strength", "test_seats",
            "test_budget",
            "test_catchup",

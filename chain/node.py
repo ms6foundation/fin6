@@ -382,15 +382,27 @@ class Node:
 
     # ── signed statements ────────────────────────────────────────────────────
 
-    def propose(self, block, epoch: int, grid_seed: str) -> SignedProposal:
+    def propose(self, block, epoch: int, grid_seed: str, view: int = 0,
+                view_cert=None) -> SignedProposal:
+        """Sign a block for one view.
+
+        `view_cert` is the quorum of view changes that authorised proposing in
+        a view after the first; its digest goes into the signature, so a relay
+        cannot pair this proposal with some other quorum that would permit a
+        different block.
+        """
         # block.height, not block.header.height: the tiered headers key on epoch
         # and expose height as a block-level property, so this is the spelling
         # every block type answers to.
+        cert_digest = "" if view_cert is None else view_cert.digest()
         msg = SignedProposal.message(self.chain_id, block.height,
-                                     block.hash(), epoch, grid_seed)
+                                     block.hash(), epoch, grid_seed, view,
+                                     cert_digest)
         return SignedProposal(block=block, leader_id=self.id,
                               public_hex=self.public_hex, epoch=epoch,
-                              grid_seed=grid_seed, signature=self.signer.sign(msg))
+                              grid_seed=grid_seed, view=view,
+                              view_cert=view_cert,
+                              signature=self.signer.sign(msg))
 
     def attest(self, block_hash: str, height: int, epoch: int,
                grid_seed: str) -> Attestation:

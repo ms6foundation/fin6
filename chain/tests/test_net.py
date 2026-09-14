@@ -429,7 +429,9 @@ def test_an_envelope_never_carries_a_block():
     wire = seats[grid.leader].wire()
     assert wire["proposals"] and set(wire["proposals"][0]) == {
         "leader_id", "public_hex", "epoch", "grid_seed", "signature",
-        "height", "block_hash"}
+        "height", "block_hash", "view", "view_cert"}
+    assert wire["proposals"][0]["view_cert"] is None, \
+        "view 0 carries no certificate, so it costs nothing"
     from ..store import codec
     assert len(codec.encode(wire)) < 4096
 

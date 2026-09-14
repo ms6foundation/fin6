@@ -63,6 +63,48 @@ class Clock:
     def commit_deadline(self, epoch: int) -> int:
         return self.start_of(epoch) + int(self.commit_at * self.epoch_millis)
 
+    # ── views ────────────────────────────────────────────────────────────────
+    #
+    # A view change needs a timeout, and a timeout every seat agrees about is
+    # the one thing this design already has for free: nobody is told what the
+    # epoch is either.  So the decide window is cut into equal slices and a
+    # seat that has not accepted a block when its slice ends moves on.  No
+    # timer negotiation, no back-off, and no view change about the view change.
+    # See docs/view_change_design.md §3 for what that costs.
+
+    def views_for(self, cap: int, min_view_ms: int) -> int:
+        """How many views this epoch's decide window can actually hold.
+
+        The budget comes from the clock rather than from configuration, because
+        a view is a slice of a fixed window: asking for three views of a 2.5 s
+        epoch gives three views too short to finish an honest ceremony in,
+        which is worse than no view change at all — every view times out and
+        the height never advances.  A deployment with a fast epoch simply does
+        not get view changes, and says so by arithmetic rather than by a flag
+        somebody forgot to set.
+        """
+        window = int(self.decide_at * self.epoch_millis)
+        return max(1, min(cap, window // max(1, min_view_ms)))
+
+    def view_deadline(self, epoch: int, view: int, max_views: int) -> int:
+        """When view `view` gives up.  The last one runs to the decide
+        deadline, so the slices never overrun the epoch."""
+        if max_views < 1:
+            raise ValueError("an epoch has at least one view")
+        start = self.start_of(epoch)
+        window = self.decide_deadline(epoch) - start
+        if view >= max_views - 1:
+            return self.decide_deadline(epoch)
+        return start + (window * (view + 1)) // max_views
+
+    def view_at(self, epoch: int, when_ms: int, max_views: int) -> int:
+        """Which view that instant falls in — what a seat joining late uses to
+        avoid attesting into a view everyone else has left."""
+        for view in range(max_views):
+            if when_ms < self.view_deadline(epoch, view, max_views):
+                return view
+        return max_views - 1
+
     def sleep_until(self, when_ms: int, stop=None) -> bool:
         """Wait, in short naps so a stop flag is noticed.  False if stopped."""
         while True:

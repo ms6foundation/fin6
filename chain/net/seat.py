@@ -34,11 +34,18 @@ from ..register import AttendanceRoll
 
 
 def proposal_header(sp: SignedProposal) -> dict:
-    """The part of a proposal that travels every round."""
+    """The part of a proposal that travels every round.
+
+    The view and its certificate travel with it because the signature covers
+    them: a header without them cannot be checked, and a header with the wrong
+    ones fails to verify, which is the property that stops a relay pairing a
+    proposal with a quorum that would permit a different block.
+    """
     return {"leader_id": sp.leader_id, "public_hex": sp.public_hex,
             "epoch": sp.epoch, "grid_seed": sp.grid_seed,
             "signature": sp.signature, "height": sp.height,
-            "block_hash": sp.block_hash}
+            "block_hash": sp.block_hash, "view": getattr(sp, "view", 0),
+            "view_cert": getattr(sp, "view_cert", None)}
 
 
 class Seat:
@@ -46,7 +53,8 @@ class Seat:
 
     def __init__(self, node, grid, workload, *, epoch: int, quorum: int,
                  validators: dict, counting=None, grid_id: str = "",
-                 chain_id: str | None = None, height: int | None = None, lazy: bool = False):
+                 chain_id: str | None = None, height: int | None = None,
+                 lazy: bool = False, view: int = 0, lock=None):
         self.node = node
         self.grid = grid
         self.workload = workload
@@ -76,6 +84,15 @@ class Seat:
         self.lazy = lazy
         self.validated = None         # (block_hash, ok, why)
         self.reacted = False
+        #: Which attempt at this height this is, and what this seat is holding
+        #: from earlier ones.  A seat that has attested is *locked*: it carries
+        #: that vote into the next view rather than forgetting it, because
+        #: forgetting it is how two blocks finalise at one height.  Part eleven
+        #: and review C1 — docs/view_change_design.md.
+        self.view = view
+        self.locked = lock            # (view, block_hash) or None
+        self.view_changes: dict = {}  # node_id -> ViewChange, for this view
+        self.last_refusal = ""        # why a proposal was not reacted to
 
     @property
     def is_leader(self) -> bool:
@@ -83,10 +100,20 @@ class Seat:
 
     # ── proposing ────────────────────────────────────────────────────────────
 
-    def propose(self, meta, limit=None):
+    def propose(self, meta, limit=None, view: int = 0, view_cert=None):
         """Leader only: build, sign, and hold the body."""
         block = self.workload.build(self.node, meta, limit=limit)
-        sp = self.node.propose(block, self.epoch, self.grid.seed)
+        return self.adopt(block, view=view, view_cert=view_cert)
+
+    def adopt(self, block, view: int = 0, view_cert=None):
+        """Sign a block this seat already holds, for this view.
+
+        The other half of `propose`, and the one a view change needs: a leader
+        bound by a lock does not get to build anything — its job is to carry
+        the block the quorum reported, which it must already have.
+        """
+        sp = self.node.propose(block, self.epoch, self.grid.seed, view=view,
+                               view_cert=view_cert)
         self.blocks[sp.block_hash] = block
         self.env.add_proposal(sp)
         return sp
@@ -103,7 +130,9 @@ class Seat:
                             public_hex=header["public_hex"],
                             epoch=header["epoch"],
                             grid_seed=header["grid_seed"],
-                            signature=header["signature"])
+                            signature=header["signature"],
+                            view=header.get("view", 0),
+                            view_cert=header.get("view_cert"))
         if not self.env.add_proposal(sp):
             return False                      # signature, seat or chain wrong
         self.blocks[digest] = block
@@ -130,6 +159,8 @@ class Seat:
         for fault in payload.get("faults", ()):
             if isinstance(fault, FaultReport):
                 changed += self.env.add_fault(fault)
+        for vc in payload.get("viewchanges", ()):
+            changed += self.add_view_change(vc)
         return changed
 
     def _take_header(self, header) -> int:
@@ -151,8 +182,11 @@ class Seat:
             return 0
         if header["epoch"] != self.epoch or header["grid_seed"] != self.grid.seed:
             return 0
-        msg = SignedProposal.message(self.chain_id, header["height"], digest,
-                                     header["epoch"], header["grid_seed"])
+        cert = header.get("view_cert")
+        msg = SignedProposal.message(
+            self.chain_id, header["height"], digest, header["epoch"],
+            header["grid_seed"], header.get("view", 0),
+            "" if cert is None else cert.digest())
         if not verify_sig(header["public_hex"], msg, header["signature"]):
             return 0
         # Signed by this epoch's leader, so the height it claims is a fact
@@ -165,7 +199,9 @@ class Seat:
                                 public_hex=header["public_hex"],
                                 epoch=header["epoch"],
                                 grid_seed=header["grid_seed"],
-                                signature=header["signature"])
+                                signature=header["signature"],
+                                view=header.get("view", 0),
+                                view_cert=cert)
             return 1 if self.env.add_proposal(sp) else 0
         self.pending[digest] = dict(header)
         return 1
@@ -173,6 +209,99 @@ class Seat:
     def missing(self) -> list:
         """Block bodies this seat has a signed header for and has not got."""
         return sorted(self.pending)
+
+    # ── changing view ────────────────────────────────────────────────────────
+
+    def view_change(self) -> "ViewChange":
+        """This seat's statement that it is moving on, and what it holds.
+
+        Produced once per view and kept, so a seat that gossips twice does not
+        sign two different statements about the same move.
+        """
+        from ..viewchange import sign_view_change
+
+        mine = self.view_changes.get(self.node.id)
+        if mine is None:
+            mine = sign_view_change(self.node, self.height, self.epoch,
+                                    self.view, self.locked)
+            self.view_changes[mine.node_id] = mine
+        return mine
+
+    def add_view_change(self, vc) -> int:
+        """Somebody else's, kept if it is for this view and really theirs."""
+        from ..viewchange import ViewChange
+
+        if not isinstance(vc, ViewChange):
+            return 0
+        if (vc.chain_id, vc.height, vc.epoch, vc.view) != \
+                (self.chain_id, self.height, self.epoch, self.view):
+            return 0
+        if vc.public_hex != self.env.validators.get(vc.node_id):
+            return 0
+        if vc.node_id in self.view_changes or not vc.verify():
+            return 0
+        self.view_changes[vc.node_id] = vc
+        return 1
+
+    def view_cert(self):
+        """The quorum this seat can propose under, or None if it is short.
+
+        Deterministic in *which* quorum it picks — the lowest node ids — so two
+        leaders assembling from the same messages assemble the same
+        certificate. Nothing depends on that, since the certificate travels
+        with the proposal, but a certificate that changed between two calls
+        would make the leader's own signature a moving target.
+        """
+        from ..viewchange import ViewChangeCert
+
+        if len(self.view_changes) < self.quorum:
+            return None
+        chosen = [self.view_changes[nid]
+                  for nid in sorted(self.view_changes)][:self.quorum]
+        return ViewChangeCert(view=self.view, changes=tuple(chosen))
+
+    def acceptable(self, sp) -> tuple:
+        """(ok, reason) — may this seat react to this proposal at all?
+
+        The view rule, checked before the block is validated, because a
+        proposal in a later view that is not what the locks require is not a
+        block this seat has any business spending 25 ms on.
+        """
+        from ..viewchange import may_propose
+
+        if getattr(sp, "view", 0) != self.view:
+            return False, (f"proposal is for view {getattr(sp, 'view', 0)}, "
+                           f"this seat is in view {self.view}")
+        cert = getattr(sp, "view_cert", None)
+        if self.view > 0:
+            if cert is None:
+                return False, "a proposal after view 0 must carry its view change"
+            ok, why = cert.check(chain_id=self.chain_id, height=self.height,
+                                 epoch=self.epoch, view=self.view,
+                                 quorum=self.quorum,
+                                 validators=self.env.validators)
+            if not ok:
+                return False, why
+        return may_propose(cert, sp.block_hash, self.view)
+
+    def release_or_keep(self, cert) -> bool:
+        """Take the certificate's word for what this height is holding.
+
+        A seat locked on a block the quorum does not carry forward releases it
+        — which is safe for exactly the reason §2.4 of the design gives: a
+        block that *finalised* was locked by a quorum, any later quorum shares
+        an honest seat with that one, so a certificate that omits it cannot
+        exist. A lock this rule can release is one that never finalised, and
+        overriding it is the whole point, or one crashed seat's half-finished
+        vote would stall the height for ever.
+        """
+        required = cert.required_block() if cert is not None else None
+        if self.locked is None:
+            return False
+        if required is None or required != self.locked[1]:
+            self.locked = None
+            return True
+        return False
 
     # ── reacting ─────────────────────────────────────────────────────────────
 
@@ -197,18 +326,27 @@ class Seat:
         sp = env.sole_proposal()
         if sp is None or self.validated is not None:
             return
+        ok, why = self.acceptable(sp)
+        if not ok:
+            # Not a fault: a seat and a leader can legitimately be in different
+            # views for a moment.  It is a refusal to attest, and the reason is
+            # what `why_not` will say if the view ends here.
+            self.last_refusal = why
+            return
         if self.lazy:
             # The whole of the behaviour: sign the statement without checking
             # it.  Cheaper than honesty, indistinguishable from it while every
             # block happens to be valid, and self-incriminating the moment one
             # is not — see `catch_lazy`.
             self.validated = (sp.block_hash, True, "not checked")
+            self.locked = (self.view, sp.block_hash)
             env.add_attestation(node.attest(sp.block_hash, self.height,
                                             self.epoch, self.grid.seed))
             return
         ok, why = self.workload.validate(node, sp.block)
         self.validated = (sp.block_hash, ok, why)
         if ok:
+            self.locked = (self.view, sp.block_hash)
             env.add_attestation(node.attest(sp.block_hash, self.height,
                                             self.epoch, self.grid.seed))
         else:
@@ -226,11 +364,13 @@ class Seat:
         """
         env = self.env
         return {"epoch": self.epoch, "grid_id": self.grid_id,
+                "view": self.view,
                 "proposals": [proposal_header(sp)
                               for sp in env.proposals.values()]
                              + list(self.pending.values()),
                 "attestations": list(env.attestations.values())
                                 + list(env.shadow.values()),
+                "viewchanges": list(self.view_changes.values()),
                 "faults": list(env.faults.values())}
 
     def neighbours(self):
@@ -283,7 +423,7 @@ class Seat:
         if self.pending:
             return f"waiting for the block body ({len(self.pending)} pending)"
         if self.validated is None:
-            return "not validated yet"
+            return self.last_refusal or "not validated yet"
         if not self.validated[1]:
             return f"block rejected: {self.validated[2]}"
         sp = self.env.sole_proposal()

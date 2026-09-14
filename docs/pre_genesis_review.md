@@ -448,13 +448,42 @@ so the first definition had never run.
 
 | | item | severity | why |
 |---|---|---|---|
-| C1 | **View change over a real network** | High | In-process it is a retry loop with a fresh seed. With timeouts and partial delivery it is a protocol, and it is not designed. This is the liveness path for a dead leader. |
+| C1 | ~~**View change over a real network**~~ **Done** | High | In-process it is a retry loop with a fresh seed. With timeouts and partial delivery it is a protocol, and it was not designed. This is the liveness path for a dead leader. Designed and built as part eleven — `docs/view_change_design.md`, §4.2. |
 | C2 | **The supreme grid is a global stall point** | High | If it aborts, nothing finalises anywhere that epoch. |
 | C3 | ~~**Reorg past the undo ceiling diverges permanently**~~ **Done** | High | Undo records are kept to `retention_depth` — 729 blocks at a third of the pool. Beyond it a node that cannot roll back diverged from one that can, with no reconciliation path but a snapshot, and *silently*. See §4.1. |
 | C4 | **Grids never merge** | Medium-High | Split works and founding cohorts keep their standing. A network that shrinks keeps grids it cannot fill, and founding seating is permanent because merge does not exist. |
 | C5 | **Apprentice density stalls a grid** | Medium | Apprentices hold seats and cannot make quorum. Admission needs a rate limit tied to attester count. |
 | C6 | **No peer discovery** | Medium | Peers come from the roster and `net.toml`. A network that grows needs joiners to find seats. |
 | C7 | **Body window is 21 minutes** | Medium | Past it, catch-up falls back to `getsnapshot`, which costs the serving node a full state copy on demand and is one frame rather than the chunked ranges `store/snapshot.py` was built for. |
+
+### 4.2 · C1, resolved: a dead leader costs a view, not an epoch
+
+Designed first, because the review's complaint was that it was not: part
+eleven, `docs/view_change_design.md`. The short version of why a retry loop
+does not port to a network — in view 0 a quorum attests to **B** and one seat
+sees all of it, so **B is final there**; everybody else times out, moves to
+view 1, and finalises **C**. Two blocks at one height and nobody misbehaved.
+
+So a seat that attests is **locked** on that block, the view change collects
+the locks, and the next leader is bound by them. `chain/viewchange.py` carries
+the signed statement and the quorum certificate; the certificate travels with
+the proposal, bound into its signature, so the leader and every seat evaluate
+the same evidence rather than each its own collection. A lock can be released,
+and §2.4 of the design is the argument for why that is safe: a block that
+*finalised* was locked by a quorum, any later quorum shares an honest seat with
+that one, so no certificate that omits it can exist.
+
+Timeouts are the clock, which every node already derives independently — no
+timer negotiation and no view change about the view change. The budget is
+arithmetic rather than a setting: a view has to be long enough for an honest
+ceremony, so `Clock.views_for` gives a 2.5 s testnet one view (exactly today's
+behaviour) and the shipped 19.75 s epoch three. That fell out of building it —
+three equal views of a 2.5 s epoch are three views too short to finish in, and
+the first live run stalled until the budget was derived instead of configured.
+
+Proven on real sockets as well as in process: four nodes, the computed view-0
+leader of epoch 1 silent, every seat timing out and moving to view 1, the
+height still advancing and the roots still agreeing.
 
 ### 4.1 · C3, resolved: a divergence that announces itself
 

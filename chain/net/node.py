@@ -46,6 +46,22 @@ from .seat import Seat
 
 GOSSIP_INTERVAL = 0.05
 
+#: How many attempts an epoch gets at its height before it gives up and waits
+#: for the next one.  Three rather than one because a dead leader used to cost
+#: a whole epoch, and rather than seven because each view is a slice of the
+#: same decide window: more views means less time in each, and a view too short
+#: to finish an honest ceremony in is worse than no view change at all.  Part
+#: eleven, review C1 — docs/view_change_design.md.
+MAX_VIEWS = 3
+
+#: The floor under one view.  An honest ceremony has to propose, deliver a
+#: body, verify it at every seat and collect a quorum inside its view; the
+#: running testnets do all of that in a 1.5 s decide window, so a view shorter
+#: than that is one nobody finishes.  `Clock.views_for` turns this into the
+#: view budget, which is why a 2.5 s epoch quietly gets one view and the
+#: shipped 19.75 s epoch gets three.
+MIN_VIEW_MS = 1_500
+
 
 class NodeProcess:
     """One fin6 node, running until it is stopped."""
@@ -58,6 +74,7 @@ class NodeProcess:
         self.doc = genesis_mod.load(os.path.join(self.root, "genesis.json"))
         self.settings = self.config["nodes"][node_id]
         self.behaviour = self.settings.get("behaviour", "honest")
+        self._view_cap = int(self.settings.get("max_views", MAX_VIEWS))
 
         self.dir = os.path.join(self.root, node_id)
         os.makedirs(self.dir, exist_ok=True)
@@ -90,6 +107,9 @@ class NodeProcess:
         self.clock = Clock.from_genesis(
             self.doc, skew_ms=self.settings.get("skew_ms", 0),
             effective_ms=self.config.get("effective_ms"))
+        # How many attempts this epoch's window can hold, which is arithmetic
+        # rather than a setting — see MIN_VIEW_MS.
+        self.max_views = self.clock.views_for(self._view_cap, MIN_VIEW_MS)
         self.inbox: queue.Queue = queue.Queue()
         peers = {nid: tuple(spec["listen"])
                  for nid, spec in self.config["nodes"].items() if nid != node_id}
@@ -426,6 +446,132 @@ class NodeProcess:
             self.mesh.stop()
             self.store.close()
 
+    def _views(self, epoch: int, gid: str, register, members):
+        """Attempt the height, changing view until one sticks or the window
+        closes.  Returns (accepted, the grid of the last view tried).
+
+        A dead leader used to cost the whole epoch: the chain recovered at the
+        next one, because the seed includes the epoch number, so a stall was
+        19.75 s of everybody's time and a leader that stalled on purpose was
+        never charged for it.  Part eleven turns that into one view.
+
+        What makes it a protocol rather than a retry is the lock: a seat that
+        attested carries that vote into the next view, the next leader collects
+        a quorum of those carried votes, and it is *bound* by them.  Without
+        that, a block that finalised at one seat while the rest were timing out
+        would be quietly replaced by another — see docs/view_change_design.md.
+        """
+        tried, lock, grid = [], None, None
+        for view in range(self.max_views):
+            deadline = self.clock.view_deadline(epoch, view, self.max_views)
+            if self.clock.now_ms() >= deadline and view < self.max_views - 1:
+                continue                      # this node arrived late; skip on
+            grid = self._seat_view(epoch, gid, register, members, view, tried,
+                                   lock, previous=self.seat)
+            accepted = self._run_view(epoch, grid, view, deadline)
+            if accepted is not None:
+                return accepted, grid
+            tried.append(grid.leader)
+            lock = self.seat.locked
+            if view + 1 < self.max_views:
+                self.log(f"epoch {epoch}: view {view} produced nothing "
+                         f"({self.seat.why_not()}), moving to view {view + 1}")
+        return None, grid
+
+    def _seat_view(self, epoch, gid, register, members, view, tried, lock,
+                   previous=None):
+        seed = h_hex("view", self.doc.first_seed, epoch, gid, view)
+        grid = Grid.seat(members, self.world.params.row_size, seed,
+                         exclude_leaders=tried,
+                         standing={n: register.standing_of(n) for n in members})
+        attesters = [n for n in members
+                     if register.standing_of(n) == Standing.ATTESTER]
+        workload = SoloWorkload(self.world, gid, epoch,
+                                self.world.params.backend_for("local"))
+        self.seat = Seat(
+            self.node, grid, workload, epoch=epoch,
+            height=self.world.height + 1,
+            quorum=register.quorum(self.world.params.quorum_num,
+                                   self.world.params.quorum_den),
+            validators={n: self.validators[n] for n in grid.seats},
+            counting=set(attesters), grid_id=gid,
+            chain_id=self.doc.chain_id,
+            lazy=self.behaviour == "lazy", view=view, lock=lock)
+        if previous is not None:
+            # A signed header proves a height whatever view it was signed in,
+            # and this is the only number a node that is behind can trust.
+            # Losing it at a view boundary would leave a lagging node with
+            # nothing to catch up *to*.
+            self.seat._signed_height = max(self.seat._signed_height,
+                                           previous.signed_height())
+        if view > 0:
+            # Sign this seat's move before anything else, so it is in every
+            # envelope from now on: the next leader cannot propose until a
+            # quorum of these reaches it.
+            self.seat.view_change()
+        return grid
+
+    def _run_view(self, epoch: int, grid, view: int, deadline: int):
+        """One attempt: propose if entitled to, then gossip until the view's
+        deadline."""
+        # Logged because "no proposal reached this seat" on every node is
+        # indistinguishable from a leader that fell over.
+        if grid.leader != self.id:
+            self.log(f"epoch {epoch}: view {view}, leader is {grid.leader}")
+        leading = grid.leader == self.id and self.behaviour != "silent"
+        state = {"proposed": False}
+
+        def propose_now():
+            """View 0 proposes immediately; a later view waits for the quorum
+            that entitles it to, and then proposes what that quorum requires."""
+            if state["proposed"] or not leading:
+                return
+            cert = None
+            if view > 0:
+                cert = self.seat.view_cert()
+                if cert is None:
+                    return                    # not enough view changes yet
+            state["proposed"] = True
+            self._propose(epoch, grid, view, cert)
+
+        if view == 0:
+            propose_now()
+        return self._gossip(epoch, grid, deadline=deadline,
+                            on_tick=propose_now if view > 0 else None)
+
+    def _propose(self, epoch: int, grid, view: int, cert):
+        required = None if cert is None else cert.required_block()
+        try:
+            if required is not None:
+                # Bound by the view change: this block finalised somewhere, or
+                # might have, and the leader's job is to carry it rather than
+                # to have an opinion.  Needing the body is why this can fail
+                # honestly — it costs a view, never a fork.
+                body = self.seat.blocks.get(required) or self.bodies.get(
+                    required)
+                if body is None:
+                    self.log(f"epoch {epoch}: view {view} locks "
+                             f"{required[:14]}… and I do not hold it")
+                    self.last_reason = "cannot re-propose the locked block"
+                    return
+                sp = self.seat.adopt(body, view=view, view_cert=cert)
+            else:
+                meta = CeremonyMeta(epoch=epoch, leader_id=grid.leader,
+                                    rows=grid.n_rows, row_size=grid.row_size,
+                                    grid_seed=grid.seed)
+                sp = self.seat.propose(meta, view=view, view_cert=cert)
+        except Exception as exc:                         # a leader that cannot
+            self.log(f"epoch {epoch}: I am the leader and cannot build a "
+                     f"block: {type(exc).__name__}: {exc}")
+            self.last_reason = f"could not build a block: {exc}"
+            return
+        body = self.seat.blocks[sp.block_hash]
+        self.bodies.put(body)
+        # Push the body to the seats that will need it first.  The header alone
+        # would cost them a round-trip before they can validate anything.
+        for peer in self.seat.neighbours():
+            self.mesh.send(peer, "block", {"block": body}, epoch=epoch)
+
     def run_epoch(self, epoch: int):
         """One epoch.  The epoch number comes from the clock; the height comes
         from the chain, and they are allowed to drift apart.
@@ -458,48 +604,7 @@ class NodeProcess:
             self._serve_until(self.clock.commit_deadline(epoch))
             return
 
-        seed = h_hex("view", self.doc.first_seed, epoch, gid, 0)
-        # Logged because "no proposal reached this seat" on every node is
-        # indistinguishable from a leader that fell over.
-        grid = Grid.seat(members, self.world.params.row_size, seed,
-                         standing={n: register.standing_of(n) for n in members})
-        attesters = [n for n in members
-                     if register.standing_of(n) == Standing.ATTESTER]
-        workload = SoloWorkload(self.world, gid, epoch,
-                                self.world.params.backend_for("local"))
-        self.seat = Seat(
-            self.node, grid, workload, epoch=epoch,
-            height=self.world.height + 1,
-            quorum=register.quorum(self.world.params.quorum_num,
-                                   self.world.params.quorum_den),
-            validators={n: self.validators[n] for n in grid.seats},
-            counting=set(attesters), grid_id=gid,
-            chain_id=self.doc.chain_id,
-            lazy=self.behaviour == "lazy")
-
-        if grid.leader != self.id:
-            self.log(f"epoch {epoch}: leader is {grid.leader}")
-        if grid.leader == self.id and self.behaviour != "silent":
-            meta = CeremonyMeta(epoch=epoch, leader_id=grid.leader,
-                                rows=grid.n_rows, row_size=grid.row_size,
-                                grid_seed=seed)
-            try:
-                sp = self.seat.propose(meta)
-            except Exception as exc:                     # a leader that cannot
-                self.log(f"epoch {epoch}: I am the leader and cannot build a "
-                         f"block: {type(exc).__name__}: {exc}")
-                self.last_reason = f"could not build a block: {exc}"
-                sp = None
-            if sp is not None:
-                body = self.seat.blocks[sp.block_hash]
-                self.bodies.put(body)
-                # Push the body to the seats that will need it first.  The
-                # header alone would cost them a round-trip before they can
-                # validate anything.
-                for peer in self.seat.neighbours():
-                    self.mesh.send(peer, "block", {"block": body}, epoch=epoch)
-
-        accepted = self._gossip(epoch, grid)
+        accepted, grid = self._views(epoch, gid, register, members)
         if accepted is None:
             self.last_reason = f"epoch {epoch}: {self.seat.why_not()}"
             self.log(self.last_reason)
@@ -648,13 +753,24 @@ class NodeProcess:
                  f"{hardened.cumulative:,}")
         return True
 
-    def _gossip(self, epoch: int, grid):
-        """Exchange until quorum or the deadline.  The rounds are gone."""
-        deadline = self.clock.decide_deadline(epoch)
+    def _gossip(self, epoch: int, grid, deadline: int | None = None,
+                on_tick=None):
+        """Exchange until quorum or the deadline.  The rounds are gone.
+
+        `deadline` is the end of this *view* rather than of the epoch, and
+        `on_tick` is what a leader that cannot propose yet does about it: in a
+        view after the first it has to collect a quorum of view changes before
+        it is allowed to propose anything, and those arrive in the same
+        envelopes as everything else.
+        """
+        if deadline is None:
+            deadline = self.clock.decide_deadline(epoch)
         neighbours = list(self.seat.neighbours())
         last_sent = 0.0
         while self.clock.now_ms() < deadline and not self.stop.is_set():
             self._drain(timeout=0.02)
+            if on_tick is not None:
+                on_tick()
             self.seat.react()
             lazy = self.seat.catch_lazy()
             if lazy:

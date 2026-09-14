@@ -95,6 +95,12 @@ class SignedProposal:
     epoch: int
     grid_seed: str
     signature: str
+    #: The view this proposal is for, and the quorum of view changes that
+    #: authorised it.  View 0 carries neither — there is nothing to carry
+    #: forward into the first attempt at a height.  See chain/viewchange.py
+    #: and docs/view_change_design.md.
+    view: int = 0
+    view_cert: object = field(default=None, repr=False)
 
     @property
     def block_hash(self) -> str:
@@ -108,12 +114,18 @@ class SignedProposal:
         return self.block.height
 
     @staticmethod
-    def message(chain_id, height, block_hash, epoch, grid_seed) -> bytes:
-        return h_bytes("proposal", chain_id, height, block_hash, epoch, grid_seed)
+    def message(chain_id, height, block_hash, epoch, grid_seed, view: int = 0,
+                cert_digest: str = "") -> bytes:
+        return h_bytes("proposal", chain_id, height, block_hash, epoch,
+                       grid_seed, view, cert_digest)
+
+    def cert_digest(self) -> str:
+        return "" if self.view_cert is None else self.view_cert.digest()
 
     def verify(self) -> bool:
         msg = self.message(self.block.header.chain_id, self.height,
-                           self.block_hash, self.epoch, self.grid_seed)
+                           self.block_hash, self.epoch, self.grid_seed,
+                           self.view, self.cert_digest())
         return verify_sig(self.public_hex, msg, self.signature)
 
     def __repr__(self):
