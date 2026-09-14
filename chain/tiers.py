@@ -41,6 +41,33 @@ from .trustlist import TrustList
 # The world
 # ═══════════════════════════════════════════════════════════════════════════════
 
+#: How many views the supreme tier may spend before it gives up on an epoch.
+#:
+#: A budget rather than a guarantee, the same shape as the network path's
+#: `MAX_VIEWS`: if every view fails the epoch produces nothing, exactly as it
+#: did before, and the chain recovers at the next one.  Not a `ChainParams`
+#: field on purpose — over a network the count is arithmetic from the decide
+#: window (`Clock.views_for`) rather than a setting, and a number every node
+#: must agree on has no business being configurable per node.  Review C2,
+#: Road C.
+SUPREME_VIEWS = 3
+
+
+def _behaviour(behaviours: dict, tier: str, leader: str):
+    """What this leader does, at this tier.
+
+    A behaviour keyed by node id applies wherever that node leads, which is
+    what the harness wanted while there was one tier.  With three it is too
+    blunt to stage the failure C2 is about: silencing the supreme leader also
+    silences it in its own grid, so the local phase changes, so the committee
+    changes, and the experiment measures something else.  A `(tier, node_id)`
+    key aims at one seat in one ceremony; a bare node id still means everywhere.
+    """
+    return (behaviours.get((tier, leader))
+            or behaviours.get(leader)
+            or HonestLeader())
+
+
 @dataclass
 class TierWorld:
     params: ChainParams
@@ -1272,6 +1299,10 @@ class TieredEpochResult:
     supers: PhaseResult
     supreme: object = None
     block: NetworkBlock | None = None
+    #: How many views the supreme tier needed.  One is the ordinary case; more
+    #: than one means a leader did not propose and the tier changed view
+    #: instead of losing the epoch for every partition on the network.
+    supreme_views: int = 1
 
     @property
     def finalised(self) -> bool:
@@ -1405,7 +1436,8 @@ def _run_solo_epoch(world: TierWorld, epoch: int, base_seed: str,
 
 def run_tiered_epoch(world: TierWorld, epoch: int, base_seed: str,
                      behaviours: dict | None = None, tx_limit=None,
-                     rounds: int | None = None) -> TieredEpochResult:
+                     rounds: int | None = None,
+                     max_views: int | None = None) -> TieredEpochResult:
     """One pass up the tree, ending at the supreme mempool."""
     params = world.params
     behaviours = behaviours or {}
@@ -1435,7 +1467,7 @@ def run_tiered_epoch(world: TierWorld, epoch: int, base_seed: str,
             workload=LocalWorkload(world, gid, epoch,
                                    params.backend_for("local")),
             counting=set(attesters), grid_id=gid)
-        result = ceremony.run(behaviours.get(grid.leader, HonestLeader()),
+        result = ceremony.run(_behaviour(behaviours, "local", grid.leader),
                               limit=tx_limit)
         local.ceremonies[gid] = result
         world.pending_rolls[gid] = result.roll
@@ -1474,7 +1506,7 @@ def run_tiered_epoch(world: TierWorld, epoch: int, base_seed: str,
             workload=SuperWorkload(world, sid, children, epoch, led_by,
                                    leader_id=grid.leader),
             grid_id=sid)
-        result = ceremony.run(behaviours.get(grid.leader, HonestLeader()))
+        result = ceremony.run(_behaviour(behaviours, "super", grid.leader))
         supers.ceremonies[sid] = result
         if result.finalised:
             supers.blocks[sid] = result.block
@@ -1511,27 +1543,50 @@ def run_tiered_epoch(world: TierWorld, epoch: int, base_seed: str,
     # special case, because the union of one super grid's seats is that grid.
     tiers = 3 if len(supers.finalised) >= 2 else 2
 
-    seed = h_hex("view", base_seed, epoch, "supreme", 0)
-    grid = Grid.seat(supreme_members, params.row_size, seed)
-    ceremony = Ceremony(
-        grid, {n: world.nodes[n] for n in supreme_members}, params,
-        height=epoch, epoch=epoch, rounds=rounds,
-        quorum=params.quorum_size(len(supreme_members)),
-        workload=SupremeWorkload(world, supers.blocks, epoch, super_owner,
-                                 tiers=tiers,
-                                 quorum=params.quorum_size(
-                                     len(supreme_members)),
-                                 leader_id=grid.leader),
-        grid_id="supreme")
-    supreme = ceremony.run(behaviours.get(grid.leader, HonestLeader()))
+    # Views, at the tier where a silent leader costs everybody the epoch.
+    #
+    # The tier below can lose a grid and carry on; this one cannot lose
+    # anything, so a leader that does not propose used to end the epoch for
+    # every partition on the network.  Each view reseats the whole committee
+    # from a fresh seed and skips the leaders already tried, exactly as
+    # `ceremony.run_epoch` has done at tier 0 since part one.
+    #
+    # What this is *not* is the network protocol.  In one process a ceremony
+    # finalises for every seat or for none, so there is no view in which one
+    # seat has finalised a block the others are giving up on — which is the
+    # failure that makes a retry loop unsafe over sockets, and the reason
+    # `chain/viewchange.py` exists.  When the upper tiers run over sockets they
+    # need that machinery here; today they run in this function alone.
+    # See docs/view_change_design.md §1 and docs/supreme_tier_design.md §6.
+    tried, supreme, views = [], None, 0
+    for view in range(max(1, SUPREME_VIEWS if max_views is None else max_views)):
+        views = view + 1
+        seed = h_hex("view", base_seed, epoch, "supreme", view)
+        grid = Grid.seat(supreme_members, params.row_size, seed,
+                         exclude_leaders=tried)
+        ceremony = Ceremony(
+            grid, {n: world.nodes[n] for n in supreme_members}, params,
+            height=epoch, epoch=epoch, rounds=rounds,
+            quorum=params.quorum_size(len(supreme_members)),
+            workload=SupremeWorkload(world, supers.blocks, epoch, super_owner,
+                                     tiers=tiers,
+                                     quorum=params.quorum_size(
+                                         len(supreme_members)),
+                                     leader_id=grid.leader),
+            grid_id="supreme")
+        supreme = ceremony.run(_behaviour(behaviours, "supreme", grid.leader))
+        if supreme.finalised:
+            break
+        tried.append(grid.leader)
 
     if not supreme.finalised:
         return TieredEpochResult(epoch, "aborted",
                                  f"supreme grid: {supreme.reason}", tiers,
-                                 local, supers, supreme)
+                                 local, supers, supreme,
+                                 supreme_views=views)
 
     return TieredEpochResult(epoch, "finalised", "ok", tiers, local, supers,
-                             supreme, supreme.block)
+                             supreme, supreme.block, supreme_views=views)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

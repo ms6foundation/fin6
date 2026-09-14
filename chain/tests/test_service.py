@@ -32,6 +32,12 @@ def _world(n=40):
     return w, wallets
 
 
+def _fresh():
+    """A world and nothing else, for a run whose seating is being compared."""
+    w, _ = _world()
+    return (w,)
+
+
 def _three_tiers():
     """One epoch of a 40-node network: 8 grids, 2 super grids, 3 tiers."""
     if "run" not in _RUN:
@@ -179,3 +185,68 @@ def test_a_restarted_node_credits_the_same_thing():
             w.apply_network_block(r.block)
         assert w.prev_service
         assert store.load_service() == w.prev_service
+
+
+# ── views at the top ─────────────────────────────────────────────────────────
+
+def test_a_silent_supreme_leader_costs_a_view_and_not_the_epoch():
+    """Review C2, Road C.  The tier below can lose a grid and carry on; this
+    one cannot lose anything, so a leader that does not propose used to end the
+    epoch for every partition on the network.
+
+    Silenced at the supreme tier only.  A bare node id would silence it in its
+    own grid too, which changes which grids finalise, which changes the
+    committee — and the experiment would be measuring something else.
+    """
+    from ..ceremony import SilentLeader
+
+    w, r = _three_tiers()
+    bad = r.supreme.grid.leader
+    assert r.supreme_views == 1
+
+    world, _ = _world()
+    result = run_tiered_epoch(world, epoch=1, base_seed="s",
+                              behaviours={("supreme", bad): SilentLeader()})
+    assert result.finalised, result.reason
+    assert result.supreme_views == 2, "one view lost, the next one carried it"
+    assert result.supreme.grid.leader != bad, \
+        "a view that reseats the same leader is not a view change"
+    assert set(result.supreme.grid.seats) == set(r.supreme.grid.seats), \
+        "the committee is the same one; only the seating moved"
+    assert result.block.header.leader_id == result.supreme.grid.leader
+
+
+def test_the_view_budget_is_a_budget_and_not_a_guarantee():
+    """If every view fails the epoch produces nothing, exactly as it did
+    before, and the chain recovers at the next one."""
+    from ..ceremony import SilentLeader
+
+    world, _ = _world()
+    quiet = {("supreme", n): SilentLeader() for n in world.nodes}
+    result = run_tiered_epoch(world, epoch=1, base_seed="s", behaviours=quiet)
+    assert not result.finalised
+    assert "supreme grid" in result.reason, result.reason
+    assert result.supreme_views == 3, "it spent the whole budget first"
+    assert result.local.finalised and result.supers.finalised, \
+        "the tiers below did their work and lost it, which is C2 exactly"
+
+
+def test_one_view_is_the_behaviour_this_replaced():
+    from ..ceremony import SilentLeader
+
+    w, r = _three_tiers()
+    world, _ = _world()
+    result = run_tiered_epoch(
+        world, epoch=1, base_seed="s", max_views=1,
+        behaviours={("supreme", r.supreme.grid.leader): SilentLeader()})
+    assert not result.finalised and result.supreme_views == 1
+
+
+def test_a_behaviour_can_still_be_aimed_at_a_node_everywhere():
+    from ..ceremony import SilentLeader
+    from ..tiers import _behaviour
+
+    assert _behaviour({}, "supreme", "n01").name == "honest"
+    assert _behaviour({"n01": SilentLeader()}, "local", "n01").name == "silent"
+    assert _behaviour({("supreme", "n01"): SilentLeader()},
+                      "local", "n01").name == "honest"

@@ -255,7 +255,7 @@ change and has nowhere to put one is not.
 |---|---|---|---|
 | 1 | ~~**Road A** — seat the super grids' members, not their leaders~~ **Done** | the committee, which is where §2's numbers live | one selection rule; latency and certificate size |
 | 2 | ~~**§7** — tier-1/2 attendance in the home-grid register~~ **Done** | absence at the top being free | a roll derivation and two governance decisions. See §9.2 |
-| 3 | **Road C** — C1's views at the supreme tier | the dead leader | budget arithmetic; reuses `viewchange.py` |
+| 3 | ~~**Road C** — C1's views at the supreme tier~~ **Done in process** | the dead leader | budget arithmetic; reuses `viewchange.py`. See §9.4 |
 | 4 | **Road B** — leaderless assembly with a set-preference rule | the leader as a role at tier 2 | a reconciliation rule and a fetch bound |
 | 5 | ~~**§8** — reserve activation heights in the genesis document~~ **Done** | keeping the structural road open | a number, before genesis. See §9.3 |
 
@@ -365,6 +365,34 @@ Adding the schedule re-digested `config/genesis-7.json` — it is inside the has
 the chain id is, which is the whole reason this had to happen before genesis
 rather than after — so the founders re-ratified and the mint, which binds to
 `mint_context()`, was minted again.
+
+## 9.4 Built — views at the top, and what is still missing
+
+The supreme phase now runs up to `SUPREME_VIEWS` views. Each reseats the whole
+committee from a fresh seed and skips the leaders already tried — exactly what
+`ceremony.run_epoch` has done at tier 0 since part one, applied at the tier
+where a silent leader costs *everybody* the epoch. A budget rather than a
+guarantee: if every view fails the epoch produces nothing, as before, and the
+chain recovers at the next one.
+
+**What this is not is the network protocol, and the distinction is the whole of
+C1.** In one process a ceremony finalises for every seat or for none, so there
+is no view in which one seat has finalised a block the others are giving up
+on — which is the failure that makes a retry loop unsafe over sockets.
+`chain/viewchange.py` is the answer to that and is wired into the *networked*
+node, which runs one grid. When the upper tiers run over sockets they need the
+locking here too; today they run in `run_tiered_epoch` alone. Marked "done in
+process" rather than "done" for that reason.
+
+**The harness needed one addition to stage the failure at all.** A behaviour
+keyed by node id applies wherever that node leads, which was blunt enough while
+there was one tier: silencing the supreme leader also silenced it in its own
+grid, so the local phase changed, so the committee changed, and the experiment
+measured something else. A `(tier, node_id)` key aims at one seat in one
+ceremony; a bare node id still means everywhere. The test that matters reads
+straight now — same committee, same view-0 seating, one view lost, the next one
+carries it — and the budget test asserts the thing C2 is actually about: the
+tiers below did their work and lost it.
 
 ## 10. What this does not do
 
