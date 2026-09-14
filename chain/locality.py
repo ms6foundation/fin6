@@ -69,11 +69,27 @@ class Topology:
                  for i, (region, gid) in enumerate(specs)]
         return cls(grids, assignment)
 
-    def assign_newcomer(self, node_id: str, region: str, seed: str) -> str:
-        """Seat a node that arrives after the topology was laid out."""
+    def assign_newcomer(self, node_id: str, region: str, seed: str,
+                        has_room=None) -> str:
+        """Seat a node that arrives after the topology was laid out.
+
+        `has_room(grid_id)` filters the candidates down to the grids that can
+        still take an apprentice — review C5.  It narrows the draw and never
+        directs it: the seed still chooses among whatever is left, so a
+        newcomer cannot pick its grid by waiting for the others to fill.  The
+        predicate reads committed register state, so every node computes the
+        same candidate list and the same pick.
+        """
         candidates = self.grids_in(region)
         if not candidates:
             raise ValueError(f"no grid serves region {region!r}")
+        if has_room is not None:
+            with_room = [g for g in candidates if has_room(g)]
+            if not with_room:
+                raise ValueError(
+                    f"every grid in region {region!r} is already running as "
+                    f"many apprenticeships as its attester count allows")
+            candidates = with_room
         pick = int(h_hex("enrol", seed, node_id), 16) % len(candidates)
         gid = candidates[pick]
         self.assignment[node_id] = gid

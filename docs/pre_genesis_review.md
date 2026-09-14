@@ -576,9 +576,48 @@ so the first definition had never run.
 | C2 | **The supreme grid is a global stall point** | High | If it aborts, nothing finalises anywhere that epoch. |
 | C3 | ~~**Reorg past the undo ceiling diverges permanently**~~ **Done** | High | Undo records are kept to `retention_depth` — 729 blocks at a third of the pool. Beyond it a node that cannot roll back diverged from one that can, with no reconciliation path but a snapshot, and *silently*. See §4.1. |
 | C4 | **Grids never merge** | Medium-High | Split works and founding cohorts keep their standing. A network that shrinks keeps grids it cannot fill, and founding seating is permanent because merge does not exist. |
-| C5 | **Apprentice density stalls a grid** | Medium | Apprentices hold seats and cannot make quorum. Admission needs a rate limit tied to attester count. |
+| C5 | ~~**Apprentice density stalls a grid**~~ **Done** | Medium | Apprentices hold seats and cannot make quorum, and admission was unbounded — so the 40-ceremony gate bounded nothing a grid cares about. A grid now runs at most `admit_num/admit_den` of its attester count in apprenticeships at once — §4.5. |
 | C6 | ~~**No peer discovery**~~ **Done** | Medium | Peers came from the roster and `net.json`, so a network that grows needed every machine's file edited. Signed address records, gossiped — §4.4. |
 | C7 | ~~**Body window is 21 minutes**~~ **Done** | Medium | Past it, catch-up falls back to `getsnapshot`, which cost the serving node a full state copy on demand and was one frame rather than the chunked ranges `store/snapshot.py` was built for. Both halves fixed — §4.3. |
+
+### 4.5 · C5, resolved: the gate is per node, the rate is per grid
+
+The 40-ceremony gate was written down as the cost of capturing a grid. It is
+not, on its own, a cost of anything: **an apprenticeship served in parallel is
+served once.** An adversary admitted a hundred nodes on one day, waited out one
+gate, and a hundred attesters appeared in the same ceremony. Nothing in
+`TierWorld.admit` counted, so the grid's composition could change completely in
+a single step and the "40 ceremonies of visible apprenticeship per node" the
+locality docstring promised was forty ceremonies *total*, however many nodes
+walked through together.
+
+The missing half is a rate. A grid runs at most `admit_num/admit_den` of its
+own attester count in apprenticeships at once — a quarter, by default, and
+never fewer than one, because a region with a single grid whose cap rounded to
+zero would be closed to newcomers permanently and a network nobody can join is
+a club. `Topology.assign_newcomer` takes the predicate and *narrows* the
+candidate list with it; the seed still picks among what is left, so a newcomer
+still cannot choose its grid by waiting for the others to fill, and a region
+with no room refuses rather than spilling the newcomer into another region —
+locality is the point of the assignment and is not negotiable for convenience.
+
+What this does and does not buy, stated plainly: the population that eventually
+promotes an intake is the population that authorised it, and reaching parity
+with eight honest attesters takes four gates instead of one. It bounds the
+*rate*, not the total — growth is geometric, because a promoted node counts
+toward the next cap — so a patient adversary still gets there. It gets there in
+the open, over k apprenticeships, which is the difference between a takeover
+somebody can see coming and one that lands in a single ceremony.
+
+Two details worth naming. Suspended members are not counted as apprentices:
+counting them would let an adversary close a grid to honest newcomers by
+getting its own nodes suspended, which is a fault that *buys* the faulter
+something. And the rate is an exact ratio rather than a float, like the quorum
+fraction beside it — a float has no canonical encoding in the store codec or
+the genesis document, and a consensus parameter every node must round
+identically has no business being approximate. Adding it re-digested
+`config/genesis-7.json`, so the founders re-ratified and the genesis mint,
+which binds to `mint_context()`, was minted again.
 
 ### 4.4 · C6, resolved: one address is enough
 

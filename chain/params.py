@@ -95,6 +95,21 @@ class ChainParams:
     # fault (n = 3f+1 at f = 1, quorum 3).
     founding_cohort: int = 4            # consecutive ceremonies to become an attester
     forgiveness: int = 0                  # absences tolerated before the counter resets
+    # How many apprenticeships one grid may run at once, as a fraction of its
+    # own attesters.  The 40-ceremony gate is per *node*; without this it is
+    # not a bound on anything, because an adversary admits a hundred nodes on
+    # one day and forty ceremonies later they are all attesters together.
+    # With it, a grid's attester population can grow by at most this fraction
+    # per apprenticeship, so capturing a grid costs k gates in public rather
+    # than one.  It bounds the rate, not the total: given enough epochs a
+    # patient adversary still gets there, in the open.  See review C5.
+    #
+    # An exact ratio, like the quorum fraction above it and for the same two
+    # reasons: a float has no canonical encoding in the store codec or the
+    # genesis document, and a consensus parameter that every node must round
+    # identically has no business being approximate.
+    admit_num: int = 1
+    admit_den: int = 4
 
     # ── consensus ─────────────────────────────────────────────────────────────
     chain_id: str = "fin6-private-v1"
@@ -118,6 +133,11 @@ class ChainParams:
             raise ValueError("row_size must be >= 2 for a row to form a ring")
         if not 0 < self.quorum_num <= self.quorum_den:
             raise ValueError("quorum fraction must lie in (0, 1]")
+        if self.admit_num <= 0 or self.admit_den <= 0:
+            raise ValueError(
+                "the admission rate must be positive, or no grid could ever "
+                "admit anyone; the floor of one apprentice is applied in the "
+                "register")
 
     @property
     def note_blinders(self) -> int:
@@ -135,6 +155,12 @@ class ChainParams:
         irreversible.  All three now ship in mq/.
         """
         return dict(self.proof_policy)[tier]
+
+    @property
+    def admit_rate(self) -> float:
+        """The ratio as a number, for reading and for printing.  Never for
+        deciding: `GridRegister.apprentice_cap` takes the exact ratio."""
+        return self.admit_num / self.admit_den
 
     def quorum_size(self, n_nodes: int) -> int:
         """Attestations needed to finalise, ceil(n * num / den)."""
@@ -237,6 +263,13 @@ class ChainParams:
             caveats.append(
                 f"a founding cohort of {self.founding_cohort} cannot tolerate "
                 f"a fault: n = 3f+1 at f = 1 needs 4")
+        if self.admit_num * 2 > self.admit_den:
+            caveats.append(
+                f"an admission rate of {self.admit_num}/{self.admit_den} lets "
+                f"a grid take on more than half its attester count in "
+                f"apprentices at once, so one apprenticeship can hand a "
+                f"coordinated cohort a third of the seats and two can hand it "
+                f"the grid")
         return problems, caveats
 
     def launchable(self, *, tiers: int = 1) -> bool:

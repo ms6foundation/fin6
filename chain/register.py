@@ -250,6 +250,28 @@ class GridRegister:
         return sorted(n for n, r in self.members.items()
                       if r.standing in (Standing.ATTESTER, Standing.APPRENTICE))
 
+    def apprentice_cap(self, num: int = 1, den: int = 4) -> int:
+        """How many apprenticeships this grid may run at once.
+
+        A fraction of the *attesters*, because they are what an apprentice
+        eventually dilutes, and never below one: a region with a single grid
+        whose cap rounded to zero would be closed to newcomers for good, and a
+        network that cannot admit anyone is not decentralising, it is a club.
+
+        The floor is also why this is a rate and not a quota — a grid that
+        keeps promoting keeps growing, geometrically rather than in one jump.
+        """
+        return max(1, len(self.attesters()) * num // den)
+
+    def has_room(self, num: int = 1, den: int = 4) -> bool:
+        """Is there room for one more apprentice?
+
+        Suspended members do not count: they hold no seat, and counting them
+        would let an adversary close a grid to honest newcomers by getting its
+        own nodes suspended.
+        """
+        return len(self.apprentices()) < self.apprentice_cap(num, den)
+
     def quorum(self, num=2, den=3) -> int:
         """Quorum is over ATTESTERS only — apprentices hold seats, not votes."""
         n = len(self.attesters())

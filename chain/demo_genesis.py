@@ -158,8 +158,12 @@ def main():
     print(f"  reach quorum, and so could never run the ceremony that would "
           f"promote anyone.\n")
 
-    # A faster gate, so the walkthrough does not need 40 ceremonies per joiner.
-    quick = dataclasses.replace(world.params, attend_threshold=2)
+    # A faster gate, so the walkthrough does not need 40 ceremonies per joiner,
+    # and the admission rate limit lifted so all eight can join in one breath.
+    # Both are walkthrough conveniences and are named as such below: the rate
+    # limit is exactly what stops a cohort this size arriving together on a
+    # real network.  Review C5.
+    quick = dataclasses.replace(world.params, attend_threshold=2, admit_num=2, admit_den=1)
     world.params = quick
     for node in world.nodes.values():
         node.params = quick
@@ -169,7 +173,8 @@ def main():
     for nid in joined:
         world.admit(nid, doc.nodes[0].region)
     print(f"  {len(joined)} nodes join as apprentices "
-          f"{DIM}(gate lowered to 2 ceremonies for the walkthrough){OFF}")
+          f"{DIM}(gate lowered to 2 ceremonies and the admission rate limit "
+          f"lifted for the walkthrough){OFF}")
     print(f"  {world.topology}\n")
 
     founded = None

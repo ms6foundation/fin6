@@ -313,10 +313,19 @@ class TierWorld:
 
         Which grid it lands in is `H(tip, node_id)`, not its own choice — free
         choice of grid is how an adversary funnels its nodes into one.
+
+        Among the grids that still have room: a grid runs at most
+        `admit_rate` × its attester count apprenticeships at a time, so the
+        composition of a grid changes at a bounded rate rather than all at
+        once when a cohort admitted together finishes its gate.  A newcomer
+        that arrives when every grid in its region is full is refused, not
+        queued — the caller can try again next epoch, by which time promotions
+        will have opened seats.  See review C5.
         """
         if node_id in self.nodes:
             raise ValueError(f"{node_id} is already in the network")
-        gid = self.topology.assign_newcomer(node_id, region, self.tip)
+        gid = self.topology.assign_newcomer(
+            node_id, region, self.tip, has_room=self.has_room)
         self.registers[gid].admit(node_id)
         template = self.nodes[sorted(self.nodes)[0]].state
         self.nodes[node_id] = Node(
@@ -324,6 +333,11 @@ class TierWorld:
             self.params, template.copy())
         self.trust[node_id] = TrustList(node_id)
         return gid
+
+    def has_room(self, grid_id: str) -> bool:
+        """Can this grid take on another apprenticeship?  Review C5."""
+        return self.registers[grid_id].has_room(self.params.admit_num,
+                                                self.params.admit_den)
 
     # ── persistence ──────────────────────────────────────────────────────────
 
@@ -486,7 +500,8 @@ def _finish_bootstrap(topology, genesis, holders, node_regions, params, seed,
                       trust={nid: TrustList(nid) for nid in node_regions})
 
     for nid, region in sorted((newcomers or {}).items()):
-        gid = topology.assign_newcomer(nid, region, seed)
+        gid = topology.assign_newcomer(nid, region, seed,
+                                       has_room=world.has_room)
         registers[gid].admit(nid)
         nodes[nid] = Node(nid, signer_for(nid), params, genesis.copy())
         world.trust[nid] = TrustList(nid)

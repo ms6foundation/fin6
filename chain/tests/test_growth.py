@@ -15,8 +15,11 @@ from ..tiered import GridFounding
 from ..tiers import (_check_foundings, bootstrap_world, plan_foundings,
                      run_tiered_epoch)
 
+# `admit_num/admit_den = 2/1` lifts the C5 admission limit: these tests are about what
+# happens *after* a grid is over size, and the limit is precisely what makes
+# getting there take many gates.  test_density.py tests the limit itself.
 PARAMS = dataclasses.replace(DEMO, attend_threshold=2, grid_size=7, row_size=5,
-                             founding_cohort=4)
+                             founding_cohort=4, admit_num=2, admit_den=1)
 ENDOW = {"alice": [1000, 900, 800, 700, 600, 500, 400, 300], "bob": [100]}
 
 _RUN = {}
