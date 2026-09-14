@@ -218,6 +218,14 @@ class NetworkBlockHeader:
     #: set matters as much as claiming a newer one, because that is exactly
     #: what an un-upgraded producer would do.  See chain/protocol.py.
     protocol: int = 1
+    #: The seat order every certificate in this block indexes into: each
+    #: grid's seated membership, sorted, hashed per grid and rolled into one
+    #: value.  A certificate names its signers as ids today and can name them
+    #: as a bitmap tomorrow, because the order a bitmap counts against is
+    #: committed here rather than reconstructed from whatever a reader
+    #: believes the membership was.  See chain/seats.py and
+    #: docs/quorum_signature_decision.md.
+    seats_root: str = ""
     """How many ceremonies stand behind this block.
 
     Three is the full hierarchy: a local grid agreed the transactions, a super
@@ -238,7 +246,7 @@ class NetworkBlockHeader:
                              self.registers_root, self.tiers,
                              self.foundings_root, self.witness_root,
                              self.history_root, self.utxo_count,
-                             self.nf_count, self.protocol)
+                             self.nf_count, self.protocol, self.seats_root)
 
 
 @dataclass(eq=False)

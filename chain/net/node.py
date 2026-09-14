@@ -858,7 +858,10 @@ class NodeProcess:
         cert = block.quorum_cert
         if cert is None:
             return False, "no quorum certificate"
-        ok, why = cert.verify(quorum, block.hash(), validators=self.validators)
+        # Seats as well as keys: quorum is a fraction of this grid, so a
+        # signature from a roster key that does not sit here must not count
+        # toward it.  The order is the one the header commits.
+        ok, why = self.world.verify_cert(gid, cert, quorum, block.hash())
         if not ok:
             return False, f"certificate: {why}"
 

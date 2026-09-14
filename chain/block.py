@@ -5,10 +5,22 @@ The block hash covers the header only.  The quorum certificate is assembled
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .crypto import h_bytes, h_hex, verify_sig
 from .seal import seal_root
+from .seats import SeatError, from_bits, seats_digest as _seats_digest, to_bits
+
+#: The only signature scheme this build knows.  Named so that the certificate
+#: says which scheme it is in rather than leaving every reader to assume.
+ED25519 = "ed25519"
+
+
+def _popcount(bits: str) -> int:
+    try:
+        return bin(int(bits or "0", 16)).count("1")
+    except ValueError:
+        return 0
 
 GENESIS_PREV = "genesis"
 
@@ -253,6 +265,20 @@ class QuorumCert:
     shadow_signers: tuple = ()
     shadow_signatures: tuple = field(default=(), repr=False)
     root: int = 0
+    #: Which signature scheme `signatures` are in.  One value, named rather
+    #: than assumed, and checked: a build that does not know a scheme refuses
+    #: the certificate instead of verifying it under the wrong rules.  This is
+    #: the field that makes an aggregate scheme a *value* later rather than a
+    #: format change — see docs/quorum_signature_decision.md.
+    scheme: str = ED25519
+    #: When set, `signer_bits` and `shadow_bits` carry the seats as a bitmap
+    #: over the canonical order this digest names, and `signers` is empty.  The
+    #: order lives in the header (`seats_root`), so verifying a compact
+    #: certificate needs the seat list passed in, exactly as verifying any
+    #: certificate already needs the roster.
+    seats_digest: str = ""
+    signer_bits: str = ""
+    shadow_bits: str = ""
 
     # ── building ─────────────────────────────────────────────────────────────
 
@@ -272,14 +298,22 @@ class QuorumCert:
             shadow_signers=tuple(a.node_id for a in shad),
             shadow_signatures=tuple(a.signature for a in shad),
             root=QuorumCert.compute_root(
-                [a.node_id for a in atts], [a.signature for a in atts]))
+                [a.node_id for a in atts], [a.signature for a in atts],
+                ED25519))
 
     @staticmethod
-    def compute_root(signers, signatures) -> int:
+    def compute_root(signers, signatures, scheme: str = ED25519) -> int:
         """Over the pairs, so neither a signer nor a signature can be swapped
-        for another without the root moving."""
-        return seal_root("quorum", [f"{n}:{s}" for n, s
-                                    in zip(signers, signatures)])
+        for another without the root moving — and over the scheme, so the
+        claim about what those signatures *are* cannot be edited either.
+
+        Computed from the expanded seats, which is why compacting a
+        certificate to a bitmap leaves its root alone: the two encodings are
+        the same statement, and anything that recorded the root of one still
+        recognises the other.
+        """
+        return seal_root("quorum", [f"scheme:{scheme}"]
+                         + [f"{n}:{s}" for n, s in zip(signers, signatures)])
 
     # ── reading ──────────────────────────────────────────────────────────────
 
@@ -295,17 +329,72 @@ class QuorumCert:
                                    self.epoch, self.grid_seed)
 
     def voters(self) -> tuple:
+        self._require_expanded("voters")
         return self.signers
 
     def attended(self) -> tuple:
         """Every seat this certificate proves said something, of either kind."""
+        self._require_expanded("attended")
         return tuple(sorted(set(self.signers) | set(self.shadow_signers)))
 
     def __len__(self):
+        if self.compact:
+            return (_popcount(self.signer_bits))
         return len(self.signers)
 
+    # ── the two encodings ────────────────────────────────────────────────────
+
+    @property
+    def compact(self) -> bool:
+        """Whether the seats are carried as a bitmap rather than as ids."""
+        return bool(self.seats_digest)
+
+    def _require_expanded(self, what: str):
+        if self.compact:
+            raise SeatError(
+                f"{what}() needs the seat order: this certificate carries a "
+                f"bitmap over {self.seats_digest[:12]}…, expand it first")
+
+    def compact_form(self, grid_id: str, order) -> "QuorumCert":
+        """The same certificate with the seats as a bitmap over `order`.
+
+        `root` is untouched, because the root is over the expanded pairs: the
+        two forms are one statement in two encodings, and nothing that stored
+        the root of one fails to recognise the other.
+
+        What this does not do is shrink the signatures, which are the other
+        90% at any interesting seat count. That needs an aggregate scheme,
+        which needs a dependency — docs/quorum_signature_decision.md.
+        """
+        if self.compact:
+            return self
+        return replace(
+            self,
+            signers=(), shadow_signers=(),
+            seats_digest=_seats_digest(grid_id, order),
+            signer_bits=to_bits(self.signers, order),
+            shadow_bits=to_bits(self.shadow_signers, order))
+
+    def expanded_form(self, grid_id: str, order) -> "QuorumCert":
+        """The seats named again, checked against the order this was compacted
+        over — a mismatch means the reader and the writer disagree about who
+        was seated, which is not a thing to resolve silently."""
+        if not self.compact:
+            return self
+        digest = _seats_digest(grid_id, order)
+        if digest != self.seats_digest:
+            raise SeatError(
+                f"this certificate is a bitmap over {self.seats_digest[:12]}…, "
+                f"not over {grid_id}'s order {digest[:12]}…")
+        return replace(
+            self,
+            seats_digest="", signer_bits="", shadow_bits="",
+            signers=from_bits(self.signer_bits, order),
+            shadow_signers=from_bits(self.shadow_bits, order))
+
     def verify(self, quorum: int, block_hash: str | None = None,
-               validators: dict | None = None):
+               validators: dict | None = None, seats=None,
+               grid_id: str | None = None):
         """(ok, reason).  `validators` maps node_id -> public key.
 
         Required, not optional, and that is the price of the shape: a
@@ -320,6 +409,26 @@ class QuorumCert:
         if validators is None:
             return False, ("a certificate carries no keys; it can only be "
                            "checked against the roster")
+        # An unknown scheme is a refusal, not a best effort.  A build that
+        # cannot check these signatures has no business deciding they are
+        # fine, and the failure has to be loud for the same reason a protocol
+        # version this build cannot run halts the node.
+        if self.scheme != ED25519:
+            return False, (f"certificate is in the {self.scheme!r} signature "
+                           f"scheme; this build knows {ED25519!r}")
+        if self.compact:
+            if seats is None:
+                return False, ("certificate carries a seat bitmap; it can "
+                               "only be checked against the committed seat "
+                               "order")
+            try:
+                self = self.expanded_form(grid_id or "", seats)
+            except SeatError as exc:
+                return False, str(exc)
+        elif seats is not None:
+            stray = [n for n in self.signers if n not in set(seats)]
+            if stray:
+                return False, f"{stray[0]} is not a seat in this grid"
         if len(self.signers) != len(self.signatures):
             return False, "signers and signatures do not correspond"
         if len(self.shadow_signers) != len(self.shadow_signatures):
@@ -351,7 +460,8 @@ class QuorumCert:
             if not verify_sig(key, msg, signature):
                 return False, f"bad shadow attestation signature from {node_id}"
             seen.add(node_id)
-        if self.compute_root(self.signers, self.signatures) != self.root:
+        if self.compute_root(self.signers, self.signatures,
+                             self.scheme) != self.root:
             return False, "certificate root does not match its attestations"
         return True, "ok"
 

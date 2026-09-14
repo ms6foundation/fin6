@@ -157,6 +157,32 @@ and this repository has one runtime dependency.
 *Fix now:* a dependency decision plus the header field. *Fix live:* the new
 scheme cannot vouch for the old signatures.
 
+> **Resolved, in the half that genesis makes permanent.** Written up in
+> `docs/quorum_signature_decision.md`. The decision is *not threshold BLS now*:
+> it needs a pairing library against this repository's one runtime dependency,
+> and BLS12-381 is not post-quantum either, so it buys aggregation rather than
+> the property the rest of the stack was chosen for. What ships is the
+> preparation, which is the part that is a format: `QuorumCert.scheme` names the
+> scheme and is bound into the certificate root (an unknown scheme is refused,
+> not attempted); `NetworkBlockHeader.seats_root` commits each grid's seated
+> membership, sorted, so a bitmap has an order to index into that the producer
+> cannot pick per reader; and `compact_form`/`expanded_form` already encode the
+> seats as a bitmap, with an identical root in both spellings.
+>
+> Two corrections to the figures above, both from measuring. The certificate is
+> **56.2 KB** at 667 seats, and the bitmap takes it to **47.1 KB** — the 0.2 KB
+> was always the *aggregated* number, and the seat encoding alone does not get
+> near it, because what is left is one signature a seat. And the committed order
+> closed a gap that was nothing to do with size: `verify()` checked signatures
+> against the roster, but quorum is a fraction of a *grid*, so a signature from
+> any validator in the network counted toward any grid's quorum. `verify(…,
+> seats=)` now refuses a signer that does not sit in the grid.
+>
+> Left on purpose: the compact form is not yet the default wire encoding, since
+> the light client, the archive and the snapshot reader all verify certificates
+> with no membership in hand. That one is cheap now *and* cheap later — the root
+> is the same in both encodings — which is why it is not in this change.
+
 ### A4 · Era 0 is a trusted setup, and the distribution is the security parameter · **Critical**
 
 `max fork depth = attacker's unspent turns / width` is a bound rather than a
@@ -305,7 +331,8 @@ Two items are safe while the roster is permissioned and fatal if it is not:
    that should never launch. Hours, not days. *(Done: `LAUNCH`,
    `ChainParams.assess`, and `purpose` in the document. A9 came out of it.)*
 3. **A3's dependency decision** — it gates the header field, and the header
-   field is a format change.
+   field is a format change. *(Done: `docs/quorum_signature_decision.md`, plus
+   `seats_root`, the named scheme, and the bitmap encoding.)*
 4. **A4, A5, A6, A7** — the four other things genesis makes permanent.
 5. **B1** — turn the fault machinery on, while the block format is still free.
 6. **C1 and C3** — the two ways a live network stops being one.

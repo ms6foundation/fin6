@@ -28,6 +28,7 @@ from .params import ChainParams
 from .register import AttendanceRoll, GridRegister, Standing
 from .state import ChainState, UtxoDelta, merge_deltas
 from . import protocol
+from . import seats as seats_mod
 from .tiered import (GENESIS_NETWORK, CeremonyBlock, CeremonyBlockHeader,
                      GridFounding, NetworkBlock, NetworkBlockHeader, SuperBlock,
                      SuperBlockHeader, foundings_root, registers_root)
@@ -106,6 +107,32 @@ class TierWorld:
 
     def register_roots(self) -> dict:
         return {gid: reg.root() for gid, reg in self.registers.items()}
+
+    def seat_order(self, grid_id: str) -> tuple:
+        """The order a certificate for this grid indexes into.
+
+        The same seated membership `grid_members` returns, sorted — derived
+        from the committed register on both sides rather than carried by the
+        thing it is supposed to authenticate.
+        """
+        return seats_mod.canonical_order(self.grid_members(grid_id))
+
+    def seats_root_for(self, grid_ids) -> str:
+        return seats_mod.seats_root({gid: self.seat_order(gid)
+                                     for gid in grid_ids})
+
+    def verify_cert(self, grid_id: str, cert, quorum: int, block_hash: str):
+        """A certificate checked against the roster *and* the seats.
+
+        One method rather than two call sites, because the two questions are
+        not separable: a signature from a key the genesis document names is not
+        evidence that the signer sits in this grid, and quorum is a fraction of
+        a grid. Until the seat order was committed this could not be checked
+        honestly — a validator would have been comparing against its own idea
+        of the membership; now it compares against the header's.
+        """
+        return cert.verify(quorum, block_hash, validators=self.roster,
+                           seats=self.seat_order(grid_id), grid_id=grid_id)
 
     def submit(self, tx, backend: str | None = None):
         """Route a transaction to the grid that owns its partition."""
@@ -720,8 +747,13 @@ class SuperWorkload:
             reg = self.world.registers.get(child.header.grid_id)
             quorum = reg.quorum(self.world.params.quorum_num,
                                 self.world.params.quorum_den) if reg else 1
-            ok, why = child.quorum_cert.verify(quorum, child.hash(),
-                                               validators=self.world.roster)
+            # `seats` as well as the roster: a signature from a key the
+            # genesis document names is not evidence that the signer sits in
+            # *this* grid, and quorum is a fraction of a grid.  The order is
+            # the one committed in the header, so a validator and a builder
+            # cannot be reading different memberships.
+            ok, why = self.world.verify_cert(
+                child.header.grid_id, child.quorum_cert, quorum, child.hash())
             if not ok:
                 return False, f"{child.header.grid_id}: {why}"
             for tx in child.transactions:
@@ -798,6 +830,7 @@ class SoloWorkload:
             super_root=block.compute_super_root(),
             registers_root=registers_root(
                 {self.grid_id: child.header.register_root}),
+            seats_root=self.world.seats_root_for([self.grid_id]),
             tiers=1, foundings_root=block.compute_foundings_root(),
             witness_root=shadow.utxo.witness_root,
             history_root=shadow.history.root,
@@ -886,7 +919,9 @@ class SupremeWorkload:
             chain_id=leader.chain_id, prev_hash=self.world.tip,
             utxo_root=shadow.utxo.root, nf_root=shadow.nullifiers.root,
             super_root=block.compute_super_root(),
-            registers_root=registers_root(roots), tiers=self.tiers,
+            registers_root=registers_root(roots),
+            seats_root=self.world.seats_root_for(roots),
+            tiers=self.tiers,
             foundings_root=block.compute_foundings_root(),
             witness_root=shadow.utxo.witness_root,
             history_root=shadow.history.root,
@@ -949,6 +984,9 @@ class SupremeWorkload:
                  for s in block.supers for c in s.children}
         if registers_root(roots) != h.registers_root:
             return False, "registers_root does not match the grids' registers"
+        if self.world.seats_root_for(roots) != h.seats_root:
+            return False, ("seats_root does not match the grids' seated "
+                           "membership")
         return True, "ok"
 
 
