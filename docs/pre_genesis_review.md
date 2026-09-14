@@ -390,7 +390,7 @@ protocol version, which after step 1 is at least possible.
 
 | | item | severity | why |
 |---|---|---|---|
-| B1 | **Faults are provable and unusable** | High | `Seat.catch_lazy` produces signed evidence that an attester did not check — an attestation over a block that does not validate. `GridRegister.apply` takes a `faulted` set. The network path passes none, because agreeing about a fault means **carrying it in the block**. So the standing system, apprenticeships and all, is inert against the one fault the code can now prove. |
+| B1 | ~~**Faults are provable and unusable**~~ **Done** | High | `Seat.catch_lazy` produced signed evidence that an attester did not check — an attestation over a block that does not validate. `GridRegister.apply` takes a `faulted` set. The network path passed none, because agreeing about a fault means **carrying it in the block**. So the standing system, apprenticeships and all, was inert against the one fault the code could prove. See §3.1. |
 | B2 | **No canonical seat order in the header** | Medium-High | The prerequisite for a signer bitmap, and therefore for A3's best case: 0.2 KB a certificate instead of 6.8 KB. |
 | B3 | **Cross-partition transactions have no home** | High | A spend touching two partitions can be included by no grid. It does not bite today only because `Wallet.send` spends exactly one note — and multi-note spends are a named open item, so shipping them makes this live. |
 | B4 | **The register is one roll late** | Medium | A certificate is checked against a register whose roll has already been applied, so a client's quorum figure can be off by one across a founding. |
@@ -400,6 +400,49 @@ protocol version, which after step 1 is at least possible.
 **B1 deserves the emphasis.** Everything in parts two and five — attendance,
 standing, the forty-ceremony apprenticeship, forgiveness counters — is
 machinery for punishing behaviour the network cannot currently record.
+
+### 3.1 · B1, resolved: a fault that costs something
+
+The obstacle was never the plumbing. It was that *"this block does not
+validate"* is usually a statement about the **ledger** — an input already
+spent, a tip that has moved — and a node applying block h+1 next month cannot
+re-run that check. Equivocation escaped it because its evidence proves itself:
+two signed proposals, one height, one leader, and anybody with the bytes can
+see it.
+
+`chain/faults.py` gives laziness the same property by splitting invalidity in
+two. **Self-evident**: the block's own bytes contradict each other — a
+`tx_root` that is not the root of the transactions under it, a delta that is
+not the delta those transactions make, a transaction that does not
+authenticate or is in the wrong partition, a digest that does not match what it
+commits to. Checking any of these needs the block and the chain parameters and
+nothing else, so a verifier a year later reaches the verdict the seat reached
+at the time. **Contextual**: everything about the ledger, which is objective
+then and not re-derivable afterwards.
+
+An attester that signed a self-evidently flawed block either did not look or
+looked and lied. That is a `lazy_attestation` report: it carries the block in
+`subject`, `substantiated()` re-runs the check rather than believing the
+reporter, `accused()` names exactly the seats whose attestations are attached,
+and `faulted_from` feeds them to `GridRegister.apply`, which suspends them —
+permanently, since suspension is not self-healing.
+
+The other half is the one that took the care. A report about a block that is
+*fine* is signed, well-formed, and convicts nobody, because the check is
+re-run and passes. A block that failed only a contextual check produces names
+in the log and **no report at all**: a claim a validator cannot re-check is a
+claim a leader could invent about anyone it disliked, and a block carrying one
+is refused outright.
+
+Two costs, both named rather than hidden. A report carries the block it
+convicts, so `MAX_EVIDENCE_BYTES` (512 KB) is where reporting stops and the
+fix becomes a succinct fraud proof naming the one contradiction — a design,
+not a field. And `substantiated()` needs the chain parameters; without them a
+report is *unproven rather than false*, so a caller that cannot check says so
+instead of voting.
+
+Also fixed on the way: `Seat.catch_lazy` was defined twice in the same class,
+so the first definition had never run.
 
 ## 4. Class C — protocol work, doable on a live network
 

@@ -241,14 +241,42 @@ def test_a_lazy_seat_attests_without_looking():
         seat.node.id in seat.env.shadow, "and did not attest"
 
 
-def test_an_attestation_over_an_invalid_block_is_evidence():
+def _self_contradicting(body):
+    """A block whose own bytes disagree: the header commits to a tx_root that
+    is not the root of the transactions underneath it.
+
+    Staged rather than mined, because a leader that produces one is by
+    definition broken — but the *shape* is what matters, and it is the shape
+    any holder of the block can check without a ledger.
+    """
+    import dataclasses
+
+    from chain.tiered import NetworkBlock
+
+    header = dataclasses.replace(body.header,
+                                 super_root=body.header.super_root + 1)
+    return NetworkBlock(header=header, supers=body.supers,
+                        dropped=body.dropped, foundings=body.foundings)
+
+
+def test_an_attestation_over_a_self_contradicting_block_is_evidence():
     """The one thing that can be proved about laziness, and it has the same
     shape as equivocation: a signed statement its author could not have made
-    honestly.  Any third party can re-run the check."""
+    honestly.  Any third party can re-run the check — which is why the block
+    travels with the report."""
     world, _ = seated_world()
     grid, seats, meta = build_seats(world)
-    sp = seats[grid.leader].propose(meta)
-    body = seats[grid.leader].blocks[sp.block_hash]
+    leader = seats[grid.leader]
+    sp = leader.propose(meta)
+    # The leader signs the flawed block, which is the only way a seat would
+    # ever be shown one: a body that does not hash to the proposal is refused
+    # long before anybody attests to it.
+    body = _self_contradicting(leader.blocks[sp.block_hash])
+    leader.blocks.clear()
+    leader.env.proposals.clear()
+    sp = leader.node.propose(body, meta.epoch, meta.grid_seed)
+    leader.blocks[sp.block_hash] = body
+    leader.env.add_proposal(sp)
 
     honest = next(s for n, s in seats.items() if n != grid.leader)
     honest.workload = _Rejects(honest.workload)
@@ -272,8 +300,43 @@ def test_an_attestation_over_an_invalid_block_is_evidence():
     faults = [f for f in honest.env.faults.values()
               if f.kind == "lazy_attestation"]
     assert len(faults) == 1, faults
-    assert faults[0].verify(), "the report must be signed"
-    assert set(a.node_id for a in faults[0].evidence) == set(lazies[:3])
+    report = faults[0]
+    assert report.verify(), "the report must be signed and must prove itself"
+    assert set(a.node_id for a in report.evidence) == set(lazies[:3])
+    # And the half B1 is about: a third party, holding only the report,
+    # reaches the same verdict and knows exactly whom it convicts.
+    assert report.substantiated(world.params)
+    assert set(report.accused(world.params)) == set(lazies[:3])
+    assert report.subject is not None and \
+        report.subject.hash() == body.hash()
+
+
+def test_a_block_that_fails_only_a_contextual_check_convicts_nobody():
+    """The boundary. An honest seat may reject a block for a reason nobody can
+    re-derive later — an input already spent, a tip that has moved. Reporting
+    that as a provable fault would let a leader suspend anyone it disliked by
+    claiming a check the rest of us cannot repeat."""
+    world, _ = seated_world()
+    grid, seats, meta = build_seats(world)
+    sp = seats[grid.leader].propose(meta)
+    body = seats[grid.leader].blocks[sp.block_hash]      # a *valid* block
+
+    honest = next(s for n, s in seats.items() if n != grid.leader)
+    honest.workload = _Rejects(honest.workload)
+    honest.absorb(seats[grid.leader].wire())
+    honest.offer_block(body)
+    honest.react()
+    culprit = next(n for n in grid.seats
+                   if n not in (grid.leader, honest.node.id))
+    seats[culprit].lazy = True
+    seats[culprit].absorb(seats[grid.leader].wire())
+    seats[culprit].offer_block(body)
+    seats[culprit].react()
+    honest.absorb(seats[culprit].wire())
+
+    assert honest.catch_lazy() == (culprit,), "the name is still in the log"
+    assert not [f for f in honest.env.faults.values()
+                if f.kind == "lazy_attestation"], "and no report travels"
 
 
 def test_a_lazy_attester_is_reported_once_and_not_every_round():

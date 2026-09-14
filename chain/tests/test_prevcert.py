@@ -165,18 +165,35 @@ def test_an_equivocation_report_names_its_culprit():
 
 
 def test_a_claim_that_cannot_be_checked_never_faults_anyone():
-    """The reason only equivocation travels. A leader whose word was enough
-    could suspend anyone it disliked, which is a worse failure than the one
-    being fixed."""
+    """The reason only a self-proving kind travels. A leader whose word was
+    enough could suspend anyone it disliked, which is a worse failure than the
+    one being fixed.
+
+    Two shapes of unprovable claim, and they fail differently on purpose. A
+    `lazy_attestation` with nothing attached does not even verify — it claims
+    to prove itself and does not, so it never travels. An `invalid_block`
+    report verifies, because it is an honest statement about a *contextual*
+    check, and convicts nobody, because nobody else can re-run it.
+    """
     s = _signers(["watcher"])
     msg = FaultReport.message(CHAIN, "watcher", "lazy_attestation", 1, 1,
                               "lazy", [])
-    fr = FaultReport(reporter="watcher", public_hex=s["watcher"].public_hex,
-                     kind="lazy_attestation", height=1, epoch=1, detail="lazy",
-                     evidence=(), chain_id=CHAIN,
-                     signature=s["watcher"].sign(msg))
-    assert fr.verify() and not fr.substantiated()
-    assert faulted_from([fr]) == ()
+    empty = FaultReport(reporter="watcher", public_hex=s["watcher"].public_hex,
+                        kind="lazy_attestation", height=1, epoch=1,
+                        detail="lazy", evidence=(), chain_id=CHAIN,
+                        signature=s["watcher"].sign(msg))
+    assert not empty.verify() and not empty.substantiated()
+    assert empty.accused() == ()
+
+    msg = FaultReport.message(CHAIN, "watcher", "invalid_block", 1, 1,
+                              "the tip moved", [])
+    word = FaultReport(reporter="watcher", public_hex=s["watcher"].public_hex,
+                       kind="invalid_block", height=1, epoch=1,
+                       detail="the tip moved", evidence=(), chain_id=CHAIN,
+                       signature=s["watcher"].sign(msg))
+    assert word.verify() and not word.substantiated()
+    assert word.accused() == ()
+    assert faulted_from([empty, word]) == ()
 
 
 def test_an_unsigned_report_faults_nobody():

@@ -403,14 +403,18 @@ class Node:
                            signature=self.signer.sign(msg))
 
     def report(self, kind: str, height: int, epoch: int, detail: str,
-               evidence=()) -> FaultReport:
+               evidence=(), subject=None) -> FaultReport:
+        """`subject` is the block a `lazy_attestation` convicts on — it travels
+        with the report because a verifier has to re-run the check."""
         evidence = tuple(evidence)
+        subject_hash = "" if subject is None else subject.hash()
         msg = FaultReport.message(self.chain_id, self.id, kind, height, epoch,
-                                  detail, [sp.block_hash for sp in evidence])
+                                  detail, [sp.block_hash for sp in evidence],
+                                  subject_hash)
         return FaultReport(reporter=self.id, public_hex=self.public_hex,
                            kind=kind, height=height, epoch=epoch, detail=detail,
                            evidence=evidence, chain_id=self.chain_id,
-                           signature=self.signer.sign(msg))
+                           subject=subject, signature=self.signer.sign(msg))
 
     # ── chain advance ────────────────────────────────────────────────────────
 

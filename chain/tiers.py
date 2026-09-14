@@ -198,7 +198,8 @@ class TierWorld:
                 # parameter has been on `apply` since part two and the network
                 # path always passed nothing, so a provable fault cost its
                 # author exactly nothing.
-                reg.apply(child.roll, faulted=faulted_from(child.faults))
+                reg.apply(child.roll,
+                          faulted=faulted_from(child.faults, self.params))
         for founding in block.foundings:
             self._found_grid(founding)
         self.height = block.header.height
@@ -585,8 +586,8 @@ class LocalWorkload:
         roll = self.world.roll_for(self.grid_id)
         prev_cert = self.world.prev_certs.get(self.grid_id)
         faults = tuple(fr for fr in self.world.pending_faults
-                       if fr.substantiated() and fr.verify())
-        faulted = faulted_from(faults)
+                       if fr.verify() and fr.substantiated(self.world.params))
+        faulted = faulted_from(faults, self.world.params)
         header = self._header(
             chosen, delta, roll,
             self._register_after(roll, faulted), leader.chain_id,
@@ -634,13 +635,13 @@ class LocalWorkload:
         for fr in block.faults:
             if not fr.verify():
                 return False, f"fault report from {fr.reporter} is not signed"
-            if not fr.substantiated():
+            if not fr.substantiated(self.world.params):
                 # A leader that could have a claim believed without evidence
                 # could suspend anyone it disliked, so a report that does not
                 # prove itself does not travel — it fails the block.
                 return False, (f"fault report from {fr.reporter} does not "
                                f"substantiate itself ({fr.kind})")
-        faulted = faulted_from(block.faults)
+        faulted = faulted_from(block.faults, self.world.params)
 
         # Derived from the certificate *in the block*, not from anything this
         # node assembled: that is what makes it the same for everyone.

@@ -67,11 +67,12 @@ class Seat:
         self.pending: dict = {}       # block_hash -> header awaiting a body
         self._signed_height = 0       # highest height a leader signed for
         self._reported_lazy: set = set()
-        # Part three's open item, made runnable.  A lazy seat attests without
-        # validating: it is in the fault table because the design names it,
-        # and until now `behaviour` had one branch on the network path —
+        # Part three's open item, made runnable and then made costly.  A lazy
+        # seat attests without validating: it is in the fault table because the
+        # design names it, and `behaviour` had one branch on the network path —
         # `silent` — so nothing could even produce the fault, let alone catch
-        # it.  A fault nobody can run is a fault nobody can test.
+        # it.  A fault nobody can run is a fault nobody can test, and a fault
+        # nobody can prove is a fault nobody can charge for: see `catch_lazy`.
         self.lazy = lazy
         self.validated = None         # (block_hash, ok, why)
         self.reacted = False
@@ -265,48 +266,6 @@ class Seat:
         block.quorum_cert = cert
         return block, cert
 
-    def catch_lazy(self):
-        """Attesters that signed a block this seat found invalid.
-
-        The one thing that *can* be proved about laziness, and it has the same
-        shape as equivocation: the evidence is a signed statement whose author
-        could not have made it honestly.  An attestation names a block hash and
-        is signed by a roster key; if that block does not validate, then either
-        the attester did not check it or it checked and lied, and neither is a
-        thing an honest seat does.  Any third party can re-run the check.
-
-        What this does *not* do, and the boundary is deliberate: the report
-        does not change anyone's standing.  `GridRegister.apply` takes a
-        `faulted` set and the network path passes none, because acting on a
-        fault means every node agreeing about it, and that means the fault
-        travelling in the block — a format change nobody has designed. So this
-        makes laziness *provable* and leaves it unpunished, which is one step
-        and not two.
-
-        And the honest limit on top of that: laziness is only catchable when
-        there is something to catch.  A lazy seat in a network whose blocks are
-        all valid attests to valid blocks and is invisible, which is also to
-        say it has done no harm.
-        """
-        if self.validated is None or self.validated[1]:
-            return ()
-        block_hash, _, why = self.validated
-        culprits = []
-        for att in list(self.env.attestations.values()) + \
-                list(self.env.shadow.values()):
-            if att.block_hash != block_hash or att.node_id == self.node.id:
-                continue
-            if att.node_id in self._reported_lazy:
-                continue
-            self._reported_lazy.add(att.node_id)
-            culprits.append(att)
-        if culprits:
-            self.env.add_fault(self.node.report(
-                "lazy_attestation", self.height, self.epoch,
-                f"attested to a block that does not validate: {why[:70]}",
-                tuple(culprits)))
-        return tuple(a.node_id for a in culprits)
-
     def why_not(self) -> str:
         if self.env.substantiated_equivocation() is not None:
             return "leader equivocated"
@@ -365,28 +324,39 @@ class Seat:
         """Attesters that signed a block this seat found invalid.
 
         The one thing that *can* be proved about laziness, and it has the same
-        shape as equivocation: the evidence is a signed statement whose author
-        could not have made it honestly.  An attestation names a block hash and
-        is signed by a roster key; if that block does not validate, then either
-        the attester did not check it or it checked and lied, and neither is a
-        thing an honest seat does.  Any third party can re-run the check.
+        shape as equivocation: a signed statement its author could not have
+        made honestly. An attestation names a block hash and is signed by a
+        roster key; if that block does not validate, then either the attester
+        did not check it or it checked and lied.
 
-        What this does *not* do, and the boundary is deliberate: the report
-        does not change anyone's standing.  `GridRegister.apply` takes a
-        `faulted` set and the network path passes none, because acting on a
-        fault means every node agreeing about it, and that means the fault
-        travelling in the block — a format change nobody has designed. So this
-        makes laziness *provable* and leaves it unpunished, which is one step
-        and not two.
+        What separates a name in a log from a name in the register is whether
+        a third party can re-run the check. Review B1 is the whole of that
+        distinction:
 
-        And the honest limit on top of that: laziness is only catchable when
-        there is something to catch.  A lazy seat in a network whose blocks are
-        all valid attests to valid blocks and is invisible, which is also to
-        say it has done no harm.
+        * the block's own bytes contradict each other — a `tx_root` that is not
+          the root of the transactions under it, a transaction that does not
+          authenticate — and then anybody holding the block reaches the same
+          verdict, this epoch or next year. The report carries the block, it
+          proves itself, and `faulted_from` suspends the attesters.
+        * the block failed a *contextual* check — an input already spent, a tip
+          that has moved — and then nobody can re-derive the verdict later.
+          The names go in the log and no report travels, because a claim a
+          validator cannot check is a claim a leader could invent about anyone
+          it disliked.
+
+        Returns the names either way; the difference is what gets filed.
+
+        The honest limit on top of that: laziness is only catchable when there
+        is something to catch. A lazy seat in a network whose blocks are all
+        valid attests to valid blocks and is invisible, which is also to say it
+        has done no harm.
         """
+        from ..faults import reportable, self_evident_flaw
+
         if self.validated is None or self.validated[1]:
             return ()
         block_hash, _, why = self.validated
+        block = self.blocks.get(block_hash)
         culprits = []
         for att in list(self.env.attestations.values()) + \
                 list(self.env.shadow.values()):
@@ -396,11 +366,17 @@ class Seat:
                 continue
             self._reported_lazy.add(att.node_id)
             culprits.append(att)
-        if culprits:
+        if not culprits:
+            return ()
+
+        flaw = (None if block is None
+                else self_evident_flaw(block, self.node.params,
+                                       chain_id=self.chain_id))
+        if flaw is not None and reportable(block):
             self.env.add_fault(self.node.report(
                 "lazy_attestation", self.height, self.epoch,
-                f"attested to a block that does not validate: {why[:70]}",
-                tuple(culprits)))
+                f"attested to a block that contradicts itself: {flaw[:70]}",
+                tuple(culprits), subject=block))
         return tuple(a.node_id for a in culprits)
 
     def why_not(self) -> str:

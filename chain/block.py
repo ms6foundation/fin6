@@ -148,16 +148,35 @@ class Attestation:
         return verify_sig(self.public_hex, msg, self.signature)
 
 
+#: The kinds whose evidence proves the claim, so a register can act on them.
+EQUIVOCATION = "equivocation"
+LAZY_ATTESTATION = "lazy_attestation"
+INVALID_BLOCK = "invalid_block"
+SELF_PROVING = (EQUIVOCATION, LAZY_ATTESTATION)
+
+
 @dataclass(frozen=True)
 class FaultReport:
     """A signed complaint.
 
-    kind="equivocation" is self-substantiating: the evidence is two validly
-    signed proposals from one leader at one height, and any party can check it.
+    Three kinds, and what separates them is not severity — it is whether a
+    third party holding the report can reach the same verdict.
 
-    kind="invalid_block" is only the reporter's word — a recipient that wants to
-    act on it re-validates the block itself.  It is carried so a ceremony can
-    end promptly rather than waiting out the round schedule.
+    `equivocation` is self-substantiating: two validly signed proposals from
+    one leader at one height, and anybody can see it.
+
+    `lazy_attestation` is self-substantiating too, and that is review B1's
+    whole subject. The evidence is an attestation over a block whose own bytes
+    contradict each other — see `chain/faults.self_evident_flaw`. The attester
+    either did not check or checked and lied, and a verifier a year later
+    re-runs exactly the check the reporter ran, because the check needs the
+    block and nothing else. The block travels in `subject`, which is what makes
+    the report stand on its own and what costs the bytes.
+
+    `invalid_block` is only the reporter's word — the block failed a *contextual*
+    check (an input already spent, a tip that has moved), and re-deriving that
+    needs a ledger state nobody keeps. It is carried so a ceremony can end
+    promptly rather than waiting out the round schedule, and it convicts nobody.
     """
     reporter: str
     public_hex: str
@@ -168,10 +187,15 @@ class FaultReport:
     evidence: tuple = field(default=(), repr=False)
     signature: str = ""
     chain_id: str = ""
+    #: The block the evidence is about, when checking the claim means checking
+    #: the block. Only `lazy_attestation` carries one: equivocation is proved
+    #: by the two proposals alone, and an `invalid_block` report cannot be
+    #: proved by anything the report could carry.
+    subject: object = field(default=None, repr=False)
 
     @staticmethod
     def message(chain_id, reporter, kind, height, epoch, detail,
-                evidence_hashes) -> bytes:
+                evidence_hashes, subject_hash: str = "") -> bytes:
         """The statement a reporter signs.
 
         `chain_id` is first because every other signed statement in this
@@ -180,35 +204,66 @@ class FaultReport:
         on any other: the same replay the hello's `chain_id` field exists to
         stop, in the one signed object that had been left out of the rule.
 
-        Nothing on chain depended on that, because faults are not yet carried
-        in blocks (the register takes a `faulted` set and the network path
-        passes none).  Which is the argument for fixing it now rather than
-        after: the shape of a signed statement is a format decision, and this
-        one is still free.
+        Nothing on chain depended on that when it was added, because faults
+        were not yet carried in blocks.  They are now (review B1), which is the
+        argument for having fixed it then rather than after: the shape of a
+        signed statement is a format decision, and it was still free.
         """
         return h_bytes("fault", chain_id, reporter, kind, height, epoch,
-                       detail, list(evidence_hashes))
+                       detail, list(evidence_hashes), subject_hash)
 
     def evidence_hashes(self):
         return [sp.block_hash for sp in self.evidence]
 
+    def subject_hash(self) -> str:
+        return "" if self.subject is None else self.subject.hash()
+
     def key(self) -> str:
         return h_hex("fault-key", self.chain_id, self.reporter, self.kind,
                      self.height, self.epoch, self.detail,
-                     self.evidence_hashes())
+                     self.evidence_hashes(), self.subject_hash())
 
     def verify(self) -> bool:
         msg = self.message(self.chain_id, self.reporter, self.kind,
                            self.height, self.epoch, self.detail,
-                           self.evidence_hashes())
+                           self.evidence_hashes(), self.subject_hash())
         if not verify_sig(self.public_hex, msg, self.signature):
             return False
-        if self.kind == "equivocation":
+        if self.kind == EQUIVOCATION:
             return self.substantiated()
+        if self.kind == LAZY_ATTESTATION:
+            # Everything checkable *without* the chain parameters: the report
+            # carries a block, the attestations are real and name that block.
+            # Whether the block is actually flawed is `substantiated`, because
+            # that needs the parameters — and the two questions are separate on
+            # purpose, since a seat relaying a report has to be able to tell a
+            # malformed one from one it cannot yet judge.
+            return self._lazy_well_formed()
         return True
 
-    def substantiated(self) -> bool:
-        """True when the attached evidence proves the claim on its own."""
+    def accused(self, params=None) -> tuple:
+        """Who this report convicts, if it proves itself — and nobody if not.
+
+        A pure function of the report, which is the requirement: the faulted
+        set feeds the register root, so every node has to derive the same names
+        from the same bytes.
+        """
+        if not self.substantiated(params):
+            return ()
+        if self.kind == "equivocation":
+            return (self.evidence[0].leader_id,)
+        return tuple(sorted({a.node_id for a in self.evidence}))
+
+    def substantiated(self, params=None) -> bool:
+        """True when the attached evidence proves the claim on its own.
+
+        `params` is needed only for `lazy_attestation`, because checking a
+        block means checking its transactions against the chain's parameters.
+        Without them the report is *unproven rather than false* — a caller that
+        cannot check has to say so, not vote.
+        """
+        if self.kind == LAZY_ATTESTATION:
+            return self._lazy_substantiated(params)
         if self.kind != "equivocation":
             return False
         if len(self.evidence) != 2:
@@ -220,6 +275,41 @@ class FaultReport:
                 and a.height == b.height == self.height
                 and a.epoch == b.epoch == self.epoch
                 and a.block_hash != b.block_hash)
+
+    def _lazy_substantiated(self, params) -> bool:
+        """An attestation over a block that contradicts itself.
+
+        Everything here is re-derived: the block is the one the attestations
+        name, each attestation verifies under the key it carries, and the block
+        really does have a flaw that needs nothing but the block to see. The
+        reporter's own signature is checked in `verify`; the reporter's *claim*
+        is checked here, and the two are deliberately separate — a report that
+        is signed and wrong is worth exactly nothing.
+        """
+        from .faults import self_evident_flaw
+
+        if params is None or not self._lazy_well_formed():
+            return False
+        try:
+            return self_evident_flaw(self.subject, params,
+                                     chain_id=self.chain_id) is not None
+        except Exception:
+            return False
+
+    def _lazy_well_formed(self) -> bool:
+        """The part of a lazy report that needs no chain parameters."""
+        if self.subject is None or not self.evidence:
+            return False
+        try:
+            block_hash = self.subject.hash()
+            for att in self.evidence:
+                if getattr(att, "block_hash", None) != block_hash:
+                    return False
+                if att.epoch != self.epoch or not att.verify():
+                    return False
+            return True
+        except Exception:
+            return False
 
 
 @dataclass(frozen=True)

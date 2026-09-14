@@ -517,7 +517,7 @@ class NodeProcess:
         # would only get the next leader's block rejected.
         self.world.pending_faults = tuple(
             fr for fr in self.seat.env.faults.values()
-            if fr.substantiated() and fr.verify())
+            if fr.verify() and fr.substantiated(self.world.params))
         if self.world.pending_faults:
             self.log(f"epoch {epoch}: carrying "
                      f"{len(self.world.pending_faults)} substantiated fault "

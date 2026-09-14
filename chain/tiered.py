@@ -303,21 +303,25 @@ def faults_digest(faults) -> str:
     return h_hex("faults", sorted(fr.key() for fr in faults or ()))
 
 
-def faulted_from(faults) -> tuple:
+def faulted_from(faults, params=None) -> tuple:
     """Who a block's fault reports prove to be at fault.
 
-    A pure function of the block, which is the whole requirement: the
-    `faulted` set feeds `GridRegister.apply` and therefore the register root,
-    so every node has to derive the same set from the same bytes.  Only
-    self-substantiating reports count — `FaultReport.substantiated` is
-    `kind == "equivocation"` and evidence that proves the claim on its own —
-    because a claim a validator cannot check is a claim a leader could invent
-    about anyone it disliked.
+    A pure function of the block and the chain parameters, which is the whole
+    requirement: the `faulted` set feeds `GridRegister.apply` and therefore the
+    register root, so every node has to derive the same set from the same
+    bytes.  Only self-proving reports count — an equivocating leader, and an
+    attester that signed a block whose own bytes contradict each other —
+    because a claim a validator cannot re-check is a claim a leader could
+    invent about anyone it disliked.
+
+    `params` is what a `lazy_attestation` needs to be re-checked; without them
+    such a report convicts nobody, which is the safe direction and is why the
+    one caller that matters (`apply_network_block`) always passes them.
     """
     out = set()
     for fr in faults or ():
-        if fr.substantiated() and fr.verify():
-            out.add(fr.evidence[0].leader_id)
+        if fr.verify():
+            out.update(fr.accused(params))
     return tuple(sorted(out))
 
 
