@@ -38,3 +38,9 @@ secrets.*
 
 # Scratch left by a sandbox that cannot delete files
 _to_delete/
+
+# Web (kept out of the repo: currently holds index.html, a static web page)
+web/
+
+# vibe (kept out of the repo: currently holds design.md, a solution design)
+vibe/
