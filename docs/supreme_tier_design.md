@@ -256,13 +256,13 @@ change and has nowhere to put one is not.
 | 1 | ~~**Road A** — seat the super grids' members, not their leaders~~ **Done** | the committee, which is where §2's numbers live | one selection rule; latency and certificate size |
 | 2 | ~~**§7** — tier-1/2 attendance in the home-grid register~~ **Done** | absence at the top being free | a roll derivation and two governance decisions. See §9.2 |
 | 3 | ~~**Road C** — C1's views at the supreme tier~~ **Done in process** | the dead leader | budget arithmetic; reuses `viewchange.py`. See §9.4 |
-| 4 | **Road B** — leaderless assembly with a set-preference rule | the leader as a role at tier 2 | a reconciliation rule and a fetch bound |
+| 4 | **Road B** — leaderless assembly with a set-preference rule | the leader as a role at tier 2 | a reconciliation rule and a fetch bound. **Left**, deliberately — see §9.5 |
 | 5 | ~~**§8** — reserve activation heights in the genesis document~~ **Done** | keeping the structural road open | a number, before genesis. See §9.3 |
 
 Items 1–4 are live-network changes and can be sequenced; item 5 is not, and is
 the only part of C2 that expires at genesis.
 
-## 9.1 Built — Road A
+### 9.1 Built — Road A
 
 `supreme_members` is the union of the seats of every super grid that finalised,
 rather than one leader from each. Two things fell out of writing it that the
@@ -291,7 +291,7 @@ lost the epoch. It is asserted in `test_a_committee_of_leaders_tolerated_no_abse
 against a real epoch rather than an example, so it fails if the seating ever
 narrows again.
 
-## 9.2 Built — service at the upper tiers
+### 9.2 Built — service at the upper tiers
 
 Three counters on `MemberRecord` — `higher_seated`, `higher_attended`,
 `higher_led` — credited into each member's **home grid** register, committed in
@@ -342,7 +342,7 @@ block touches, and the store commit then tried to write a register for a grid
 this block had merged away — a `KeyError` that C4 had left behind and that only
 a block both merging a grid *and* touching it could reach.
 
-## 9.3 Built — the slots are reserved
+### 9.3 Built — the slots are reserved
 
 `protocol.RESERVED_SLOTS` schedules protocol 2 at height 1,596,840 and protocol
 3 at 4,790,520 — about one year and three years at the shipped 19.749 s epoch —
@@ -366,7 +366,7 @@ the chain id is, which is the whole reason this had to happen before genesis
 rather than after — so the founders re-ratified and the mint, which binds to
 `mint_context()`, was minted again.
 
-## 9.4 Built — views at the top, and what is still missing
+### 9.4 Built — views at the top, and what is still missing
 
 The supreme phase now runs up to `SUPREME_VIEWS` views. Each reseats the whole
 committee from a fresh seed and skips the leaders already tried — exactly what
@@ -393,6 +393,26 @@ ceremony; a bare node id still means everywhere. The test that matters reads
 straight now — same committee, same view-0 seating, one view lost, the next one
 carries it — and the budget test asserts the thing C2 is actually about: the
 tiers below did their work and lost it.
+
+### 9.5 Not built — Road B, and why not yet
+
+Four of the five are in. Road B is left, and the reason is the same one that
+decided B5: its gain is on a surface that does not exist yet.
+
+What Road B buys is that *any* seat can assemble the block, so no single node's
+silence costs a slice. In one process that is already covered — Road C reseats
+the committee and the next leader carries it, and a ceremony there finalises
+for every seat or for none. The gain appears when the upper tiers run over
+sockets, where a slice is wall-clock time and a proposal has to travel; and
+that is also where its cost appears, because the rule needs a **fetch bound**:
+a proposal carrying super blocks a seat does not hold is a larger set, and it
+is also a denial vector wearing a larger set's clothes. That bound is a number,
+and this repository's rule for numbers is that they are measured rather than
+argued — `chain/measure.py` exists precisely so that the measuring has
+somewhere to go.
+
+So Road B waits for the first live run of three tiers, which is also part
+thirteen's item 5 and the thing that will correct at least one figure in §2.
 
 ## 10. What this does not do
 
