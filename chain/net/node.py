@@ -19,6 +19,7 @@ is stage 2 and is honestly missing.
 """
 from __future__ import annotations
 
+import glob
 import json
 import os
 import queue
@@ -89,6 +90,14 @@ class NodeProcess:
         #: only logged, because it is the number that says whether some wallet
         #: out there is building transactions nobody can include.
         self.homeless = 0
+        #: The snapshot this node is currently fetching, if any: the manifest
+        #: it was offered, the chunks that have arrived, and who is sending
+        #: them.  One at a time, because adopting a state is not something to
+        #: do twice concurrently.
+        self._inbound_snap: dict | None = None
+        #: (height, path, manifest) of the export this node is serving — one
+        #: copy per height rather than one per request (review C7).
+        self._snap_cache = None
         # A node speaks only for itself.  The rest of the roster is a set of
         # public keys and an address, not a set of objects.
         self.validators = {n.node_id: n.public_hex for n in self.doc.nodes}
@@ -853,35 +862,55 @@ class NodeProcess:
         self.log(f"catch-up: served {len(bodies)} bodies "
                  f"({start}-{end}) to {who}")
 
-    def _serve_snapshot(self, who: str):
-        """Export this node's state and hand it over with the header that
-        proves it.
+    def _snapshot_file(self):
+        """This node's state on disk, exported once per height.
 
-        One frame, which is the simple first cut and not the end of the story:
-        `store/snapshot.py` is chunked precisely so that ranges can come from
-        different peers, and a state larger than a frame needs that rather
-        than a bigger frame.
+        Exporting is a full copy of the state, and it used to happen once per
+        *request*: three peers behind the body window meant three copies, on
+        the thread that also has to attest.  A height's snapshot is the same
+        for everybody who asks, so it is written once and served from there
+        until the height moves (review C7).
+        """
+        height = self.world.height
+        if self._snap_cache and self._snap_cache[0] == height:
+            return self._snap_cache
+        path = os.path.join(self.dir, f"serve-{height}.snap")
+        manifest = snap.export(self.node.state, self.world.registers, path,
+                               chunk=snap.SERVE_CHUNK)
+        for stale in glob.glob(os.path.join(self.dir, "serve-*.snap")):
+            if stale != path:
+                try:
+                    os.remove(stale)
+                except OSError:
+                    pass
+        self._snap_cache = (height, path, manifest)
+        return self._snap_cache
+
+    def _serve_snapshot(self, who: str):
+        """Hand over the *manifest*, and let the peer ask for the ranges.
+
+        It used to be one frame carrying the whole state, which worked until a
+        state outgrew a frame and then stopped working entirely — with a log
+        line saying chunked transfer was not built.  `store/snapshot.py` was
+        chunked from the beginning precisely so ranges could be asked for one
+        at a time, and this is that: the manifest says what the chunks are and
+        commits a digest for each, so the peer knows what to ask for, can check
+        every piece as it lands, and could ask different peers for different
+        ranges.
         """
         rows, _ = self.store.headers(since=self.world.height,
                                      to=self.world.height, limit=1)
         if not rows:
             return
         height, header, cert = rows[0]
-        path = os.path.join(self.dir, "outbound.snap")
         try:
-            snap.export(self.node.state, self.world.registers, path)
-            with open(path, "rb") as fh:
-                blob = fh.read()
+            _, _, manifest = self._snapshot_file()
         except Exception as exc:                     # never die serving a peer
             self.log(f"snapshot: cannot export: {type(exc).__name__}: {exc}")
             return
-        if len(blob) > MAX_SNAPSHOT:
-            self.log(f"snapshot: {len(blob)} bytes is past what one frame "
-                     f"carries; chunked transfer is not built")
-            return
         self.mesh.send(who, "snapshot",
                        {"height": height, "header": header, "cert": cert,
-                        "blob": blob,
+                        "manifest": manifest,
                         # What the next block's roll is derived from. Not
                         # proved by the header, and it does not need to be:
                         # it is checkable one block later, because a wrong
@@ -890,10 +919,138 @@ class NodeProcess:
                         # fresher snapshot.
                         "certs": self.world.prev_certs,
                         "leaders": self.world.prev_leaders})
-        self.log(f"snapshot: served height {height} ({len(blob)} bytes) "
-                 f"to {who}")
+        self.log(f"snapshot: offered height {height} to {who} — "
+                 f"{len(manifest.get('parts', ()))} chunks")
 
-    def _adopt_snapshot(self, who: str, payload: dict):
+    def _serve_chunk(self, who: str, payload: dict):
+        """One range of the snapshot this node last offered."""
+        try:
+            kind, index = int(payload.get("kind")), int(payload.get("index"))
+        except (TypeError, ValueError):
+            return
+        try:
+            height, path, _ = self._snapshot_file()
+            body = snap.read_chunk(path, kind, index)
+        except Exception as exc:
+            self.log(f"snapshot chunk {kind}/{index}: "
+                     f"{type(exc).__name__}: {exc}")
+            return
+        if len(body) > MAX_SNAPSHOT:
+            self.log(f"snapshot chunk {kind}/{index} is {len(body)} bytes, "
+                     f"past what one frame carries")
+            return
+        self.mesh.send(who, "chunk", {"height": height, "kind": kind,
+                                      "index": index, "payload": body})
+
+    def _begin_snapshot(self, who: str, payload: dict):
+        """A peer has offered a state.  Check the header, then ask for the
+        ranges.
+
+        The header is checked *first* and the chunks are asked for only if it
+        holds, so a peer that invents a state cannot make this node spend a
+        single frame fetching it.
+        """
+        header, cert = payload.get("header"), payload.get("cert")
+        manifest = payload.get("manifest")
+        if header is None or cert is None or not isinstance(manifest, dict):
+            return
+        height = int(getattr(header, "height", 0) or 0)
+        if height <= self.world.height:
+            return
+        ok, why = self._snapshot_header_holds(who, header, cert)
+        if not ok:
+            self.log(f"snapshot from {who} refused: {why}")
+            return
+        parts = manifest.get("parts") or ()
+        if not parts:
+            self.log(f"snapshot from {who} refused: a manifest with no chunks")
+            return
+        self._inbound_snap = {
+            "from": who, "height": height, "header": header, "cert": cert,
+            "manifest": manifest, "certs": payload.get("certs"),
+            "leaders": payload.get("leaders"), "chunks": {},
+            "want": [(int(k), int(i)) for k, i, _, _ in parts],
+        }
+        self.log(f"snapshot: {who} offers height {height} in "
+                 f"{len(parts)} chunks; asking")
+        self._ask_for_chunks()
+
+    def _ask_for_chunks(self, limit: int = 4):
+        """Ask for the next few ranges we are missing.
+
+        A few at a time rather than all of them, for the same reason catch-up
+        asks for eight blocks and not eight hundred: the peer answering is also
+        running a ceremony.
+        """
+        pending = self._inbound_snap
+        if not pending:
+            return
+        asked = 0
+        for kind, index in pending["want"]:
+            if (kind, index) in pending["chunks"]:
+                continue
+            self.mesh.send(pending["from"], "getchunk",
+                           {"kind": kind, "index": index})
+            asked += 1
+            if asked >= limit:
+                break
+
+    def _take_chunk(self, who: str, payload: dict):
+        """One range arrived.  Keep it if it is one we asked for."""
+        pending = self._inbound_snap
+        if not pending or who != pending["from"]:
+            return
+        try:
+            key = (int(payload.get("kind")), int(payload.get("index")))
+        except (TypeError, ValueError):
+            return
+        body = payload.get("payload")
+        if key not in pending["want"] or not isinstance(body, (bytes,
+                                                               bytearray)):
+            return
+        pending["chunks"][key] = bytes(body)
+        if len(pending["chunks"]) < len(pending["want"]):
+            self._ask_for_chunks()
+            return
+        self._finish_snapshot()
+
+    def _snapshot_header_holds(self, who: str, header, cert):
+        gid = self.grid_id()
+        # The header's own figure, not this node's register.  A snapshot is by
+        # definition from a height this node has not reached, so its register
+        # is the wrong one to ask: membership survives a roll and standing does
+        # not, and across a founding the answer was wrong by one.  The number
+        # travels with the block that needed it now (review B4), and a full
+        # node refused that block if it did not match the register the ceremony
+        # ran under.
+        quorum = getattr(header, "quorum", 0) or self.world.registers[gid].quorum(
+            self.world.params.quorum_num, self.world.params.quorum_den)
+        ok, why = cert.verify(quorum, header.hash(), validators=self.validators)
+        return (True, "ok") if ok else (False, f"certificate {why}")
+
+    def _finish_snapshot(self):
+        """Every range is in: assemble, fold, and adopt or refuse."""
+        pending = self._inbound_snap
+        self._inbound_snap = None
+        who, header = pending["from"], pending["header"]
+        path = os.path.join(self.dir, "inbound.snap")
+        try:
+            snap.write_parts(pending["manifest"],
+                             [(k, i, p) for (k, i), p
+                              in sorted(pending["chunks"].items())], path)
+            state, registers = snap.load(path, self.world.params,
+                                         expect_roots=snap.roots_of(header))
+        except Exception as exc:
+            self.log(f"snapshot from {who} refused: "
+                     f"{type(exc).__name__}: {exc}")
+            return
+        self._adopt_snapshot(who, {"header": header, "cert": pending["cert"],
+                                   "certs": pending["certs"],
+                                   "leaders": pending["leaders"]},
+                             state=state, registers=registers)
+
+    def _adopt_snapshot(self, who: str, payload: dict, *, state=None,
+                        registers=None):
         """Take a peer's state, having proved it against a header first.
 
         The order is the whole of the security: the certificate is checked
@@ -907,36 +1064,16 @@ class NodeProcess:
         nobody and needs an archive; this trusts the quorum that signed one
         header.  The difference should never be blurred.
         """
-        header, cert, blob = (payload.get("header"), payload.get("cert"),
-                              payload.get("blob"))
-        if header is None or cert is None or not blob:
+        header, cert = payload.get("header"), payload.get("cert")
+        if header is None or cert is None or state is None:
             return
         height = int(getattr(header, "height", 0) or 0)
         if height <= self.world.height:
             return
         gid = self.grid_id()
-        # The header's own figure, not this node's register.  A snapshot is by
-        # definition from a height this node has not reached, so its register
-        # is the wrong one to ask: membership survives a roll and standing does
-        # not, and across a founding the answer was wrong by one.  The number
-        # travels with the block that needed it now (review B4), and a full
-        # node refused that block if it did not match the register the ceremony
-        # ran under.
-        quorum = getattr(header, "quorum", 0) or self.world.registers[gid].quorum(
-            self.world.params.quorum_num, self.world.params.quorum_den)
-        ok, why = cert.verify(quorum, header.hash(), validators=self.validators)
+        ok, why = self._snapshot_header_holds(who, header, cert)
         if not ok:
-            self.log(f"snapshot from {who} refused: certificate {why}")
-            return
-        path = os.path.join(self.dir, "inbound.snap")
-        try:
-            with open(path, "wb") as fh:
-                fh.write(blob)
-            state, registers = snap.load(path, self.world.params,
-                                         expect_roots=snap.roots_of(header))
-        except Exception as exc:
-            self.log(f"snapshot from {who} refused: "
-                     f"{type(exc).__name__}: {exc}")
+            self.log(f"snapshot from {who} refused: {why}")
             return
         if state.tip != header.hash():
             self.log(f"snapshot from {who} refused: it names tip "
@@ -1137,8 +1274,18 @@ class NodeProcess:
             return
         if kind == "snapshot":
             if who in self.mesh.connected:
-                self._adopt_snapshot(who, payload if isinstance(payload, dict)
+                self._begin_snapshot(who, payload if isinstance(payload, dict)
                                      else {})
+            return
+        if kind == "getchunk":
+            if who in self.mesh.connected:
+                self._serve_chunk(who, payload if isinstance(payload, dict)
+                                  else {})
+            return
+        if kind == "chunk":
+            if who in self.mesh.connected:
+                self._take_chunk(who, payload if isinstance(payload, dict)
+                                 else {})
             return
         if kind == "blocks":
             if who in self.mesh.connected:

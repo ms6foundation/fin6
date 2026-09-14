@@ -9,6 +9,7 @@ Three such events in the life of a network ended it, with nobody attacking.
 The unit tests here are about the walk forward and the window; the process
 test at the bottom is the one that matters, because it kills a node.
 """
+import glob
 import os
 import shutil
 import tempfile
@@ -381,6 +382,17 @@ def test_a_node_past_the_body_window_recovers_by_state():
                 f"{(mine or {}).get('height')} against {ahead}")
             assert mine["snapshots"]["adopted"] > 0, \
                 "it caught up by replay, so this test proved nothing"
+            # And by chunks, which is what review C7 changed: the offer names
+            # how many ranges it is, and the state arrives one at a time.
+            with open(os.path.join(root, victim, "node.log")) as fh:
+                said = [ln for ln in fh if "offers height" in ln]
+            assert said, "the snapshot did not arrive in chunks"
+            assert "chunks; asking" in said[-1], said[-1]
+            # One export per height, not one per request: the servers each
+            # keep a single file, whatever they were asked for.
+            for node_id in sorted(net.net["nodes"]):
+                kept = glob.glob(os.path.join(root, node_id, "serve-*.snap"))
+                assert len(kept) <= 1, (node_id, kept)
             _assert_one_chain(net, expect=4)
         finally:
             net.down()

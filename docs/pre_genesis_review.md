@@ -538,7 +538,34 @@ so the first definition had never run.
 | C4 | **Grids never merge** | Medium-High | Split works and founding cohorts keep their standing. A network that shrinks keeps grids it cannot fill, and founding seating is permanent because merge does not exist. |
 | C5 | **Apprentice density stalls a grid** | Medium | Apprentices hold seats and cannot make quorum. Admission needs a rate limit tied to attester count. |
 | C6 | **No peer discovery** | Medium | Peers come from the roster and `net.toml`. A network that grows needs joiners to find seats. |
-| C7 | **Body window is 21 minutes** | Medium | Past it, catch-up falls back to `getsnapshot`, which costs the serving node a full state copy on demand and is one frame rather than the chunked ranges `store/snapshot.py` was built for. |
+| C7 | ~~**Body window is 21 minutes**~~ **Done** | Medium | Past it, catch-up falls back to `getsnapshot`, which cost the serving node a full state copy on demand and was one frame rather than the chunked ranges `store/snapshot.py` was built for. Both halves fixed — §4.3. |
+
+### 4.3 · C7, resolved: a state that arrives in pieces
+
+Two different faults behind one line. The transfer was **one frame**, so a
+state larger than 6 MB could not be sent at all — the code said so, in a log
+line that told an operator chunked transfer was not built. And the serving node
+**exported a full copy of its state per request**, on the thread that also has
+to attest, so three peers behind the window meant three copies.
+
+`store/snapshot.py` was chunked from the beginning, with a digest on every
+chunk, precisely so ranges could be fetched separately. What was missing was
+the manifest committing to them and a wire protocol using it. Both exist now:
+the manifest lists every chunk with its size and digest, `getsnapshot` offers
+the manifest, and `getchunk` serves one range at a time (`SERVE_CHUNK` = 10,000
+values, about 680 KB, against a 6 MB ceiling). A receiver checks the header and
+its certificate *first* — so a peer that invents a state cannot make it spend a
+frame fetching one — then asks for a few ranges at a time, checks each against
+the digest the manifest commits, and folds only when it has them all.
+
+That last part is the difference worth having: a bad range is caught on
+arrival, by name, rather than at the fold where all anybody knows is that the
+roots do not match.
+
+Serving is memoised per height. One export, one file, served to everybody who
+asks until the height moves; the stale ones are deleted. The live test asserts
+both halves — the victim's log says how many chunks it was offered, and each
+server is left holding exactly one export.
 
 ### 4.2 · C1, resolved: a dead leader costs a view, not an epoch
 
