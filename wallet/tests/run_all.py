@@ -8,7 +8,8 @@ import sys
 
 from chain.tests.runner import run
 
-MODULES = ["test_wallet", "test_disclosure", "test_address_format"]
+MODULES = ["test_wallet", "test_disclosure", "test_address_format",
+           "test_genesis_mint"]
 
 
 def main(pattern: str | None = None) -> int:

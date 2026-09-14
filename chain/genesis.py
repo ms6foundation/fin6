@@ -48,6 +48,21 @@ ERA0_FIELDS = ("root", "pub_seed", "tree_height", "turns", "scheme",
                "contributions")
 
 
+#: The mint block's field names, in the order a document writes them.
+MINT_FIELDS = ("total", "outputs", "digest")
+
+
+def canonical_mint(mint: dict) -> dict:
+    """Total, order-fixing, and silent about whether the contents are right."""
+    if not mint:
+        return {}
+    out = {name: (list(mint[name]) if name == "outputs" else mint[name])
+           for name in MINT_FIELDS if name in mint}
+    for name in sorted(set(mint) - set(MINT_FIELDS)):
+        out[name] = mint[name]
+    return out
+
+
 def canonical_era0(era0: dict) -> dict:
     """Total and order-fixing, so `body()` never depends on how a dict was
     built.  Says nothing about whether the contents are *right* — that is
@@ -127,6 +142,14 @@ class GenesisDocument:
     #: chain/hardening/contrib.py and review A4.  Empty is allowed only for a
     #: test document.
     era0: dict = dataclasses.field(default_factory=dict)
+    #: The genesis mint: `{"total", "outputs", "digest"}`.  The commitments are
+    #: the genesis UTXO set, so they are in the document and every node builds
+    #: the same state from them; the proof that they add up to `total`, and the
+    #: openings sealed to their holders, are in the published artifact the
+    #: digest names.  With a mint the supply carries no values at all, which is
+    #: the point: the total is checkable by anyone and the holdings are private.
+    #: See chain/mint.py and review A5.
+    mint: dict = dataclasses.field(default_factory=dict)
 
     # ── identity ─────────────────────────────────────────────────────────────
 
@@ -151,10 +174,23 @@ class GenesisDocument:
             "activations": protocol.canonical(self.activations),
             "purpose": self.purpose,
             "era0": canonical_era0(self.era0),
+            "mint": canonical_mint(self.mint),
         }
 
     def digest(self) -> str:
         return h_hex("genesis", codec.encode(self.body()))
+
+    def mint_context(self) -> str:
+        """This document without its mint, as one value.
+
+        The mint's proof has to be bound to the document it mints for, and the
+        document commits to the mint's digest — so binding the mint to the
+        *chain id* would be a cycle. One of the two has to be taken a step
+        earlier, and this is that step: everything the document says except
+        where its money came from.
+        """
+        return ID_PREFIX + h_hex(
+            "genesis", codec.encode({**self.body(), "mint": {}}))
 
     @property
     def chain_id(self) -> str:
@@ -365,19 +401,79 @@ class GenesisDocument:
         # for all of it.
         problems.extend(self._era0_problems(hard, ids, caveats))
 
-        # 7. the supply.
-        total = sum(sum(v) for v in self.supply.values())
-        if total != self.declared_total:
-            problems.append(f"issuance sums to {total}, document declares "
-                            f"{self.declared_total}")
-        caveats.append("the supply is issued, not minted: this checks the "
-                       "declared total against the values in the document, "
-                       "which only a party holding the openings can do. A "
-                       "genesis mint transaction would make it checkable by "
-                       "anyone (design §2)")
+        # 7. the supply — issued, or minted.
+        problems.extend(self._supply_problems(caveats))
         caveats.append("the first view seed is a value in the document, not "
                        "the output of a commit-reveal (design §5)")
         return not problems, problems, caveats
+
+    def _supply_problems(self, caveats) -> list:
+        """Where the first money comes from, and who can check how much.
+
+        Two shapes.  **Issued**: the document lists the values and `verify`
+        adds them up — which only a party holding the openings can do, so the
+        one number that says how much money exists is an announcement to
+        everybody else.  **Minted**: the document carries the commitments and
+        the total, and a proof — in the published artifact — that those
+        commitments add up to that total and to nothing else.  Anybody can
+        check it, and nobody learns a single holding.
+
+        A launch document mints.  A test document may issue, because a test
+        wants to hand a fixture some money without a second of proving.
+        """
+        problems = []
+        if not self.mint:
+            total = sum(sum(v) for v in self.supply.values())
+            if total != self.declared_total:
+                problems.append(f"issuance sums to {total}, document declares "
+                                f"{self.declared_total}")
+            if self.purpose == LAUNCH_PURPOSE:
+                problems.append(
+                    "the supply is issued rather than minted: the total is "
+                    "checkable only by a party holding the openings, and "
+                    "reproducible issuance makes every opening derivable from "
+                    "the document (review A5)")
+            else:
+                caveats.append(
+                    "the supply is issued, not minted: this checks the "
+                    "declared total against the values in the document, which "
+                    "only a party holding the openings can do")
+            return problems
+
+        unknown = set(self.mint) - set(MINT_FIELDS)
+        if unknown:
+            problems.append(f"the mint carries unknown fields {sorted(unknown)}")
+        missing = [f for f in MINT_FIELDS if f not in self.mint]
+        if missing:
+            problems.append(f"the mint is missing {missing}")
+            return problems
+
+        values = [v for vs in self.supply.values() for v in vs]
+        if values:
+            problems.append(
+                "a minted document carries no values: the openings are sealed "
+                "to their holders, and a list of amounts beside them is the "
+                "disclosure the mint exists to avoid")
+        if self.mint["total"] != self.declared_total:
+            problems.append(
+                f"the mint totals {self.mint['total']}, the document declares "
+                f"{self.declared_total}")
+        outputs = self.mint["outputs"]
+        if not outputs:
+            problems.append("the mint has no outputs, so the chain starts "
+                            "with no money and no way to make any")
+        if len(set(outputs)) != len(outputs):
+            problems.append("two genesis notes share a commitment")
+        if not isinstance(self.mint["digest"], str) or \
+                len(self.mint["digest"]) != 64:
+            problems.append("the mint's artifact digest is not a digest")
+        caveats.append(
+            f"the mint commits {len(outputs)} genesis notes totalling "
+            f"{self.declared_total:,}; the proof that they add up to it is in "
+            f"the artifact this document's digest names, and "
+            f"`chain.mint.verify_mint` is what checks it. The holdings "
+            f"themselves are sealed to their holders and are not in here")
+        return problems
 
     def _era0_problems(self, hard, ids, caveats) -> list:
         """Era 0's contributed-leaf ceremony, checked from the document alone.
@@ -516,6 +612,7 @@ class GenesisDocument:
                          for v, h in (raw.get("activations") or {}).items()},
             purpose=raw.get("purpose", LAUNCH_PURPOSE),
             era0=canonical_era0(raw.get("era0") or {}),
+            mint=canonical_mint(raw.get("mint") or {}),
         )
         stated = raw.get("chain_id")
         if stated is not None and stated != doc.chain_id:
@@ -607,7 +704,12 @@ def boot(doc: GenesisDocument, *, keyring=dev_keyring, store=None,
     from .tiers import bootstrap_world
     world, wallets = bootstrap_world(
         doc.regions(), doc.supply, params, seed=doc.first_seed,
-        signers=signers, note_seed=doc.digest())
+        signers=signers, note_seed=doc.digest(),
+        # A minted document puts the mint's commitments into the state and
+        # nothing else.  The holders come back empty: opening a genesis note
+        # needs the published artifact and the holder's own key, and neither
+        # is the ledger's business (`wallet.genesis_mint.claim`).
+        mint_cms=tuple(doc.mint["outputs"]) if doc.mint else None)
     world.activations = doc.schedule()
 
     if len(world.topology.grid_ids()) != doc.n_partitions:
@@ -639,6 +741,8 @@ def draft(network: str, node_ids, params: ChainParams,
           keyring=dev_keyring,
           purpose: str = LAUNCH_PURPOSE,
           era0: dict | None = None,
+          mint: dict | None = None,
+          declared_total: int | None = None,
           ratification_threshold: int | None = None) -> GenesisDocument:
     """Assemble an unratified document.  `first_seed` defaults to the roster's
     own digest, which is not a commit-reveal and is marked as such."""
@@ -663,7 +767,13 @@ def draft(network: str, node_ids, params: ChainParams,
         nodes=nodes,
         turn_holders=tuple(x.node_id for x in nodes),
         supply=dict(supply),
-        declared_total=sum(sum(v) for v in supply.values()),
+        # A minted document's total comes from the mint, which is where the
+        # money actually is; an issued one adds up the values it carries.
+        # Passing it explicitly is for the mint ceremony, which has to draft
+        # the document once without its mint to learn what the mint binds to.
+        declared_total=(declared_total if declared_total is not None
+                        else (mint or {}).get(
+                            "total", sum(sum(v) for v in supply.values()))),
         ratification_threshold=(
             ratification_threshold if ratification_threshold is not None
             # Every founder, for a launch; the safety floor for a test
@@ -671,6 +781,7 @@ def draft(network: str, node_ids, params: ChainParams,
             else (n if purpose == LAUNCH_PURPOSE else params.quorum_size(n))),
         purpose=purpose,
         era0=canonical_era0(era0 or {}),
+        mint=canonical_mint(mint or {}),
     )
 
 
@@ -699,21 +810,51 @@ GENESIS_7_IDS = tuple(f"fin6-n{i:02d}" for i in range(1, 8))
 #: Regenerate with `python3 -m chain.hardening.ceremony`.
 GENESIS_7_ERA0 = "config/era0-7.json"
 
+#: The shipped mint: the small block the document carries, and the published
+#: artifact holding the proof and the sealed openings.  Regenerate both with
+#: `python3 -m wallet.genesis_mint`.
+GENESIS_7_MINT = "config/mint-7.json"
+GENESIS_7_MINT_ARTIFACT = "config/mint-7.bin"
+
 
 def load_era0(path: str = GENESIS_7_ERA0) -> dict:
     with open(path) as fh:
         return canonical_era0(json.load(fh))
 
 
+def load_mint(path: str = GENESIS_7_MINT) -> dict:
+    with open(path) as fh:
+        return canonical_mint(json.load(fh))
+
+
+def load_mint_artifact(path: str = GENESIS_7_MINT_ARTIFACT):
+    """The published half: the proof and the sealed openings.
+
+    Separate from the document because it is hundreds of kilobytes, and
+    committed by digest, so the two cannot disagree without one of them
+    failing — the same arrangement as era 0's leaf transcript.
+    """
+    from .mint import GenesisMint
+    with open(path, "rb") as fh:
+        return GenesisMint.decode(fh.read())
+
+
 def draft_seven(network: str = "fin6-genesis-7",
-                era0: dict | None = None) -> GenesisDocument:
-    """The document this repository ships, assembled from scratch."""
+                era0: dict | None = None,
+                mint: dict | None = None) -> GenesisDocument:
+    """The document this repository ships, assembled from scratch.
+
+    The supply carries the holders' names and no values: a launch document
+    mints, so the amounts live in commitments and their openings are sealed to
+    the holders (review A5).
+    """
     from .hardening.params import PRODUCTION
     from .params import LAUNCH
     params = LAUNCH
-    supply = {"treasury": [1000, 900, 800, 700, 600]}
+    supply = {"treasury": []}
     return ratify_all(draft(network, GENESIS_7_IDS, params, PRODUCTION, supply,
-                            era0=era0 if era0 is not None else load_era0()))
+                            era0=era0 if era0 is not None else load_era0(),
+                            mint=mint if mint is not None else load_mint()))
 
 
 if __name__ == "__main__":                                   # pragma: no cover

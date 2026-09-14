@@ -178,11 +178,20 @@ def test_an_invented_digest_fails_the_transcript():
 # ── the document ─────────────────────────────────────────────────────────────
 
 def _doc(**kw):
-    fields = _era0_for(genesis.GENESIS_7_IDS, "t")
+    """A launch document for the shipped roster: small hardening, a real era-0
+    ceremony, and a mint — which is what a launch document is now."""
+    from .test_mint import mint_block_for
+
+    fields = kw.pop("era0", None)
+    if fields is None:
+        fields = _era0_for(genesis.GENESIS_7_IDS, "t")
+    params = __import__("chain.params", fromlist=["LAUNCH"]).LAUNCH
+    common = dict(era0=fields, **kw)
+    skeleton = genesis.draft("t", genesis.GENESIS_7_IDS, params, SMALL,
+                             {"treasury": []}, declared_total=10, **common)
     return genesis.ratify_all(genesis.draft(
-        "t", genesis.GENESIS_7_IDS, __import__(
-            "chain.params", fromlist=["LAUNCH"]).LAUNCH,
-        SMALL, {"treasury": [10]}, era0=kw.pop("era0", fields), **kw))
+        "t", genesis.GENESIS_7_IDS, params, SMALL, {"treasury": []},
+        mint=mint_block_for(skeleton, (10,), params), **common))
 
 
 def test_a_launch_document_without_a_ceremony_is_refused():

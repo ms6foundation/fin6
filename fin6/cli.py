@@ -83,9 +83,11 @@ def cmd_net_down(args):
 def cmd_tx_send(args):
     """Build a transfer from the genesis wallets and gossip it to one node.
 
-    The genesis openings are derivable from the document (see the note in
-    `bootstrap_world`), which is what makes a testnet wallet possible at all
-    and is exactly what the genesis mint of design §2 would replace.
+    A supervisor testnet drafts a *test* document, which issues its supply:
+    the openings are derivable from the document, which is what makes a
+    testnet wallet possible at all.  A launch document mints instead, and
+    then this path does not exist — the money is opened by its holder from
+    the published artifact (`wallet.genesis_mint.claim`) and by nobody else.
     """
     from chain.network import transfer
     from chain.net.frame import pack

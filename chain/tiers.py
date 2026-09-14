@@ -382,7 +382,7 @@ class TierWorld:
 def bootstrap_world(node_regions: dict, endowments: dict, params: ChainParams,
                     seed: str = "genesis", asset: str = "USD",
                     newcomers: dict | None = None, signers: dict | None = None,
-                    note_seed: str | None = None):
+                    note_seed: str | None = None, mint_cms=None):
     """Build a tiered network: topology, genesis registers, holders, nodes.
 
     The founding cohort of every grid starts as attesters — it has to, since a
@@ -408,6 +408,19 @@ def bootstrap_world(node_regions: dict, endowments: dict, params: ChainParams,
                             params=params)
                for name in endowments}
     genesis = ChainState(params)
+    if mint_cms is not None:
+        # Minted.  The genesis UTXO set is the mint's commitments and nothing
+        # else: every node issues exactly these, so every node computes the
+        # same state, and no node learns a value.  The holders here are empty
+        # by construction — opening a genesis note needs the published mint
+        # artifact and the holder's own key, which is `wallet.genesis_mint`'s
+        # job and not the ledger's (review A5).
+        for cm in mint_cms:
+            genesis.issue(cm)
+        genesis.height = 0
+        genesis.tip = GENESIS_NETWORK
+        return _finish_bootstrap(topology, genesis, holders, node_regions,
+                                 params, seed, newcomers, signers)
     for name, values in sorted(endowments.items()):
         w = holders[name]
         for i, value in enumerate(values):
@@ -431,7 +444,17 @@ def bootstrap_world(node_regions: dict, endowments: dict, params: ChainParams,
             w.receive(note)
     genesis.height = 0
     genesis.tip = GENESIS_NETWORK
+    return _finish_bootstrap(topology, genesis, holders, node_regions, params,
+                             seed, newcomers, signers)
 
+
+def _finish_bootstrap(topology, genesis, holders, node_regions, params, seed,
+                      newcomers, signers):
+    """Everything after the money: nodes, registers, the world itself.
+
+    One function because there are now two ways to put the money in — issued
+    values, or a mint's commitments — and exactly one way to build what holds
+    them."""
     def signer_for(nid):
         # A launched network hands each node its own key; the seeded default is
         # for demos and tests, where reproducibility is the point.

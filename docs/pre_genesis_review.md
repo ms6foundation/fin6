@@ -252,6 +252,36 @@ checkable by anyone and the openings private. It has never been built.
 
 *Fix now:* build the mint. *Fix live:* the openings are already out.
 
+> **Built.** `chain/mint.py` and `wallet/genesis_mint.py`. A mint is a
+> transaction shape with **no inputs** — the existing system, with the guard
+> relaxed: the sum row reads `-sum(outputs) = v`, so a verifier holding the
+> declared total learns that the outputs add up to it and learns nothing else,
+> and the range rows say each is a real amount rather than a negative that
+> cancels. What authorises money appearing from nowhere is not a signature over
+> a note, because there is no note to sign yet; it is the document, and the
+> founders ratify that.
+>
+> The commitments are in the document, so every node still computes the same
+> genesis state — which is what deterministic issuance was for — while the
+> openings are sealed to their holders like any other payment's. A node boots
+> the shipped document, holds five commitments, can check the total against the
+> published artifact, and can open none of them. The treasury opens its own
+> with `wallet.genesis_mint.claim` and nobody else's.
+>
+> Measured at launch parameters: **1.8 s to prove, 0.85 s to verify, a 720 KB
+> artifact** for five notes. The artifact is published rather than carried,
+> committed by digest, exactly as era 0's leaf transcript is.
+>
+> The document and the mint commit to each other without a cycle: the document
+> holds the artifact's digest, and the artifact binds to `mint_context()` —
+> this document *without its mint block*. A launch document that issues is now
+> refused, and a minted one that also lists values is refused, because a list
+> of amounts beside the commitments is the disclosure the mint exists to avoid.
+>
+> One consequence worth stating: `chain/demo_genesis.py` can no longer spend
+> the shipped document's money, because no process holding only the document
+> can. It runs its epochs on a test document now, and says so.
+
 ### A6 · The address format is at its last cheap moment · **High**
 
 `wallet_design.md` is precise about what is built and what is not. Diversified
@@ -419,7 +449,7 @@ Two items are safe while the roster is permissioned and fatal if it is not:
    field is a format change. *(Done: `docs/quorum_signature_decision.md`, plus
    `seats_root`, the named scheme, and the bitmap encoding.)*
 4. **A4, A5, A6, A7** — the four other things genesis makes permanent.
-   *(A4 and A7 done, with A8; A5 and A6 outstanding.)*
+   *(All four done, with A8. Class A is closed.)*
 5. **B1** — turn the fault machinery on, while the block format is still free.
 6. **C1 and C3** — the two ways a live network stops being one.
 7. Everything else, in the order operations demands it.

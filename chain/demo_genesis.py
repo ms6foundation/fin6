@@ -47,7 +47,11 @@ def main():
     print(f"  tiers       {doc.tiers}  ·  partitions {doc.n_partitions}")
     print(f"  cadence     {doc.epoch_millis/1000:.2f} s per epoch")
     print(f"  supply      {doc.declared_total:,} in "
-          f"{sum(len(v) for v in doc.supply.values())} notes")
+          f"{len(doc.mint.get('outputs', ())) or sum(len(v) for v in doc.supply.values())} "
+          f"minted notes")
+    print(f"{DIM}              the document carries commitments and a total; "
+          f"the proof that they add up to it is in the published artifact, and "
+          f"the holdings are sealed to their holders{OFF}")
 
     # ── ratification ─────────────────────────────────────────────────────────
     rule("2. what a joining node checks before it applies block 1")
@@ -61,6 +65,9 @@ def main():
         ("the parameters are the ones this build knows", ok),
         ("the turn map covers the pool, one holder per slice",
          sorted(doc.turn_holders) == sorted(n.node_id for n in doc.nodes)),
+        (f"era 0 is {len(doc.era0.get('contributions', ()))} signed claims to "
+         f"contributed leaves, not one seed", bool(doc.era0)),
+        ("the mint's commitments are the genesis UTXO set", bool(doc.mint)),
     ]
     for label, passed in checks:
         print(f"  {GREEN + 'ok  ' + OFF if passed else RED + 'FAIL' + OFF}  {label}")
@@ -79,11 +86,27 @@ def main():
           f"{len(reg.attesters())} attesters, quorum {reg.quorum(2, 3)}")
     print(f"{DIM}  the 40-ceremony gate is waived exactly once — a grid of pure "
           f"apprentices could never reach quorum{OFF}")
-    print(f"  treasury holds {wallets['treasury'].balance():,}, "
-          f"the document declares {doc.declared_total:,}")
+    print(f"  treasury holds {wallets['treasury'].balance():,} as far as this "
+          f"node is concerned, against {doc.declared_total:,} declared")
+    print(f"{DIM}  which is the point of the mint: a node holds the "
+          f"commitments and can check the total, and cannot open a single one. "
+          f"The holder opens its own from the published artifact — "
+          f"`wallet.genesis_mint.claim`, outside the ledger by construction.{OFF}")
 
     # ── run ──────────────────────────────────────────────────────────────────
     rule("4. three epochs at one tier")
+    # Money has to move for an epoch to be worth watching, and this process
+    # cannot open the shipped document's money — see above, and that is the
+    # feature.  So the epochs below run on a document with the same roster and
+    # parameters that *issues* rather than mints, which is what a test document
+    # is for.
+    print(f"{DIM}  on a test document with the same roster: the shipped one "
+          f"mints, so this process has nothing to spend{OFF}")
+    doc = genesis.ratify_all(genesis.draft(
+        doc.network, [n.node_id for n in doc.nodes], world.params,
+        PRODUCTION, {"treasury": [1000, 900, 800, 700, 600]},
+        purpose=genesis.TEST_PURPOSE))
+    world, wallets = genesis.boot(doc, store=None)
     for e in (1, 2, 3):
         tx, _ = transfer(wallets["treasury"], wallets["treasury"], 100 + e, 5,
                          world.params)

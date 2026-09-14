@@ -98,13 +98,7 @@
     "fin6-n07"
   ],
   "supply": {
-    "treasury": [
-      1000,
-      900,
-      800,
-      700,
-      600
-    ]
+    "treasury": []
   },
   "declared_total": 4000,
   "ratification_threshold": 7,
@@ -168,35 +162,46 @@
       ]
     ]
   },
+  "mint": {
+    "total": 4000,
+    "outputs": [
+      "cm:0ced7900c0abafc7986efebd7534124c357407013060164ab4fc9f52ad7b4f46",
+      "cm:c893a2dffc936b3adebca7818cdd398b7d05b1288459bfdd12c17960571402dd",
+      "cm:aba0f61ef3be0ac8e00415be2f4169ebec2faac6649e22546ac01d665f7e85f3",
+      "cm:d5e85c98bb9104d11cc57d230f157c68d43e956b05cee7fb31ac6831d49530c5",
+      "cm:208570081442ab4cc6c290e30a4e1c98d0c7cc1e62996008af59818daa21112c"
+    ],
+    "digest": "0e68f27a8a8d9c994183758218b62e92b6ef04318f4723846bcb7d6a831919c0"
+  },
   "ratifications": [
     {
       "node_id": "fin6-n01",
-      "signature": "d504e01c8a38e395890a11c3f02956ad4128510d3da69831dc71d66936f384ec04ad9e307fdda7b6278c0122ca27783f67d7690649ab7f6b486edef29adf8d0b"
+      "signature": "aa41faba8041720d398473f7de896b418c96ed6f40bd590685f410077dca3f73afd42757dd323ba133cad35dc36a1ef130ca4533edfa755f23946e8c6c441b0d"
     },
     {
       "node_id": "fin6-n02",
-      "signature": "9d0b114bb146fb04f9fb205935420a35cb1ac8626408f6bc48dbc2d2a5bd33258dbcbddddadec884968990eb4717a628492a158db51a6d8d528fddffb443b009"
+      "signature": "9aed913d68c84ba66018726b9e9b023dbbf63563dc04dd462a045fd8ca274ae408518492ec5327ebb8f2030c8d54e6ec8886e0d008b381df14d0fcb37dc1420f"
     },
     {
       "node_id": "fin6-n03",
-      "signature": "6e0203c4683525b1ac6eedad80682df9efd2623b86e0a37f5aeb0d8b99958aed49e8624b5fbd7f7795857758348ea8d975780ddfe0c27c98d94cfec131827800"
+      "signature": "47db7426d2aa8a43c9ba3a233b309ee4b353adbd78c33611da19a88995661fc50f7f1982bef23cd1ef01360accdc4b933e941175a9e8ee3c75f81e67ffb56401"
     },
     {
       "node_id": "fin6-n04",
-      "signature": "cef5ebb4e084311f5ae62d5909083252440bc665f5870a049cc4f464988f71c48f4e918b08954334f7882c3ae7d869040efd6b042a9b0ddb0dbfdd1b0572040d"
+      "signature": "b2bfcf071242339300c04788b268d5b2e114459a270dbb0033ac4b2da7927ce55fd5167e860d4ecb97eacd3008ee5438bb21f24078f23caf8beea498d86ad60e"
     },
     {
       "node_id": "fin6-n05",
-      "signature": "5b3f8b7c9fc78ade1af7970bdee608699bdab6e220b6fed34b9d38236771344f770808f31817359b1157ef837c641e6f9508e52044859fd9bcc76758176a6d08"
+      "signature": "7b3af64b6d229e09708651ff9b27ffb4d907ed2199a1eea2c9aa70b53551cdf4926af7098689cbff55a7f1814cfa6a358f52f6dbf5b4158b77b287ae08074103"
     },
     {
       "node_id": "fin6-n06",
-      "signature": "2320a08b87cab26cf0662e0fd97a988bdba6b0be510a13ca294ed4ed11facba870dc4141b763b7c9dee454d8397e70e9e4fb66bd9d7c58943205fa3661fb2c00"
+      "signature": "3d03801d6fd65ec11fd3e5cb6d5f8a4dfaf76595d3926175f3bee22f3347b71f950495129af37ac0edc2b189d5d435e0ec63a3f5458b61b8c6c5b57583eb5102"
     },
     {
       "node_id": "fin6-n07",
-      "signature": "be3d99c3c86dbf3ab2d542a1fd0d2474aa785fde1117490dd62e343915cce8e974acaa2094bd8612f650049a302bcf91c219d44d046284f2aef9ad5146e52d04"
+      "signature": "c35aabb5738f6e1f69495882a8df8aef27f37f067e8fb2607698f8f179c9cc7743fae72e1eee33b486b8cf3e530cca2e186dc4212098f3c3be05376586befa09"
     }
   ],
-  "chain_id": "fin6:27c70871337bf32d5ca32e0b7e67e2a0eaec667decc24768a3d7850af62384e6"
+  "chain_id": "fin6:212dd80279b9f3130719a6c1035938a055bb3bd4c449f4ce6a6e9fa647524d84"
 }

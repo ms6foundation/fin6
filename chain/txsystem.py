@@ -49,9 +49,16 @@ class TxSystem:
     """MQ system for one transaction shape (k inputs, m outputs)."""
 
     def __init__(self, params: ChainParams, n_inputs: int, n_outputs: int):
-        if n_inputs < 1:
-            raise ValueError("a transaction needs at least one input "
-                             "(issuance goes through chain.state.issue)")
+        if n_inputs < 0:
+            raise ValueError("a transaction cannot have negative inputs")
+        # Zero inputs is the *mint* shape and nothing else: no nullifier rows,
+        # no owner rows, and a sum row that reads `-sum(outputs) = v`, so a
+        # verifier holding the declared total learns that the outputs add up to
+        # it without learning any of them.  `build_transaction` still refuses a
+        # spend with no inputs — money has to come from somewhere — and the one
+        # place it comes from nowhere is genesis, where the authority is the
+        # document's ratifications rather than a signature over a note.  See
+        # chain/mint.py and review A5.
         if n_outputs < 1:
             raise ValueError("a transaction needs at least one output")
 

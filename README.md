@@ -223,10 +223,13 @@ simulation with no clock.
 - **The spend graph is public.** Amounts, output owners and note randomness are
   hidden; which note is being spent is not. This is the confidential-transactions
   model, not the Zcash one.
-- **Bootstrap is a trusted setup.** Each grid's founding cohort starts as
-  attesters, because a grid of pure apprentices can never reach quorum. So is
-  era 0 of the hardening pool, and genesis issuance proves nothing about the
-  value it puts into circulation.
+- **Bootstrap is a trusted setup, in one place fewer than it was.** Each grid's
+  founding cohort starts as attesters, because a grid of pure apprentices can
+  never reach quorum. Era 0 is now a contributed-leaf ceremony — each holder
+  generates its own slice and signs a claim to it, so no party can spend a turn
+  it does not hold — and the genesis supply is *minted*: the document carries
+  commitments and a total, the published artifact carries a proof that they
+  agree, and the holdings are sealed to their holders.
 - **`chain/hardening/wots.py` is a teaching implementation.** A deployment should
   use a reviewed one (RFC 8391).
 - **Distribution is the security parameter.** 70,000 turns on 200 machines is 200

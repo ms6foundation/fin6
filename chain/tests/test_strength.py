@@ -23,6 +23,7 @@ from ..params import (DEMO, LAUNCH, STRONG, PRESETS, BLINDERS_128,
 
 IDS = tuple(f"n{i}" for i in range(7))
 SUPPLY = {"treasury": [1000, 900, 800, 700, 600]}
+EMPTY = {"treasury": []}
 
 
 # A small hardening preset, and era 0's ceremony built once for the whole
@@ -30,8 +31,21 @@ SUPPLY = {"treasury": [1000, 900, 800, 700, 600]}
 # parameters — but a launch document needs a real era 0 since review A4, and
 # `PRODUCTION`'s is 70,000 key generations.
 def _doc(params, **kw):
+    """A document whose *parameters* are the subject. It still has to be a
+    valid launch document in every other respect, so it carries a real era-0
+    ceremony and a mint — both built once and cached, since neither is what
+    these tests are about."""
+    from .test_mint import mint_block_for
+
     kw.setdefault("era0", _era0_for(IDS, "t"))
-    return ratify_all(draft("t", IDS, params, SMALL, SUPPLY, **kw))
+    if kw.pop("issued", False):
+        return ratify_all(draft("t", IDS, params, SMALL, SUPPLY, **kw))
+    common = dict(kw)
+    skeleton = draft("t", IDS, params, SMALL, EMPTY, declared_total=10,
+                     **common)
+    return ratify_all(draft("t", IDS, params, SMALL, EMPTY,
+                            mint=mint_block_for(skeleton, (10,), params),
+                            **common))
 
 
 def _problems(params, **kw):
@@ -213,9 +227,7 @@ def test_a_document_with_no_purpose_field_reads_as_launch():
 # ── who is enough to found it (A8) ───────────────────────────────────────────
 
 def test_a_launch_document_is_ratified_by_every_founder_it_names():
-    weak = ratify_all(draft("t", IDS, LAUNCH, SMALL, SUPPLY,
-                            era0=_era0_for(IDS, "t"),
-                            ratification_threshold=5))
+    weak = _doc(LAUNCH, ratification_threshold=5)
     ok, problems, _ = weak.verify()
     assert not ok
     assert any("every founder it names" in p for p in problems), problems
@@ -225,14 +237,13 @@ def test_a_threshold_below_the_quorum_rule_is_refused():
     """A set of founders too small to finalise a block cannot be enough to
     agree what the chain is."""
     weak = ratify_all(draft("t", IDS, LAUNCH, SMALL, SUPPLY,
+                            era0=_era0_for(IDS, "t"),
                             purpose=TEST_PURPOSE, ratification_threshold=2))
     assert any("finalise a block" in p for p in weak.verify()[1])
 
 
 def test_an_unreachable_threshold_is_refused():
-    odd = ratify_all(draft("t", IDS, LAUNCH, SMALL, SUPPLY,
-                           era0=_era0_for(IDS, "t"),
-                           ratification_threshold=9))
+    odd = _doc(LAUNCH, ratification_threshold=9)
     assert any("unreachable" in p for p in odd.verify()[1])
 
 

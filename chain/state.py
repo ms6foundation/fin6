@@ -129,8 +129,14 @@ class ChainState:
     def issue(self, cm: str):
         """Put a note into circulation outside any transaction.
 
-        Only legitimate at genesis: nothing proves the issued value is in range
-        or that it was authorised, so this is the trusted root of the supply.
+        Only legitimate at genesis, and what stands behind it depends on the
+        document.  An *issued* supply is trusted outright: nothing proves the
+        value is in range or that anyone authorised it.  A *minted* one is not
+        — the commitments come with a proof that they sum to the declared
+        total and each lies in range, and the founders' ratifications are what
+        authorise the total (chain/mint.py).  This method is the same either
+        way; the difference is whether a reader had to take the supply on
+        trust.
         """
         if self.height >= 0:
             raise ValueError("issuance is only allowed in the genesis state")
