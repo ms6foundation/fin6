@@ -82,6 +82,8 @@ def _network_flaw(block, params, *, chain_id, check_proofs) -> str | None:
             return "super_root does not match the super blocks carried"
         if h.foundings_root != block.compute_foundings_root():
             return "foundings_root does not match the foundings carried"
+        if h.merges_root != block.compute_merges_root():
+            return "merges_root does not match the merges carried"
         for sup in block.supers:
             if sup.header.child_root != sup.compute_child_root():
                 return (f"{sup.header.super_id}: child_root does not match "

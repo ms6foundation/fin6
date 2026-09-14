@@ -53,6 +53,41 @@ def foundings_root(foundings) -> int:
     return seal_root("foundings", [f.digest() for f in foundings])
 
 
+@dataclass(frozen=True)
+class GridMerge:
+    """A grid that has shrunk below viability, folded into a sibling.
+
+    The inverse of `GridFounding`, and deliberately not its mirror image in one
+    respect: a founding moves a *selected cohort*, so the selection has to be
+    seeded and the standing it carries has to be recorded as a waiver.  A merge
+    moves **everyone** — attesters, apprentices and the suspended alike — so
+    there is nothing to select and nothing to launder.  That is also why it
+    cannot reuse `GridRegister.release`, which exists to refuse exactly the
+    members a merge is obliged to carry.
+
+    Derived from committed state like a founding, and carried in the block for
+    the same reason: a grid ceasing to exist is a governance event, and it
+    should be visible in the archive rather than inferred from a register root
+    disappearing.
+    """
+    from_id: str
+    into_id: str
+    epoch: int
+    movers: tuple = ()
+
+    def digest(self) -> str:
+        return h_hex("merge", self.from_id, self.into_id, self.epoch,
+                     sorted(self.movers))
+
+    def __repr__(self):
+        return (f"GridMerge({self.from_id} -> {self.into_id}, "
+                f"{len(self.movers)} members)")
+
+
+def merges_root(merges) -> int:
+    return seal_root("merges", [m.digest() for m in merges])
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Tier 0
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -206,6 +241,11 @@ class NetworkBlockHeader:
     registers_root: int
     tiers: int = 3
     foundings_root: int = 0
+    #: The grids folded away in this block.  Separate from `foundings_root`
+    #: rather than pooled with it: they are opposite events with opposite
+    #: preconditions, and a reader that cannot tell which one happened from
+    #: the header alone would have to reconstruct the membership to find out.
+    merges_root: int = 0
     #: The same UTXO set as `utxo_root`, in the shape an outsider can check.
     #: The seal tree is cheap for a validator to keep current and expensive to
     #: prove one leaf out of; this is the other half of that trade, and it is
@@ -261,7 +301,8 @@ class NetworkBlockHeader:
                              self.chain_id, self.prev_hash, self.utxo_root,
                              self.nf_root, self.super_root,
                              self.registers_root, self.tiers,
-                             self.foundings_root, self.witness_root,
+                             self.foundings_root, self.merges_root,
+                             self.witness_root,
                              self.history_root, self.utxo_count,
                              self.nf_count, self.protocol, self.seats_root,
                              self.quorum)
@@ -273,6 +314,7 @@ class NetworkBlock:
     supers: tuple = ()
     dropped: tuple = ()
     foundings: tuple = ()
+    merges: tuple = ()
     quorum_cert: object = field(default=None, repr=False)
 
     def compute_super_root(self) -> int:
@@ -280,6 +322,9 @@ class NetworkBlock:
 
     def compute_foundings_root(self) -> int:
         return foundings_root(self.foundings)
+
+    def compute_merges_root(self) -> int:
+        return merges_root(self.merges)
 
     def hash(self) -> str:
         return self.header.hash()

@@ -30,8 +30,9 @@ from .state import ChainState, UtxoDelta, merge_deltas
 from . import protocol
 from . import seats as seats_mod
 from .tiered import (GENESIS_NETWORK, CeremonyBlock, CeremonyBlockHeader,
-                     GridFounding, NetworkBlock, NetworkBlockHeader, SuperBlock,
-                     SuperBlockHeader, foundings_root, registers_root)
+                     GridFounding, GridMerge, NetworkBlock,
+                     NetworkBlockHeader, SuperBlock, SuperBlockHeader,
+                     foundings_root, merges_root, registers_root)
 from .store import undo
 from .trustlist import TrustList
 
@@ -214,6 +215,8 @@ class TierWorld:
                           faulted=faulted_from(child.faults, self.params))
         for founding in block.foundings:
             self._found_grid(founding)
+        for merge in block.merges:
+            self._merge_grid(merge)
         self.height = block.header.height
         self.tip = block.hash()
         self.rolls = dict(self.pending_rolls)
@@ -234,8 +237,15 @@ class TierWorld:
                 self.prev_certs[gid] = cert
             if child.header.leader_id:
                 self.prev_leaders[gid] = child.header.leader_id
+        # A grid that has been merged away must not go on being the source of
+        # the next epoch's roll, or a node restarting from the store would
+        # find a certificate for a grid that no longer exists.
+        for gid in [g for g in self.prev_certs if g not in self.registers]:
+            self.prev_certs.pop(gid)
+        for gid in [g for g in self.prev_leaders if g not in self.registers]:
+            self.prev_leaders.pop(gid)
         self.pending_faults = ()
-        if block.foundings:
+        if block.foundings or block.merges:
             self.reroute_mempools()
         for nid, record in records.items():
             node = self.nodes[nid]
@@ -253,7 +263,12 @@ class TierWorld:
                               # validate anything — the same lesson `rolls`
                               # taught, and the same fix.
                               certs=self.prev_certs,
-                              leaders=self.prev_leaders)
+                              leaders=self.prev_leaders,
+                              # Upserts alone would leave a merged-away grid
+                              # in the store to be resurrected by the next
+                              # `load_registers` — with members who are now in
+                              # two registers at once.
+                              retired=tuple(m.from_id for m in block.merges))
 
     # ── growing ──────────────────────────────────────────────────────────────
 
@@ -286,6 +301,25 @@ class TierWorld:
                 roll,
                 seated=tuple(n for n in roll.seated if n not in gone),
                 attended=tuple(n for n in roll.attended if n not in gone))
+
+    def _merge_grid(self, merge):
+        """Apply one merge: the whole grid moves, records intact.
+
+        After the rolls, like a founding, and for the same reason — the epoch's
+        attendance was earned in the grid that ran the ceremony, so it is
+        credited there before that grid stops existing.
+
+        What it costs is the *next* block's roll for the departing grid: those
+        seats will be seated in the target from here on, and a register applies
+        one roll per epoch, so the pending roll is dropped rather than
+        re-keyed.  That is one ceremony of attendance for everyone who moved —
+        the same trade `_found_grid` makes with its trim, deterministic, and
+        every node makes it identically.
+        """
+        gone = self.registers.pop(merge.from_id)
+        self.registers[merge.into_id].absorb(gone)
+        self.topology.merge_grid(merge.from_id, merge.into_id)
+        self.pending_rolls.pop(merge.from_id, None)
 
     def reroute_mempools(self):
         """K moved, so every pending transaction has a new home.
@@ -547,6 +581,60 @@ def plan_foundings(world: "TierWorld", epoch: int) -> tuple:
                         key=lambda n: h_hex("found", world.tip, gid, new_id, n))
         return (GridFounding(donor_id=gid, grid_id=new_id, epoch=epoch,
                              cohort=tuple(sorted(ranked[:size]))),)
+    return ()
+
+
+def plan_merges(world: "TierWorld", epoch: int) -> tuple:
+    """Which grid folds into a sibling this epoch, and who moves.
+
+    The other half of `plan_foundings`, and the answer to the review's
+    observation that a network which shrinks keeps grids it cannot fill.
+    Derived from the same committed state, so the leader proposes nothing.
+
+    Three conditions:
+
+      * the grid is below half the target size in members that still hold a
+        seat, by the rule `Topology.needs_merge` has had since part four and
+        nothing called.  Seats rather than rows, because nothing removes a
+        node from a topology: a grid shrinks by its members being suspended or
+        going dark, never by the table getting shorter;
+      * a **sibling in the same region** can take it without going over the
+        split threshold — otherwise the merge would oscillate straight back
+        into a founding, and the network would churn K every other epoch;
+      * no founding is planned this epoch.  Both move K, and doing them
+        together would re-home every transaction in flight twice for no gain;
+      * and, implicitly, there is more than one grid.  A network that has
+        shrunk to a single grid has nothing to merge into and is supposed to
+        keep it: one grid is the degenerate case the tiers collapse onto, not
+        an error state.
+
+    A grid cannot merge across regions.  Locality is the point of the
+    assignment — a grid's members are meant to be near each other — so a region
+    whose only grid has emptied keeps it rather than exporting its members.
+    """
+    params = world.params
+    topo = world.topology
+    if len(topo.grids) < 2 or plan_foundings(world, epoch):
+        return ()
+    for gid in topo.grid_ids():
+        reg = world.registers[gid]
+        if not topo.needs_merge(gid, params.grid_size,
+                                live=len(reg.seated_members())):
+            continue
+        movers = topo.members(gid)
+        room = [g for g in topo.grids_in(topo.spec(gid).region)
+                if g != gid
+                and len(topo.members(g)) + len(movers) <= 2 * params.grid_size]
+        if not room:
+            continue
+        # The smallest sibling, so the merge does not create the next split.
+        # The tie-break is the previous block's hash, for the same reason the
+        # founding cohort is drawn from it: whoever assembles this block must
+        # not be able to choose where a grid's members land.
+        target = min(room, key=lambda g: (len(topo.members(g)),
+                                          h_hex("merge", world.tip, gid, g)))
+        return (GridMerge(from_id=gid, into_id=target, epoch=epoch,
+                          movers=tuple(sorted(movers))),)
     return ()
 
 
@@ -883,7 +971,9 @@ class SoloWorkload:
             return None, None, why
         shadow.apply_delta(merged)
         foundings = plan_foundings(self.world, self.epoch)
-        block = NetworkBlock(header=None, supers=(sup,), foundings=foundings)
+        merges = plan_merges(self.world, self.epoch)
+        block = NetworkBlock(header=None, supers=(sup,), foundings=foundings,
+                             merges=merges)
         header = NetworkBlockHeader(
             height=self.world.height + 1, epoch=self.epoch,
             chain_id=node.chain_id, prev_hash=self.world.tip,
@@ -894,13 +984,14 @@ class SoloWorkload:
             seats_root=self.world.seats_root_for([self.grid_id]),
             quorum=self.world.quorum_for(self.grid_id),
             tiers=1, foundings_root=block.compute_foundings_root(),
+            merges_root=block.compute_merges_root(),
             witness_root=shadow.utxo.witness_root,
             history_root=shadow.history.root,
             utxo_count=shadow.utxo.size, nf_count=shadow.nullifiers.size,
             protocol=protocol.expected_version(self.world.height + 1,
                                                self.world.activations))
         return NetworkBlock(header=header, supers=(sup,),
-                            foundings=foundings), shadow, "ok"
+                            foundings=foundings, merges=merges), shadow, "ok"
 
     def build(self, leader: Node, meta, limit=None) -> NetworkBlock:
         child = self.local.build(leader, meta, limit)
@@ -930,6 +1021,9 @@ class SoloWorkload:
             return False, why
 
         ok, why = _check_foundings(self.world, self.epoch, block)
+        if not ok:
+            return False, why
+        ok, why = _check_merges(self.world, self.epoch, block)
         if not ok:
             return False, why
 
@@ -980,8 +1074,9 @@ class SupremeWorkload:
         roots = {c.header.grid_id: c.header.register_root
                  for s in ordered for c in s.children}
         foundings = plan_foundings(self.world, self.epoch)
+        merges = plan_merges(self.world, self.epoch)
         block = NetworkBlock(header=None, supers=tuple(ordered),
-                             foundings=foundings)
+                             foundings=foundings, merges=merges)
         header = NetworkBlockHeader(
             height=self.world.height + 1, epoch=self.epoch,
             chain_id=leader.chain_id, prev_hash=self.world.tip,
@@ -996,6 +1091,7 @@ class SupremeWorkload:
             quorum=self.supreme_quorum,
             tiers=self.tiers,
             foundings_root=block.compute_foundings_root(),
+            merges_root=block.compute_merges_root(),
             witness_root=shadow.utxo.witness_root,
             history_root=shadow.history.root,
             utxo_count=shadow.utxo.size, nf_count=shadow.nullifiers.size,
@@ -1003,7 +1099,7 @@ class SupremeWorkload:
                                                self.world.activations))
         return NetworkBlock(header=header, supers=tuple(ordered),
                             dropped=tuple(f"{i}:{w}" for i, w in dropped),
-                            foundings=foundings)
+                            foundings=foundings, merges=merges)
 
     def validate(self, node: Node, block: NetworkBlock):
         h = block.header
@@ -1019,6 +1115,9 @@ class SupremeWorkload:
             return False, (f"header claims {h.tiers} tiers, this epoch ran "
                            f"{self.tiers}")
         ok, why = _check_foundings(self.world, self.epoch, block)
+        if not ok:
+            return False, why
+        ok, why = _check_merges(self.world, self.epoch, block)
         if not ok:
             return False, why
 
@@ -1169,6 +1268,23 @@ def _check_foundings(world: "TierWorld", epoch: int, block: NetworkBlock):
     if tuple(f.digest() for f in block.foundings) != \
             tuple(f.digest() for f in expected):
         return False, ("the founding in this block is not the one the state "
+                       "calls for")
+    return True, "ok"
+
+
+def _check_merges(world: "TierWorld", epoch: int, block: NetworkBlock):
+    """Every seat re-derives the merge and refuses anything else.
+
+    Same argument as `_check_foundings`, with more at stake: a merge the state
+    does not call for would move a grid's members into a register chosen by
+    whoever assembled the block.
+    """
+    if block.header.merges_root != block.compute_merges_root():
+        return False, "merges_root does not match the block"
+    expected = plan_merges(world, epoch)
+    if tuple(m.digest() for m in block.merges) != \
+            tuple(m.digest() for m in expected):
+        return False, ("the merge in this block is not the one the state "
                        "calls for")
     return True, "ok"
 

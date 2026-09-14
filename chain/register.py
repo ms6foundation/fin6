@@ -229,6 +229,41 @@ class GridRegister:
             reg.members[rec.node_id] = replace(rec, founded_from=donor_id)
         return reg
 
+    # ── merging a grid away ──────────────────────────────────────────────────
+
+    def absorb(self, other: "GridRegister") -> list:
+        """Take in every member of a grid that is ceasing to exist.
+
+        The opposite of `release` in the one way that matters: it refuses
+        apprentices and the suspended, and this must take them.  A merge is not
+        a selection — the whole grid moves — so there is no cohort to grind and
+        nobody to leave behind.  Dropping the apprentices would delete their
+        served time; dropping the suspended would *launder* a suspension by
+        letting the register that held it disappear, which is a fault that pays
+        the faulter.
+
+        Standing carries, because the alternative is to reset a whole grid's
+        counters for the misfortune of having shrunk.  It carries visibly:
+        `founded_from` already means "standing this member did not earn here",
+        and it is in the root.
+        """
+        clash = sorted(set(other.members) & set(self.members))
+        if clash:
+            raise ValueError(f"{clash} are in both {other.grid_id} and "
+                             f"{self.grid_id}")
+        if other.epoch != self.epoch:
+            raise ValueError(f"{other.grid_id} is at epoch {other.epoch} and "
+                             f"{self.grid_id} at {self.epoch}; merging them "
+                             f"would credit or cost somebody a ceremony")
+        moved = []
+        for nid, rec in sorted(other.members.items()):
+            self.members[nid] = replace(rec, founded_from=other.grid_id)
+            self._misses[nid] = other._misses.get(nid, 0)
+            moved.append(self.members[nid])
+        other.members.clear()
+        other._misses.clear()
+        return moved
+
     # ── views ────────────────────────────────────────────────────────────────
 
     def standing_of(self, node_id: str) -> str:

@@ -120,6 +120,44 @@ class Topology:
             self._members[new_grid_id].append(nid)
         return spec
 
+    def merge_grid(self, from_id: str, into_id: str) -> GridSpec:
+        """Fold one grid into a sibling, and renumber what is left.
+
+        Indices are partitions, and `n_partitions` is the number of grids, so a
+        grid removed without renumbering leaves a partition — the last index —
+        that no grid owns and whose notes nothing can ever spend.  So the
+        survivors are renumbered, in their existing index order, to 0..K-2.
+
+        That falsifies `found_grid`'s promise that "a grid's identity never
+        silently becomes a different partition": across a merge it does, for
+        every grid above the one that went.  It is survivable for the same
+        reason a founding is — K is the modulus in `nf mod K`, so *every*
+        transaction is re-homed either way and a merge cannot make that worse —
+        but it is a stronger statement than the founding path makes, and the
+        honest place to say so is here rather than in a changelog.
+        """
+        if from_id == into_id:
+            raise ValueError("a grid cannot merge into itself")
+        if from_id not in self.grids or into_id not in self.grids:
+            raise ValueError(f"no such grid: {from_id} / {into_id}")
+        if len(self.grids) < 2:
+            raise ValueError("the last grid has nowhere to merge into")
+        if self.grids[from_id].region != self.grids[into_id].region:
+            raise ValueError(
+                f"{from_id} and {into_id} are in different regions; merging "
+                f"across regions would seat a grid's members far apart, which "
+                f"is the thing locality exists to prevent")
+        for nid in list(self._members[from_id]):
+            self.assignment[nid] = into_id
+            self._members[into_id].append(nid)
+        self._members[into_id].sort()
+        del self._members[from_id]
+        del self.grids[from_id]
+        for i, gid in enumerate(sorted(self.grids, key=lambda g: self.grids[g].index)):
+            self.grids[gid] = GridSpec(grid_id=gid, region=self.grids[gid].region,
+                                       index=i)
+        return self.grids[into_id]
+
     def next_grid_id(self, region: str) -> str:
         """The next name in this region's series, stable given the topology."""
         used = {g.grid_id for g in self.grids.values() if g.region == region}
@@ -155,8 +193,20 @@ class Topology:
     def needs_split(self, grid_id: str, grid_size: int) -> bool:
         return len(self._members[grid_id]) > 2 * grid_size
 
-    def needs_merge(self, grid_id: str, grid_size: int) -> bool:
-        return len(self._members[grid_id]) * 2 < grid_size
+    def needs_merge(self, grid_id: str, grid_size: int, live=None) -> bool:
+        """Below half the target size, a grid is not a grid, it is a queue.
+
+        `live` is how many of its members still hold a seat, which the topology
+        cannot know — it records who belongs where and not what anyone's
+        standing is.  It matters because a grid does not shrink by losing rows
+        from this table: nothing removes a node from a topology.  It shrinks by
+        its members being suspended or going dark, and a grid of nine members
+        of whom seven are suspended is exactly the grid this rule is for.  The
+        caller passes the count from the register; membership is the fallback,
+        which is the honest answer when no register is at hand.
+        """
+        n = len(self._members[grid_id]) if live is None else live
+        return n * 2 < grid_size
 
     def __repr__(self):
         sizes = {gid: len(m) for gid, m in sorted(self._members.items())}

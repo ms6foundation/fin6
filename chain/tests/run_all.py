@@ -18,7 +18,7 @@ MODULES = ["test_notes", "test_nullifiers", "test_transaction", "test_state", "t
            # the two trees, and the spine
            "test_seal_trees",
            # genesis
-           "test_genesis", "test_growth", "test_density",
+           "test_genesis", "test_growth", "test_density", "test_merge",
            # the network, and what it will do for a stranger
            "test_net", "test_viewchange", "test_handshake", "test_gate", "test_limits",
            "test_authgaps", "test_session", "test_protocol", "test_strength", "test_seats",

@@ -575,10 +575,68 @@ so the first definition had never run.
 | C1 | ~~**View change over a real network**~~ **Done** | High | In-process it is a retry loop with a fresh seed. With timeouts and partial delivery it is a protocol, and it was not designed. This is the liveness path for a dead leader. Designed and built as part eleven — `docs/view_change_design.md`, §4.2. |
 | C2 | **The supreme grid is a global stall point** | High | If it aborts, nothing finalises anywhere that epoch. |
 | C3 | ~~**Reorg past the undo ceiling diverges permanently**~~ **Done** | High | Undo records are kept to `retention_depth` — 729 blocks at a third of the pool. Beyond it a node that cannot roll back diverged from one that can, with no reconciliation path but a snapshot, and *silently*. See §4.1. |
-| C4 | **Grids never merge** | Medium-High | Split works and founding cohorts keep their standing. A network that shrinks keeps grids it cannot fill, and founding seating is permanent because merge does not exist. |
+| C4 | ~~**Grids never merge**~~ **Done** | Medium-High | Split worked and merge did not exist, so a network that shrank kept grids it could not fill — each owning a nullifier partition nothing else may include. `plan_merges` is the other half, and it renumbers the partitions — §4.6. |
 | C5 | ~~**Apprentice density stalls a grid**~~ **Done** | Medium | Apprentices hold seats and cannot make quorum, and admission was unbounded — so the 40-ceremony gate bounded nothing a grid cares about. A grid now runs at most `admit_num/admit_den` of its attester count in apprenticeships at once — §4.5. |
 | C6 | ~~**No peer discovery**~~ **Done** | Medium | Peers came from the roster and `net.json`, so a network that grows needed every machine's file edited. Signed address records, gossiped — §4.4. |
 | C7 | ~~**Body window is 21 minutes**~~ **Done** | Medium | Past it, catch-up falls back to `getsnapshot`, which cost the serving node a full state copy on demand and was one frame rather than the chunked ranges `store/snapshot.py` was built for. Both halves fixed — §4.3. |
+
+### 4.6 · C4, resolved: the topology can shrink
+
+`Topology.needs_merge` had been in the file since part four and **nothing ever
+called it**. Splitting worked, so the topology could only grow; a grid whose
+seats went quiet kept its name, its register and — the part that matters — its
+nullifier partition. A partition is not a shard of traffic, it is a set of
+notes that *only that grid may include a spend of*. So an unfillable grid is a
+slice of the ledger nobody can spend in, held open indefinitely.
+
+`plan_merges` mirrors `plan_foundings` — derived from committed state, carried
+in the block, re-derived by every seat, at most one an epoch — with four
+guards. A merge needs a sibling **in the same region** (locality is the point
+of the assignment; a region whose only grid empties keeps it); one whose
+combined size stays under the split threshold (or the network churns K every
+other epoch: fold, overflow, found, fold); more than one grid in total (a
+single grid is the degenerate case the tiers collapse onto, not an error); and
+an epoch with no founding, because both move K and doing them together re-homes
+every transaction in flight twice for no gain. The target is the smallest
+sibling, ties broken by the previous block's hash, so the node assembling the
+block cannot choose where a grid's members land.
+
+Three things that were not obvious before writing it:
+
+**A grid does not shrink by losing rows.** Nothing removes a node from a
+topology — there is no departure path, and members only ever arrive or move to
+found a child. So viability cannot be measured by membership; `needs_merge` now
+takes the count of members that still *hold a seat*, which the topology cannot
+know and the register does. A grid of nine of whom seven are suspended is
+exactly the case this rule exists for, and it is the case the old rule could
+never see.
+
+**`release` cannot be reused, and that is the whole safety argument.** A
+founding moves a selected cohort, so `GridRegister.release` refuses
+apprentices and the suspended — an apprentice would arrive unable to vote, and
+a suspended member would arrive with its suspension laundered into a fresh
+register. A merge moves *everyone*, so it must take exactly those. `absorb` is
+the separate primitive: apprentices keep their served time, suspensions and
+fault lists come across intact, and `founded_from` records that the standing
+was not earned here. Merging a register that is an epoch out of step is
+refused rather than reconciled — it would credit or cost somebody a ceremony.
+
+**The partitions have to be compacted, and that costs a promise.**
+`GridSpec.index` *is* the partition and `n_partitions` is the number of grids,
+so removing a grid without renumbering leaves the top partition owned by
+nobody and its notes unspendable forever. The survivors are therefore
+renumbered in index order, which falsifies `found_grid`'s claim that "a grid's
+identity never silently becomes a different partition" — across a merge it
+does, for every grid above the one that went. Survivable, because K moving
+re-homes every transaction either way, but a stronger statement than the
+founding path makes and now written where the renumbering happens rather than
+in a changelog.
+
+One storage detail, found by asking what a node sees after a restart: the
+register write is an upsert, so a merged-away grid survived in the store and
+came back from the next `load_registers` — holding members who by then sat in
+another register too. `commit(retired=…)` deletes its register, roll and
+certificate rows in the same transaction as the block that merged it.
 
 ### 4.5 · C5, resolved: the gate is per node, the rate is per grid
 

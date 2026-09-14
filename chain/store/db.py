@@ -347,7 +347,8 @@ class ChainStore:
 
     def commit(self, *, block, delta, state: ChainState, undo: UndoRecord,
                registers: dict | None = None, rolls: dict | None = None,
-               certs: dict | None = None, leaders: dict | None = None):
+               certs: dict | None = None, leaders: dict | None = None,
+               retired: tuple = ()):
         """One network block, applied or not applied.
 
         The caller has already moved its in-memory state forward; this makes
@@ -392,6 +393,14 @@ class ChainStore:
                  codec.encode(block.quorum_cert) if block.quorum_cert else None))
             if registers:
                 self._put_registers(registers)
+            # A grid merged away in this block.  The register write above is an
+            # upsert, so without this the grid would survive in the store and
+            # come back on the next `load_registers` — holding members who are
+            # by then in another register too.  Review C4.
+            for gid in retired:
+                for table in ("grid_register", "grid_roll", "grid_cert"):
+                    self.db.execute(f"DELETE FROM {table} WHERE grid_id=?",
+                                    (gid,))
             if rolls is not None:
                 self._put_rolls(rolls)
             if certs is not None:
