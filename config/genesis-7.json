@@ -109,35 +109,36 @@
   },
   "declared_total": 4000,
   "ratification_threshold": 5,
+  "activations": {},
   "ratifications": [
     {
       "node_id": "fin6-n01",
-      "signature": "1de0e084c507988979a5944b8d466e23647c4a2573ddb12d74c5e2e9e5efe1553de9e2194c69a2b3bd4dac697cd6c5feff3e561afacd47c7a454104fa9edbb01"
+      "signature": "77f4c817652aa881a62b24c72bc5ac7460cfa0c528cf18eec0e00d47370715244973593cb1651318cf9acb067a124df2ac0bf5f980272a189fbeb7a6ba8d3f0f"
     },
     {
       "node_id": "fin6-n02",
-      "signature": "f4d12d89b254b5f138140d71c2a1343d79e1424c470ea561d4d92155294ca19348a379df9992ed27655ffab987ad5fe163071324ed3d6c2533b0e8d143827106"
+      "signature": "fb5b3931d41c87509e49cc3e366bc5175b0b7fc247aaccf8c59517992bc75b3b5debc036072a3b441dee054a4b5c67043e29db95b701afbb9873a8d7f6dff806"
     },
     {
       "node_id": "fin6-n03",
-      "signature": "9be38f7ec1f395ccc2f0daa6c48faa4334e2603334163fa522438d237be6f6a261313fb6ea6dc03be0be86d6e1f256f611fabf0091116d04c1080f1a09a3e205"
+      "signature": "83acfb231ad8d61f574340a98395573352a88d74818457a9ec2009abf6ebdb299c8d2d1ba8fdd78db7d1377f6291c891f934d32ef311daa065f839fb5200040b"
     },
     {
       "node_id": "fin6-n04",
-      "signature": "6d63eb9e7b425e823f1cbe5bf1a3c1ef0bdf222857f15a72f1aebae46f0e3212a9d46054e85d82d4bb0d66e703778a5f1ddbfdaa8810e7848ef99d0e430b9a0e"
+      "signature": "b7b8ce2b155769d713e8e721cdc9b4b7b725af951c85d8ed0ac914d08bd0a34d15523911fb095b8096a08df7f22648015fcc110357a91acda4cf3d7bcb20150e"
     },
     {
       "node_id": "fin6-n05",
-      "signature": "c93403f7915325f2999f773ca86b9eaaa48064565a9f054fcb52dc6f42db22a7180f94ddeaa5cfcf3abe087bcb5b2cd9206ea29c7b7fa942ca13425991d5180b"
+      "signature": "7fc214daf29147a136c9f7ea9f59a9c267c6a0477da4fe0cb707e5c6e82dbc6145fb4be00f438795b0bea0d9b5256e6e0d3edb164b7dd64018d915d989bb4803"
     },
     {
       "node_id": "fin6-n06",
-      "signature": "c9942bfa91fffac593b7bb2d999e0491edf5be20aa4c8b44476afc3a5d065f6eec71f3d099372802276d00801d6099571e0e2525f755b0386feb926d982b280a"
+      "signature": "f0761c4c649fb72d48c1b9067d6778d1b0838f6e342edb1e8dfcc0bd07f534516c019621e3584226d1a38da5671e38e4e6d9c4f3074a8ed98c7c8bde85773306"
     },
     {
       "node_id": "fin6-n07",
-      "signature": "620b24769ccbc9c6f81cf080f57270f04fb121180db84889c9840581efdb4437485c6f41966887a0995279c5f6a64db0370d6ebf7735f55ae3637ab92ba83108"
+      "signature": "3913fa6bec8f1d6ab7293e0ded57b28251256062b8f1202e3614d702884d3d8e6ddbff8b3f52baff2bc578dbdea77b365dad6c6e16db5b247506043e4f107408"
     }
   ],
-  "chain_id": "fin6:3dfbdca9bb7e097fa6ec58895200f39371ede5f837bd3e0c3b565b2a9b1de8fc"
+  "chain_id": "fin6:77ffb265f11dadb34a3bb71c83ecd18a737ea3f98fc905e494e0715917447bae"
 }

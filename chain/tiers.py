@@ -27,6 +27,7 @@ from .node import Node
 from .params import ChainParams
 from .register import AttendanceRoll, GridRegister, Standing
 from .state import ChainState, UtxoDelta, merge_deltas
+from . import protocol
 from .tiered import (GENESIS_NETWORK, CeremonyBlock, CeremonyBlockHeader,
                      GridFounding, NetworkBlock, NetworkBlockHeader, SuperBlock,
                      SuperBlockHeader, foundings_root, registers_root)
@@ -64,6 +65,12 @@ class TierWorld:
     #: restart is not punished, because the report that would have carried it
     #: was in memory.  Re-observing it needs the leader to do it again.
     pending_faults: tuple = ()
+    #: {protocol version: activation height}, from the genesis document.  Both
+    #: the builder and the validator read it, so a block's claimed rule set is
+    #: checked against the schedule rather than against whatever the producer
+    #: happened to be running.  Empty means "version 1 for ever", which is what
+    #: a chain that has never scheduled a change looks like.
+    activations: dict = field(default_factory=dict)
     trust: dict = field(default_factory=dict)
     height: int = 0
     tip: str = GENESIS_NETWORK
@@ -129,6 +136,15 @@ class TierWorld:
         with a store treats the whole epoch as a journal and commits once, here.
         A crash anywhere earlier costs the epoch and nothing else.
         """
+        # Before anything moves.  A node that has reached an activation height
+        # for a version it does not implement has three options and only one
+        # is honest: apply under the rules it knows (a silent fork, and the
+        # operator sees a running node), refuse the block as invalid (looks
+        # exactly like the network having failed, and invites someone to
+        # "fix" it), or stop and say which version it needs.  An outage you
+        # can diagnose is cheaper than a fork you cannot see.
+        protocol.require(block.header.height, self.activations)
+
         deltas = [c.delta for c in block.ceremony_blocks()]
         merged, _ = merge_deltas(deltas)
         touched = sorted({c.header.grid_id for c in block.ceremony_blocks()
@@ -785,7 +801,9 @@ class SoloWorkload:
             tiers=1, foundings_root=block.compute_foundings_root(),
             witness_root=shadow.utxo.witness_root,
             history_root=shadow.history.root,
-            utxo_count=shadow.utxo.size, nf_count=shadow.nullifiers.size)
+            utxo_count=shadow.utxo.size, nf_count=shadow.nullifiers.size,
+            protocol=protocol.expected_version(self.world.height + 1,
+                                               self.world.activations))
         return NetworkBlock(header=header, supers=(sup,),
                             foundings=foundings), shadow, "ok"
 
@@ -872,7 +890,9 @@ class SupremeWorkload:
             foundings_root=block.compute_foundings_root(),
             witness_root=shadow.utxo.witness_root,
             history_root=shadow.history.root,
-            utxo_count=shadow.utxo.size, nf_count=shadow.nullifiers.size)
+            utxo_count=shadow.utxo.size, nf_count=shadow.nullifiers.size,
+            protocol=protocol.expected_version(self.world.height + 1,
+                                               self.world.activations))
         return NetworkBlock(header=header, supers=tuple(ordered),
                             dropped=tuple(f"{i}:{w}" for i, w in dropped),
                             foundings=foundings)
@@ -921,6 +941,9 @@ class SupremeWorkload:
         if (shadow.utxo.size, shadow.nullifiers.size) != (h.utxo_count,
                                                           h.nf_count):
             return False, "the counts do not match the applied epoch"
+        ok, why = protocol.check(h.height, h.protocol, self.world.activations)
+        if not ok:
+            return False, why
 
         roots = {c.header.grid_id: c.header.register_root
                  for s in block.supers for c in s.children}

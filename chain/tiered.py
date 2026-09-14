@@ -212,6 +212,12 @@ class NetworkBlockHeader:
     #: the range between them produced.
     utxo_count: int = 0
     nf_count: int = 0
+    #: The rule set this block was produced under.  A verifier recomputes what
+    #: the height called for from the genesis document's activation schedule
+    #: and refuses a mismatch in either direction — claiming an *older* rule
+    #: set matters as much as claiming a newer one, because that is exactly
+    #: what an un-upgraded producer would do.  See chain/protocol.py.
+    protocol: int = 1
     """How many ceremonies stand behind this block.
 
     Three is the full hierarchy: a local grid agreed the transactions, a super
@@ -232,7 +238,7 @@ class NetworkBlockHeader:
                              self.registers_root, self.tiers,
                              self.foundings_root, self.witness_root,
                              self.history_root, self.utxo_count,
-                             self.nf_count)
+                             self.nf_count, self.protocol)
 
 
 @dataclass(eq=False)

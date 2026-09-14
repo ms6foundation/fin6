@@ -30,6 +30,7 @@ from ..block import CeremonyMeta
 from ..ceremony import Grid
 from ..crypto import Signer, h_bytes, h_hex
 from ..register import Standing
+from .. import protocol
 from ..hardening.history import NetworkHistory
 from ..hardening.pool import Era
 from ..store import snapshot as snap
@@ -65,6 +66,7 @@ class NodeProcess:
         keyring = keyring or genesis_mod.dev_keyring
         self.signer: Signer = keyring(node_id)
         self.world, self.wallets = genesis_mod.boot(self.doc, keyring=keyring)
+        self.halted = ""
         # A node speaks only for itself.  The rest of the roster is a set of
         # public keys and an address, not a set of objects.
         self.validators = {n.node_id: n.public_hex for n in self.doc.nodes}
@@ -209,6 +211,10 @@ class NodeProcess:
             "last": self.last_reason,
             "behaviour": self.behaviour,
             "limiter": self.limiter.stats(),
+            # An operator's answer to "are we ready for the activation
+            # height" should be a number of blocks, not a conversation.
+            "protocol": protocol.readiness(state.height, self.world.activations),
+            "halted": self.halted,
             "budget": self.budget.stats(),
             "work": self.work.stats(),
             "catchup": self.catchup.stats(),
@@ -395,7 +401,18 @@ class NodeProcess:
                 last = epoch
                 if until_epoch is not None and epoch > until_epoch:
                     break
-                self.run_epoch(epoch)
+                try:
+                    self.run_epoch(epoch)
+                except protocol.HaltRequired as need:
+                    # Not caught deeper down and turned into a skipped block:
+                    # the whole value of this exception is that it ends the
+                    # process.  A node that logged it and carried on would be
+                    # a node forking quietly, which is the outcome the halt
+                    # exists to prevent.
+                    self.halted = str(need)
+                    self.log(f"HALTED: {need}")
+                    self.stop.set()
+                    break
         finally:
             self.mesh.stop()
             self.store.close()

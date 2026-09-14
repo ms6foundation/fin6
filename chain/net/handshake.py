@@ -77,6 +77,7 @@ from __future__ import annotations
 import secrets
 
 from ..crypto import h_bytes, verify_sig
+from ..protocol import PROTOCOL_VERSION
 
 #: Domain separation.  A signature over a hello must never be a valid signature
 #: over an attestation, a proposal or a spend.
@@ -98,19 +99,37 @@ class HandshakeError(Exception):
 
 
 def message(chain_id: str, from_id: str, to_id: str, epoch: int,
-            nonce: str) -> bytes:
-    return h_bytes(TAG, chain_id, from_id, to_id, int(epoch), nonce)
+            nonce: str, protocol: int = PROTOCOL_VERSION) -> bytes:
+    return h_bytes(TAG, chain_id, from_id, to_id, int(epoch), nonce,
+                   int(protocol))
+
+
+def _protocol_of(payload) -> int:
+    """The version a hello claims, defaulting to 1 for a peer that predates
+    the field.  Advisory either way: it is reported, never enforced — a node
+    that lies about its version only misleads a dashboard, because what
+    actually decides a block is the activation schedule in the document."""
+    value = payload.get("protocol", 1)
+    return value if isinstance(value, int) else 1
 
 
 def build(signer, chain_id: str, from_id: str, to_id: str, epoch: int,
-          nonce: str | None = None) -> dict:
+          nonce: str | None = None,
+          protocol: int = PROTOCOL_VERSION) -> dict:
     """The payload a dialler sends.  `node_id` keeps its old name and meaning;
-    everything beside it is what makes the name worth anything."""
+    everything beside it is what makes the name worth anything.
+
+    `protocol` is signed rather than merely carried, for a small reason worth
+    stating: an unsigned version field is one an attacker can rewrite, and the
+    thing it would buy is making a current peer look stale on somebody's
+    upgrade dashboard the week before an activation height. Cheap to sign, so
+    signed.
+    """
     nonce = nonce or secrets.token_hex(NONCE_BYTES)
     return {"node_id": from_id, "to": to_id, "epoch": int(epoch),
-            "nonce": nonce,
+            "nonce": nonce, "protocol": int(protocol),
             "signature": signer.sign(message(chain_id, from_id, to_id,
-                                             epoch, nonce))}
+                                             epoch, nonce, protocol))}
 
 
 class Verifier:
@@ -131,6 +150,10 @@ class Verifier:
         self.slack = slack
         self.max_seen = max_seen
         self._seen: dict = {}          # (node_id, nonce) -> epoch
+        #: What each peer last said it implements.  Reported by `net status`,
+        #: so "is the network ready for the activation height" is a table
+        #: rather than a conversation.
+        self.peer_protocol: dict = {}
         self.accepted = 0
         self.refused = 0
 
@@ -188,8 +211,10 @@ class Verifier:
         signature = payload.get("signature")
         if not isinstance(signature, str):
             return self._no("no signature")
+        version = _protocol_of(payload)
         if not verify_sig(expected, message(self.chain_id, claimed,
-                                            self.node_id, epoch, nonce),
+                                            self.node_id, epoch, nonce,
+                                            version),
                           signature):
             return self._no(f"{claimed} did not sign this hello")
         # Recorded only now.  Recording a nonce before the signature verified
@@ -197,6 +222,7 @@ class Verifier:
         # the same shape of mistake as refusing a transaction body because
         # someone else spliced a bad proof onto it.
         self._remember(key, epoch, now)
+        self.peer_protocol[claimed] = version
         self.accepted += 1
         return True, "ok", claimed
 
@@ -231,7 +257,8 @@ class Verifier:
 
     def stats(self) -> dict:
         return {"accepted": self.accepted, "refused": self.refused,
-                "nonces": len(self._seen)}
+                "nonces": len(self._seen),
+                "peers": dict(sorted(self.peer_protocol.items()))}
 
     def __repr__(self):
         return (f"Verifier({self.node_id}, {self.accepted} accepted, "

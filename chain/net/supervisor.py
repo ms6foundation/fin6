@@ -204,4 +204,28 @@ def render_status(status: dict, agreement) -> str:
     lines.append("")
     lines.append(("agreement:  " if ok else "DISAGREEMENT:  ") + detail
                  + (f" at height {height}" if height is not None else ""))
+
+    # Upgrade readiness, because "are we ready for the activation height" is a
+    # question an operator should be able to answer by looking rather than by
+    # asking seven people which build they are running.
+    live = [s for s in status.values() if s and s.get("protocol")]
+    if live:
+        running = {s["protocol"]["running"] for s in live}
+        builds = sorted({s["protocol"]["implements"] for s in live})
+        upcoming = [s["protocol"]["next"] for s in live if s["protocol"]["next"]]
+        halted = [n for n, s in sorted(status.items())
+                  if s and s.get("halted")]
+        line = (f"protocol:   running {sorted(running)[0]}, "
+                f"builds implement {builds}")
+        if upcoming:
+            version, at, togo = min(upcoming, key=lambda n: n[2])
+            behind = [n for n, s in sorted(status.items())
+                      if s and s.get("protocol")
+                      and s["protocol"]["implements"] < version]
+            line += f" · {version} at height {at:,} in {togo:,} blocks"
+            line += ("  ALL READY" if not behind
+                     else f"  NOT READY: {', '.join(behind)}")
+        lines.append(line)
+        if halted:
+            lines.append(f"HALTED:     {', '.join(halted)} — see the node log")
     return "\n".join(lines)

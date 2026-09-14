@@ -30,6 +30,7 @@ from dataclasses import dataclass
 
 from .crypto import Signer, h_bytes, h_hex, verify_sig
 from .hardening.params import HardeningParams
+from . import protocol
 from .params import ChainParams
 from .store import codec
 
@@ -73,6 +74,11 @@ class GenesisDocument:
     ratification_threshold: int
     ratifications: tuple = ()         # (node_id, signature hex)
     version: int = FORMAT_VERSION
+    #: {protocol version: activation height}.  A chain's whole upgrade
+    #: schedule, inside the thing its identity is the hash of — so scheduling
+    #: a rule change in advance is a number, and adding one afterwards is a
+    #: new document and, by construction, a new chain.  See chain/protocol.py.
+    activations: dict = dataclasses.field(default_factory=dict)
 
     # ── identity ─────────────────────────────────────────────────────────────
 
@@ -94,6 +100,7 @@ class GenesisDocument:
             "supply": {k: list(v) for k, v in sorted(self.supply.items())},
             "declared_total": self.declared_total,
             "ratification_threshold": self.ratification_threshold,
+            "activations": protocol.canonical(self.activations),
         }
 
     def digest(self) -> str:
@@ -113,6 +120,13 @@ class GenesisDocument:
 
     def hardening_params(self) -> HardeningParams:
         return HardeningParams(**self.hardening_fields)
+
+    def schedule(self) -> dict:
+        """{version: height}, validated."""
+        return protocol.normalise(self.activations)
+
+    def protocol_at(self, height: int) -> int:
+        return protocol.expected_version(height, self.activations)
 
     def regions(self) -> dict:
         return {n.node_id: n.region for n in self.nodes}
@@ -189,6 +203,24 @@ class GenesisDocument:
             problems.append(f"{len(good)} valid ratifications, "
                             f"{self.ratification_threshold} required")
 
+        # 4b. the upgrade schedule.
+        try:
+            schedule = self.schedule()
+        except protocol.ProtocolError as exc:
+            problems.append(f"activation schedule: {exc}")
+            schedule = {}
+        if protocol.expected_version(1, schedule) > protocol.PROTOCOL_VERSION:
+            problems.append(
+                f"this document starts at protocol "
+                f"{protocol.expected_version(1, schedule)} and this build "
+                f"implements {protocol.PROTOCOL_VERSION}")
+        ahead = sorted(v for v in schedule if v > protocol.PROTOCOL_VERSION)
+        if ahead:
+            caveats.append(
+                f"protocol {ahead} activate later and this build implements "
+                f"{protocol.PROTOCOL_VERSION}: a node running it will halt at "
+                f"the first of those heights rather than fork")
+
         # 5. the tier count has to match what the roster can actually run.
         if self.tiers != 1:
             caveats.append("only a one-tier launch is implemented; a document "
@@ -263,6 +295,8 @@ class GenesisDocument:
             ratification_threshold=raw["ratification_threshold"],
             ratifications=tuple((r["node_id"], r["signature"])
                                 for r in raw.get("ratifications", ())),
+            activations={int(v): int(h)
+                         for v, h in (raw.get("activations") or {}).items()},
         )
         stated = raw.get("chain_id")
         if stated is not None and stated != doc.chain_id:
@@ -333,6 +367,7 @@ def boot(doc: GenesisDocument, *, keyring=dev_keyring, store=None,
     world, wallets = bootstrap_world(
         doc.regions(), doc.supply, params, seed=doc.first_seed,
         signers=signers, note_seed=doc.digest())
+    world.activations = doc.schedule()
 
     if len(world.topology.grid_ids()) != doc.n_partitions:
         raise GenesisError(
