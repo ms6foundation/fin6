@@ -254,7 +254,7 @@ change and has nowhere to put one is not.
 | | work | fixes | cost |
 |---|---|---|---|
 | 1 | ~~**Road A** — seat the super grids' members, not their leaders~~ **Done** | the committee, which is where §2's numbers live | one selection rule; latency and certificate size |
-| 2 | **§7** — tier-1/2 attendance in the home-grid register | absence at the top being free | a roll derivation and two governance decisions |
+| 2 | ~~**§7** — tier-1/2 attendance in the home-grid register~~ **Done** | absence at the top being free | a roll derivation and two governance decisions. See §9.2 |
 | 3 | **Road C** — C1's views at the supreme tier | the dead leader | budget arithmetic; reuses `viewchange.py` |
 | 4 | **Road B** — leaderless assembly with a set-preference rule | the leader as a role at tier 2 | a reconciliation rule and a fetch bound |
 | 5 | **§8** — reserve activation heights in the genesis document | keeping the structural road open | a number, before genesis |
@@ -290,6 +290,57 @@ survive a *single* silent node: one absence and every partition on the network
 lost the epoch. It is asserted in `test_a_committee_of_leaders_tolerated_no_absence_at_all`,
 against a real epoch rather than an example, so it fails if the seating ever
 narrows again.
+
+## 9.2 Built — service at the upper tiers
+
+Three counters on `MemberRecord` — `higher_seated`, `higher_attended`,
+`higher_led` — credited into each member's **home grid** register, committed in
+the same `registers_root`, with `higher_missed` derivable from the first two.
+No fourth register, as §7 asked.
+
+**Everything is derived from the block and nothing is carried in it**, which is
+what makes it checkable rather than announced. A super grid's seats are the
+leaders of the children it carries; the supreme committee is the union of
+those, which after Road A is the leaders of every child in the block; who
+attended is what each certificate proves, and the certificates are verified
+before any of this is read. The one thing that was *not* derivable was who
+led — `CeremonyBlockHeader` has carried `leader_id` since part two and the two
+tiers above it never did. Both headers carry it now, each refused if it names
+anybody but the leader that view seated, which also stops the archive losing
+who led the tier that decides the roots.
+
+**The timing is the attendance roll's, and it had to be.** The first attempt
+credited service from the block being applied — and broke state sync, because
+`snapshot.load` checks that the live registers fold to the header's
+`registers_root`, and service applied after the root was computed makes them
+disagree. So service keeps the same beat as a roll: block *h* commits a
+register root every seat could compute before block *h* existed, from the
+service the *previous* block derived. `TierWorld.prev_service` holds it,
+`LocalWorkload._register_after` applies it in exactly the order
+`apply_network_block` does, and a `service` table persists it — the third time
+this lesson has arrived, after `grid_roll` and `grid_cert`, and the snapshot
+payload carries it for the same reason it carries the certificates.
+
+**The two decisions §7 said had to be taken rather than assumed.**
+
+*Does a missed supreme ceremony reset a local counter?* **No**, and the
+counters are separate so that it cannot. A seat at the upper tiers is drawn by
+a lottery the member does not control; folding it into `consecutive` would let
+a node lose the standing it earned at home for an epoch it was conscripted
+into. `credit_service` touches neither the epoch nor the streak.
+
+*Does leading count for more than attending?* It is **counted apart** —
+`higher_led` beside `higher_attended` — rather than weighted. Turning either
+counter into a *consequence* (a standing penalty, exclusion from the committee)
+is a governance decision that should be taken with numbers from a live network
+rather than an intuition here, and the record is what makes those numbers
+exist. Today absence at the top is visible in a committed root; it was not
+visible anywhere at all.
+
+**One latent bug surfaced.** Crediting service widened the set of registers a
+block touches, and the store commit then tried to write a register for a grid
+this block had merged away — a `KeyError` that C4 had left behind and that only
+a block both merging a grid *and* touching it could reach.
 
 ## 10. What this does not do
 

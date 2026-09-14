@@ -88,6 +88,68 @@ def merges_root(merges) -> int:
     return seal_root("merges", [m.digest() for m in merges])
 
 
+def tier_service(block) -> dict:
+    """Who sat at tiers 1 and 2 in this block, who signed, and who led.
+
+    Standing lives in one register per *local* grid, advanced by an attendance
+    roll.  The super and supreme grids are not local grids: they have no
+    persistent membership, no register and no roll of their own — so a node
+    that no-showed at the top paid nothing, while the same node missing its
+    home ceremony lost its attendance streak.  The incentives were inverted
+    exactly where the blast radius is largest: the cheapest place in the
+    network to be absent was the only place where being absent stopped
+    everybody.  Review C2 §7.
+
+    Everything here is derived from the block and nothing is carried in it,
+    which is what makes it checkable rather than announced:
+
+      * a super grid's seats are the leaders of the children it carries;
+      * the supreme committee is the union of those, which is the leaders of
+        every child in the block (Road A seats the tier below, so the two are
+        the same set by construction);
+      * who attended is what each certificate proves, and the certificates are
+        verified before anything here is read;
+      * who led is in the headers, which is why they now carry it.
+
+    Returns {node_id: (seated, attended, led)}, summed across both tiers.
+
+    Two residuals, named rather than hidden.  A child that a super grid
+    *dropped* is not in `children`, so its leader loses credit for a ceremony
+    it did sit in — `dropped` carries hashes, not seats, so the block cannot
+    say otherwise.  And at two tiers the same seats sit in both the super and
+    the supreme ceremony and are credited twice, which is not double-counting:
+    they did sit twice.
+    """
+    out = {}
+    if block.header.tiers < 2:
+        # One tier is one ceremony.  Crediting it here would count the local
+        # roll a second time under another name.
+        return out
+
+    def credit(node_id, seated=0, attended=0, led=0):
+        if not node_id:
+            return
+        was = out.get(node_id, (0, 0, 0))
+        out[node_id] = (was[0] + seated, was[1] + attended, was[2] + led)
+
+    def seats_of(children):
+        return sorted({c.header.leader_id for c in children
+                       if c.header.leader_id})
+
+    for sup in block.supers:
+        signed = set(sup.quorum_cert.attended()) if sup.quorum_cert else set()
+        for nid in seats_of(sup.children):
+            credit(nid, 1, 1 if nid in signed else 0,
+                   1 if nid == sup.header.leader_id else 0)
+
+    committee = seats_of(list(block.ceremony_blocks()))
+    signed = set(block.quorum_cert.attended()) if block.quorum_cert else set()
+    for nid in committee:
+        credit(nid, 1, 1 if nid in signed else 0,
+               1 if nid == block.header.leader_id else 0)
+    return out
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Tier 0
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -189,11 +251,19 @@ class SuperBlockHeader:
     prev_network_hash: str
     child_root: int
     dropped_root: int
+    #: Who led this ceremony.  A `CeremonyBlockHeader` has carried this since
+    #: part two and the tiers above it never did, so the archive knew who led
+    #: every local grid and nothing about who led anything above one.  It is
+    #: needed now for a second reason: standing at the upper tiers is credited
+    #: from the block, and "led" cannot be credited to somebody the block does
+    #: not name.  Review C2 §7.
+    leader_id: str = ""
 
     def hash(self) -> str:
         return "sb:" + h_hex("super-header", self.super_id, self.epoch,
                              self.chain_id, self.prev_network_hash,
-                             self.child_root, self.dropped_root)
+                             self.child_root, self.dropped_root,
+                             self.leader_id)
 
 
 @dataclass(eq=False)
@@ -278,6 +348,12 @@ class NetworkBlockHeader:
     #: believes the membership was.  See chain/seats.py and
     #: docs/quorum_signature_decision.md.
     seats_root: str = ""
+    #: Who led the ceremony that produced this block — the supreme grid's
+    #: leader, or the single grid's at one tier.  Same reason as
+    #: `SuperBlockHeader.leader_id`: the archive should not lose who led the
+    #: tier that decides the roots, and service at the upper tiers is credited
+    #: from what the block names.
+    leader_id: str = ""
     #: How many attestations this block's own certificate had to carry — the
     #: grid's, at one tier, and the supreme grid's above that.  Same reason as
     #: `CeremonyBlockHeader.quorum`: the register a verifier holds is not the
@@ -305,7 +381,7 @@ class NetworkBlockHeader:
                              self.witness_root,
                              self.history_root, self.utxo_count,
                              self.nf_count, self.protocol, self.seats_root,
-                             self.quorum)
+                             self.leader_id, self.quorum)
 
 
 @dataclass(eq=False)

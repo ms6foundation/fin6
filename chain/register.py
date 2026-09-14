@@ -82,12 +82,27 @@ class MemberRecord:
     #: the rule that relocating restarts the counter, and a waiver that is not
     #: visible in the state is a waiver nobody can audit.
     founded_from: str = ""
+    #: Service at the tiers above this grid: how many super or supreme
+    #: ceremonies this member was seated for, how many of those it attended,
+    #: and how many it led.  Separate counters from the local ones, because
+    #: they are a different thing earned in a different place — a seat at the
+    #: upper tiers is drawn by a lottery the member does not control, and
+    #: folding it into `consecutive` would let a node lose the standing it
+    #: earned at home for an epoch it was conscripted into.  Review C2 §7.
+    higher_seated: int = 0
+    higher_attended: int = 0
+    higher_led: int = 0
 
     def as_tuple(self):
         """Canonical serialisation — what the root commits to."""
         return (self.node_id, self.joined_epoch, self.standing,
                 self.consecutive, self.total_attended, self.last_seen_epoch,
-                self.led_count, len(self.faults), self.founded_from)
+                self.led_count, len(self.faults), self.founded_from,
+                self.higher_seated, self.higher_attended, self.higher_led)
+
+    @property
+    def higher_missed(self) -> int:
+        return self.higher_seated - self.higher_attended
 
     def counts(self) -> bool:
         return self.standing == Standing.ATTESTER
@@ -229,6 +244,32 @@ class GridRegister:
             reg.members[rec.node_id] = replace(rec, founded_from=donor_id)
         return reg
 
+    def credit_service(self, service: dict) -> int:
+        """Record what this grid's members did at the tiers above it.
+
+        Takes the whole network's service and keeps its own, because the
+        caller has the block and this object has the membership; asking every
+        register for its own share is one pass and no lookup table.
+
+        Deliberately does **not** touch `epoch`, `consecutive` or standing.
+        The register advances by one ceremony per `apply`, and service is not
+        a second ceremony of this grid — it is what a member did somewhere
+        else.  Whether a missed supreme ceremony should also cost a member its
+        local streak is a governance question with an argument on both sides,
+        and it is recorded here rather than answered: the counters make it
+        answerable with numbers instead of intuition.
+        """
+        touched = 0
+        for node_id, (seated, attended, led) in sorted(service.items()):
+            rec = self.members.get(node_id)
+            if rec is None:
+                continue
+            rec.higher_seated += int(seated)
+            rec.higher_attended += int(attended)
+            rec.higher_led += int(led)
+            touched += 1
+        return touched
+
     # ── merging a grid away ──────────────────────────────────────────────────
 
     def absorb(self, other: "GridRegister") -> list:
@@ -333,7 +374,8 @@ class GridRegister:
             "members": [
                 (r.node_id, r.joined_epoch, r.standing, r.consecutive,
                  r.total_attended, r.last_seen_epoch, r.led_count,
-                 list(r.faults), r.founded_from)
+                 list(r.faults), r.founded_from,
+                 r.higher_seated, r.higher_attended, r.higher_led)
                 for _, r in sorted(self.members.items())],
             "misses": sorted(self._misses.items()),
         }
@@ -344,12 +386,15 @@ class GridRegister:
                   attend_threshold=dump["attend_threshold"],
                   forgiveness=dump["forgiveness"])
         for (nid, joined, standing, consecutive, total, last_seen, led,
-             faults, founded_from) in dump["members"]:
+             faults, founded_from, seated, attended,
+             higher_led) in dump["members"]:
             out.members[nid] = MemberRecord(
                 node_id=nid, joined_epoch=joined, standing=standing,
                 consecutive=consecutive, total_attended=total,
                 last_seen_epoch=last_seen, led_count=led,
-                faults=tuple(faults), founded_from=founded_from)
+                faults=tuple(faults), founded_from=founded_from,
+                higher_seated=seated, higher_attended=attended,
+                higher_led=higher_led)
         out._misses = dict(dump["misses"])
         return out
 

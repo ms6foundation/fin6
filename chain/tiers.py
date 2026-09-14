@@ -32,7 +32,7 @@ from . import seats as seats_mod
 from .tiered import (GENESIS_NETWORK, CeremonyBlock, CeremonyBlockHeader,
                      GridFounding, GridMerge, NetworkBlock,
                      NetworkBlockHeader, SuperBlock, SuperBlockHeader,
-                     foundings_root, merges_root, registers_root)
+                     foundings_root, merges_root, registers_root, tier_service)
 from .store import undo
 from .trustlist import TrustList
 
@@ -55,6 +55,12 @@ class TierWorld:
     #: out of a seat's memory of what it saw.
     prev_certs: dict = field(default_factory=dict)   # grid_id -> QuorumCert
     prev_leaders: dict = field(default_factory=dict)  # grid_id -> node_id
+    #: What the last applied block said about service at the tiers above the
+    #: grids, as {node_id: (seated, attended, led)}.  Credited into the
+    #: registers one block later — the same beat an attendance roll keeps, and
+    #: for the same reason: the register root a block commits has to be one
+    #: every seat can compute before the block exists.  Review C2 §7.
+    prev_service: dict = field(default_factory=dict)
     #: The roster, so a certificate's signatures are checked against the keys
     #: the genesis document names rather than the keys the certificate carries
     #: about itself.  A real node sets this from the document; the simulation
@@ -187,8 +193,18 @@ class TierWorld:
 
         deltas = [c.delta for c in block.ceremony_blocks()]
         merged, _ = merge_deltas(deltas)
+        # What this block says about the tiers above the grids.  Derived from
+        # the block rather than carried in it — see `tiered.tier_service` — and
+        # read here because the grids it credits are not always the grids that
+        # produced a roll, so both have to be in `touched` or a node would
+        # write a register it did not save and undo a block it could not
+        # reverse.
+        service = self.prev_service
+        served_in = {self.topology.grid_of(nid) for nid in service
+                     if nid in self.topology.assignment}
         touched = sorted({c.header.grid_id for c in block.ceremony_blocks()
-                          if c.roll is not None and c.roll.epoch >= 0})
+                          if c.roll is not None and c.roll.epoch >= 0}
+                         | served_in)
         # Captured before anything moves: an undo record is a photograph of the
         # state the block is about to replace.
         pre = [self.registers[g] for g in touched]
@@ -213,6 +229,11 @@ class TierWorld:
                 # author exactly nothing.
                 reg.apply(child.roll,
                           faulted=faulted_from(child.faults, self.params))
+        # After the rolls and before the grids move, so a member that is about
+        # to be moved by a founding is credited in the grid it served from.
+        if service:
+            for reg in self.registers.values():
+                reg.credit_service(service)
         for founding in block.foundings:
             self._found_grid(founding)
         for merge in block.merges:
@@ -244,6 +265,10 @@ class TierWorld:
             self.prev_certs.pop(gid)
         for gid in [g for g in self.prev_leaders if g not in self.registers]:
             self.prev_leaders.pop(gid)
+        # What the *next* block's registers will be credited from, taken off
+        # the block that was just applied rather than out of a seat's memory —
+        # the same rule `prev_certs` follows two lines above.
+        self.prev_service = tier_service(block)
         self.pending_faults = ()
         if block.foundings or block.merges:
             self.reroute_mempools()
@@ -251,7 +276,13 @@ class TierWorld:
             node = self.nodes[nid]
             node.store.commit(block=block, delta=merged, state=node.state,
                               undo=record,
-                              registers={g: self.registers[g] for g in touched},
+                              # A grid merged away in this block is in
+                              # `touched` — it ran a ceremony — and is no
+                              # longer a register.  `retired` below is what
+                              # removes it; writing it first would be a
+                              # KeyError.
+                              registers={g: self.registers[g] for g in touched
+                                         if g in self.registers},
                               # Written every time, because a block carries the
                               # roll of the epoch before it: a node that comes
                               # back without this cannot validate the next
@@ -264,6 +295,7 @@ class TierWorld:
                               # taught, and the same fix.
                               certs=self.prev_certs,
                               leaders=self.prev_leaders,
+                              service=self.prev_service,
                               # Upserts alone would leave a merged-away grid
                               # in the store to be resurrected by the next
                               # `load_registers` — with members who are now in
@@ -390,7 +422,8 @@ class TierWorld:
         return store
 
     def adopt(self, state, registers: dict, rolls: dict | None = None,
-              certs: dict | None = None, leaders: dict | None = None):
+              certs: dict | None = None, leaders: dict | None = None,
+              service: dict | None = None):
         """Take a snapshot's state as this world's, in memory.
 
         The mirror of `restore_from`, and the difference is where the state
@@ -409,6 +442,7 @@ class TierWorld:
         self.rolls = dict(rolls or {})
         self.prev_certs = dict(certs or {})
         self.prev_leaders = dict(leaders or {})
+        self.prev_service = dict(service or {})
         self.pending_rolls = {}
         self.pending_faults = ()
         self.height = state.height
@@ -433,6 +467,7 @@ class TierWorld:
         self.registers = store.load_registers()
         self.rolls = store.load_rolls()
         self.prev_certs, self.prev_leaders = store.load_certs()
+        self.prev_service = store.load_service()
         self.pending_rolls = {}
         self.pending_faults = ()
         self.height = state.height
@@ -676,9 +711,18 @@ class LocalWorkload:
             block.roll.leader_id if block.roll is not None else "")
 
     def _register_after(self, roll, faulted=()):
+        """The root this block commits: the roll applied, then the service.
+
+        Both are functions of the *previous* network block, which every seat
+        holds before this one exists, so the root is checkable rather than
+        announced.  The order matters and is the same order
+        `apply_network_block` uses — a root computed one way here and the other
+        way there would be a fork with no author.
+        """
         reg = self.world.registers[self.grid_id].clone()
         if roll.epoch >= 0:
             reg.apply(roll, faulted=faulted)
+        reg.credit_service(self.world.prev_service)
         return reg.root()
 
     def build(self, leader: Node, meta, limit=None) -> CeremonyBlock:
@@ -851,12 +895,18 @@ class SuperWorkload:
     name = "super"
 
     def __init__(self, world: TierWorld, super_id: str, children: dict,
-                 epoch: int, owner_of: dict):
+                 epoch: int, owner_of: dict, leader_id: str = ""):
         self.world = world
         self.super_id = super_id
         self.children = dict(children)      # grid_id -> CeremonyBlock
         self.epoch = epoch
         self.owner_of = dict(owner_of)      # node_id -> grid_id it led
+        self.leader_id = leader_id
+        #: Who this ceremony seated as leader.  Every seat derived it from the
+        #: same seed, so it is not a claim the block gets to make: a header
+        #: naming anybody else is refused.  It is in the header because
+        #: standing at this tier is credited from what the block names
+        #: (review C2 §7).
 
     def _assemble(self, limit=None):
         ordered = [self.children[g] for g in sorted(self.children)]
@@ -875,7 +925,9 @@ class SuperWorkload:
             super_id=self.super_id, epoch=self.epoch, chain_id=leader.chain_id,
             prev_network_hash=self.world.tip,
             child_root=block.compute_child_root(),
-            dropped_root=block.compute_dropped_root())
+            dropped_root=block.compute_dropped_root(),
+            leader_id=self.leader_id or getattr(meta, "leader_id", "")
+            or leader.id)
         return SuperBlock(header=header, children=kept, dropped=dropped)
 
     def validate(self, node: Node, block: SuperBlock):
@@ -888,6 +940,9 @@ class SuperWorkload:
             return False, "child_root does not match the children"
         if h.dropped_root != block.compute_dropped_root():
             return False, "dropped_root does not match"
+        if self.leader_id and h.leader_id != self.leader_id:
+            return False, (f"header names {h.leader_id or 'nobody'} as leader; "
+                           f"this view seated {self.leader_id}")
 
         for child in block.children:
             if child.quorum_cert is None:
@@ -983,6 +1038,8 @@ class SoloWorkload:
                 {self.grid_id: child.header.register_root}),
             seats_root=self.world.seats_root_for([self.grid_id]),
             quorum=self.world.quorum_for(self.grid_id),
+            # One tier: the grid's own leader led the only ceremony there was.
+            leader_id=child.header.leader_id,
             tiers=1, foundings_root=block.compute_foundings_root(),
             merges_root=block.compute_merges_root(),
             witness_root=shadow.utxo.witness_root,
@@ -1041,7 +1098,8 @@ class SupremeWorkload:
     name = "supreme"
 
     def __init__(self, world: TierWorld, supers: dict, epoch: int,
-                 owner_of: dict, tiers: int = 3, quorum: int = 0):
+                 owner_of: dict, tiers: int = 3, quorum: int = 0,
+                 leader_id: str = ""):
         self.world = world
         self.supers = dict(supers)          # super_id -> SuperBlock
         self.epoch = epoch
@@ -1053,6 +1111,9 @@ class SupremeWorkload:
         #: a reader is not left deriving it from a register that has moved
         #: (review B4).
         self.supreme_quorum = quorum
+        #: As `SuperWorkload.leader_id`: derived by every seat, named in the
+        #: header, refused if it disagrees.
+        self.leader_id = leader_id
 
     def _apply(self, state: ChainState, supers):
         deltas = [c.delta for s in supers for c in s.children]
@@ -1084,6 +1145,7 @@ class SupremeWorkload:
             super_root=block.compute_super_root(),
             registers_root=registers_root(roots),
             seats_root=self.world.seats_root_for(roots),
+            leader_id=self.leader_id or leader.id,
             # The supreme grid seats every super grid's leaders rather than a
             # register's members, so its quorum is a fraction of the seats it
             # drew — `supreme_quorum` is where that is decided, and this is it
@@ -1114,6 +1176,9 @@ class SupremeWorkload:
         if h.tiers != self.tiers:
             return False, (f"header claims {h.tiers} tiers, this epoch ran "
                            f"{self.tiers}")
+        if self.leader_id and h.leader_id != self.leader_id:
+            return False, (f"header names {h.leader_id or 'nobody'} as leader; "
+                           f"this view seated {self.leader_id}")
         ok, why = _check_foundings(self.world, self.epoch, block)
         if not ok:
             return False, why
@@ -1406,7 +1471,8 @@ def run_tiered_epoch(world: TierWorld, epoch: int, base_seed: str,
             grid, {n: world.nodes[n] for n in members}, params,
             height=epoch, epoch=epoch, rounds=rounds,
             quorum=params.quorum_size(len(members)),
-            workload=SuperWorkload(world, sid, children, epoch, led_by),
+            workload=SuperWorkload(world, sid, children, epoch, led_by,
+                                   leader_id=grid.leader),
             grid_id=sid)
         result = ceremony.run(behaviours.get(grid.leader, HonestLeader()))
         supers.ceremonies[sid] = result
@@ -1454,7 +1520,8 @@ def run_tiered_epoch(world: TierWorld, epoch: int, base_seed: str,
         workload=SupremeWorkload(world, supers.blocks, epoch, super_owner,
                                  tiers=tiers,
                                  quorum=params.quorum_size(
-                                     len(supreme_members))),
+                                     len(supreme_members)),
+                                 leader_id=grid.leader),
         grid_id="supreme")
     supreme = ceremony.run(behaviours.get(grid.leader, HonestLeader()))
 

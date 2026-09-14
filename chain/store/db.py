@@ -68,6 +68,15 @@ SCHEMA = (
     # lesson `grid_roll` taught, arriving a second time.
     "CREATE TABLE IF NOT EXISTS grid_cert("
     "  grid_id TEXT PRIMARY KEY, leader TEXT, blob BLOB NOT NULL)",
+    # What the last block said about service at the tiers above the grids —
+    # who sat in a super or supreme ceremony, who signed, who led.  It is
+    # credited into the registers one block later, exactly as a roll is, so a
+    # node that restarts without it computes a different register root from
+    # everybody else.  Third time this lesson has arrived; see `grid_roll`.
+    # Review C2 section 7.
+    "CREATE TABLE IF NOT EXISTS service("
+    "  node_id TEXT PRIMARY KEY, seated INTEGER NOT NULL,"
+    "  attended INTEGER NOT NULL, led INTEGER NOT NULL)",
     # `blob` is the whole header, canonically encoded.  The columns beside it
     # are for looking at; the blob is what a client is served, because a header
     # a node has reassembled from columns is a header a node could get wrong.
@@ -221,7 +230,7 @@ class ChainStore:
 
     def adopt(self, state: ChainState, registers: dict,
               rolls: dict | None = None, certs: dict | None = None,
-              leaders: dict | None = None):
+              leaders: dict | None = None, service: dict | None = None):
         """Replace the whole chain on disk with an adopted snapshot.
 
         `initialise` refuses a store that already holds a chain, and rightly:
@@ -243,7 +252,7 @@ class ChainStore:
         dead = set(dump["utxo_dead"])
         with self._write():
             for table in ("utxo", "nullifier", "txblock", "netblock", "undo",
-                          "grid_register", "grid_roll", "grid_cert",
+                          "grid_register", "grid_roll", "grid_cert", "service",
                           "hardened", "spent_turn"):
                 self.db.execute(f"DELETE FROM {table}")
             self.db.executemany(
@@ -262,6 +271,7 @@ class ChainStore:
             self._put_registers(registers)
             self._put_rolls(rolls or {})
             self._put_certs(certs or {}, leaders or {})
+            self._put_service(service or {})
 
     def load_rolls(self) -> dict:
         """The rolls of the tip's epoch, by grid.
@@ -348,7 +358,7 @@ class ChainStore:
     def commit(self, *, block, delta, state: ChainState, undo: UndoRecord,
                registers: dict | None = None, rolls: dict | None = None,
                certs: dict | None = None, leaders: dict | None = None,
-               retired: tuple = ()):
+               retired: tuple = (), service: dict | None = None):
         """One network block, applied or not applied.
 
         The caller has already moved its in-memory state forward; this makes
@@ -391,6 +401,8 @@ class ChainStore:
                  str(header.super_root), str(header.registers_root),
                  codec.encode(header),
                  codec.encode(block.quorum_cert) if block.quorum_cert else None))
+            if service is not None:
+                self._put_service(service)
             if registers:
                 self._put_registers(registers)
             # A grid merged away in this block.  The register write above is an
@@ -520,6 +532,19 @@ class ChainStore:
             certs[grid_id] = codec.decode(blob)
             leaders[grid_id] = leader or ""
         return certs, leaders
+
+    def load_service(self) -> dict:
+        """{node_id: (seated, attended, led)} from the last applied block."""
+        return {nid: (seated, attended, led) for nid, seated, attended, led
+                in self.db.execute(
+                    "SELECT node_id, seated, attended, led FROM service")}
+
+    def _put_service(self, service: dict):
+        self.db.execute("DELETE FROM service")
+        self.db.executemany(
+            "INSERT INTO service(node_id,seated,attended,led) VALUES(?,?,?,?)",
+            [(nid, int(a), int(b), int(c))
+             for nid, (a, b, c) in sorted(service.items())])
 
     def _put_certs(self, certs: dict, leaders: dict):
         self.db.execute("DELETE FROM grid_cert")

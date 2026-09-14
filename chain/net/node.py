@@ -1011,7 +1011,12 @@ class NodeProcess:
                         # register_root disagree and the node asks for a
                         # fresher snapshot.
                         "certs": self.world.prev_certs,
-                        "leaders": self.world.prev_leaders})
+                        "leaders": self.world.prev_leaders,
+                        # And what the next block credits at the upper tiers,
+                        # for exactly the same reason: a node that adopts a
+                        # state without it computes a different register root
+                        # from everybody else one block later.  Review C2 §7.
+                        "service": self.world.prev_service})
         self.log(f"snapshot: offered height {height} to {who} — "
                  f"{len(manifest.get('parts', ()))} chunks")
 
@@ -1061,7 +1066,8 @@ class NodeProcess:
         self._inbound_snap = {
             "from": who, "height": height, "header": header, "cert": cert,
             "manifest": manifest, "certs": payload.get("certs"),
-            "leaders": payload.get("leaders"), "chunks": {},
+            "leaders": payload.get("leaders"),
+            "service": payload.get("service"), "chunks": {},
             "want": [(int(k), int(i)) for k, i, _, _ in parts],
         }
         self.log(f"snapshot: {who} offers height {height} in "
@@ -1139,7 +1145,8 @@ class NodeProcess:
             return
         self._adopt_snapshot(who, {"header": header, "cert": pending["cert"],
                                    "certs": pending["certs"],
-                                   "leaders": pending["leaders"]},
+                                   "leaders": pending["leaders"],
+                                   "service": pending.get("service")},
                              state=state, registers=registers)
 
     def _adopt_snapshot(self, who: str, payload: dict, *, state=None,
@@ -1176,9 +1183,11 @@ class NodeProcess:
         was = self.world.height
         certs = payload.get("certs") or {gid: cert}
         leaders = payload.get("leaders") or {}
-        self.world.adopt(state, registers, certs=certs, leaders=leaders)
+        service = {n: tuple(v) for n, v in (payload.get("service") or {}).items()}
+        self.world.adopt(state, registers, certs=certs, leaders=leaders,
+                         service=service)
         self.store.adopt(state, registers, self.world.rolls,
-                         certs=certs, leaders=leaders)
+                         certs=certs, leaders=leaders, service=service)
         self.history = NetworkHistory(self.era.spec, self.hardening)
         self.catchup.forget(state.height)
         self.snapshot_adopted += 1
