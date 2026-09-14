@@ -110,35 +110,93 @@
   "ratification_threshold": 7,
   "activations": {},
   "purpose": "launch",
+  "era0": {
+    "root": "ab79969bedf11467225f5920103d27b1bce749067bf16b3602adeeea24cdbabe",
+    "pub_seed": "185fe751254da3ace4246788d8bc390ac3ea10a6ccd38a19c2ef9424f5351c5f",
+    "tree_height": 17,
+    "turns": 70000,
+    "scheme": "fin6-wots-t-sha256-w16-n32",
+    "contributions": [
+      [
+        "fin6-n01",
+        0,
+        10000,
+        "5378de365a5efab018f732696e658d4f7340b90ec46b628201814bbe89c9d931",
+        "d9a8621a64359b4f09d4dc21b730c56fa23b9364460d9d6c1e1056e56cad12478d9eec58ede93e749fa61210be952929dedc0e91f9ffa82f917a5ce6238a5905"
+      ],
+      [
+        "fin6-n02",
+        10000,
+        10000,
+        "615083c45891ed08f4fbdc22c3917ab6e1998b9c6ad8c20d5a7a15c97be48dd3",
+        "639e72e681f3fbe8a1110b69aa5252b46aeea673f0c6c32d62cb4fd99026a78cd358bebe5e055e30fccae34581f04356cd6ab6f22f503f0721f0a0322e381802"
+      ],
+      [
+        "fin6-n03",
+        20000,
+        10000,
+        "43bc2fa0970706176ae07956a18181c1fd889bfc20075dbf0742c5a9596710af",
+        "e078426cafa41df9f365060674eb654d5b6cc6dceba1608978df8e53f3fc54ce980639b9caecbdf82e945e765744c7a8adc3acb26c474dc2fd77ec9f991f150c"
+      ],
+      [
+        "fin6-n04",
+        30000,
+        10000,
+        "c31560d230ae7cfde465643eef4a723ac7a0cb52c92f058aa842ebcfeec84125",
+        "74abf3f7c661a041312abe274a88a2702d160022455dbab7aac8635a396129cdcd11a78f9978005e04620298de077f0b982ba50b7f4dff4d2d21ec4558be450e"
+      ],
+      [
+        "fin6-n05",
+        40000,
+        10000,
+        "7f06dbed492c19f5c0dd5feb2688315ce469cc5e429946ef318644f5616a963c",
+        "a2d2dac88e3f0b236b79dbbd81d696feb1ea10d06a03a087040376af6c0b3f5da2fe2c719557b4e044c3b8843c1dfcf37ff7371dabdea5bf648a66cb1a5eb20f"
+      ],
+      [
+        "fin6-n06",
+        50000,
+        10000,
+        "74792211bfb60934a1fb9be70651379b0cd2540fc012e2e08b2a95deb1a11dd1",
+        "5a194f3d8bf5c1ab05b8bb6919fcb67aa5569b33a81f8bac62cf923b2a83600134dd4030e14b8d3e7e5c994d395a9407ded13f2bf5ebfb8675891c934835b70e"
+      ],
+      [
+        "fin6-n07",
+        60000,
+        10000,
+        "332b094326658f8e96d6d4fe069b8a3f7113c44cc5b8a9e58e6b879971fe2524",
+        "b380b4826dbc8be6df16f13f683a1e8451a95574f26402ff0084af5a6f0db59fdc6bc534d5d107161c84de93aa822c30cbdc2b90e1844fc54651d96454df4c05"
+      ]
+    ]
+  },
   "ratifications": [
     {
       "node_id": "fin6-n01",
-      "signature": "bf6e7635021238fc23496d7a2c0692bd7f13a2a2a2bc914dd6291f5b6682c048e673968414e21b5ff94fdb5db560e0c3c12b0358f799ddd91ca4c5125c48a801"
+      "signature": "d504e01c8a38e395890a11c3f02956ad4128510d3da69831dc71d66936f384ec04ad9e307fdda7b6278c0122ca27783f67d7690649ab7f6b486edef29adf8d0b"
     },
     {
       "node_id": "fin6-n02",
-      "signature": "157fba5c944dd892e0f142ff0d3030cf93bb13ef2bf6773bedf35176f3fc5174c72b8886e06d2a37fab5375627b4123ea51daadb3f549bd0ab04c0e3eb7b7200"
+      "signature": "9d0b114bb146fb04f9fb205935420a35cb1ac8626408f6bc48dbc2d2a5bd33258dbcbddddadec884968990eb4717a628492a158db51a6d8d528fddffb443b009"
     },
     {
       "node_id": "fin6-n03",
-      "signature": "5beb8633290df3c914e198c82613b03fbea602c469616e9ca4514b30ab8149f07a77e087dc188ca4e25a4aac5a4187c9f492bc863336db88ccbcfe490d20b507"
+      "signature": "6e0203c4683525b1ac6eedad80682df9efd2623b86e0a37f5aeb0d8b99958aed49e8624b5fbd7f7795857758348ea8d975780ddfe0c27c98d94cfec131827800"
     },
     {
       "node_id": "fin6-n04",
-      "signature": "8de5912a24a666c02206433007a84364c7a08aedc9cc985f8698fecd217243d6b6e5ece26d0c03a89e6170ae666c799b0b3affb2c1399f01235199f9b225d50a"
+      "signature": "cef5ebb4e084311f5ae62d5909083252440bc665f5870a049cc4f464988f71c48f4e918b08954334f7882c3ae7d869040efd6b042a9b0ddb0dbfdd1b0572040d"
     },
     {
       "node_id": "fin6-n05",
-      "signature": "18629d46d1615bc06de6061f8e106ed61fbc133d0145260bc03a1887baa83358f0da41618a7f22ffd704c314b1c52ac4305b4e2469d692d7bb1a1fbc4c19f101"
+      "signature": "5b3f8b7c9fc78ade1af7970bdee608699bdab6e220b6fed34b9d38236771344f770808f31817359b1157ef837c641e6f9508e52044859fd9bcc76758176a6d08"
     },
     {
       "node_id": "fin6-n06",
-      "signature": "efbc8d0da1aaf77cc4a31b42ef9f38aac35ca91fc8a8518f842be907097f0655e70ed317d61439f9e6041f289a831b0bcf31658e5f5adbd4ca76c0af27e1010d"
+      "signature": "2320a08b87cab26cf0662e0fd97a988bdba6b0be510a13ca294ed4ed11facba870dc4141b763b7c9dee454d8397e70e9e4fb66bd9d7c58943205fa3661fb2c00"
     },
     {
       "node_id": "fin6-n07",
-      "signature": "460bf8773422faee1e15e7837c1ebfc08e3c2e6d7b360556ca586583702e3e07c757c8a9b709a94fa0e301886b21c876c3fb9ab09963f1995f5b318c84930f04"
+      "signature": "be3d99c3c86dbf3ab2d542a1fd0d2474aa785fde1117490dd62e343915cce8e974acaa2094bd8612f650049a302bcf91c219d44d046284f2aef9ad5146e52d04"
     }
   ],
-  "chain_id": "fin6:e6dcf82ed55748e85480b47d406d47f75c771d19780cb21011c84bd205430c42"
+  "chain_id": "fin6:27c70871337bf32d5ca32e0b7e67e2a0eaec667decc24768a3d7850af62384e6"
 }

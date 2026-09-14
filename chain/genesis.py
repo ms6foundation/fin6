@@ -25,10 +25,12 @@ view seed is a value in the file rather than the output of a commit-reveal
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 from dataclasses import dataclass
 
 from .crypto import Signer, h_bytes, h_hex, verify_sig
+from .hardening import contrib
 from .hardening.params import HardeningParams
 from . import protocol
 from .params import ChainParams
@@ -40,6 +42,31 @@ FORMAT_VERSION = 1
 LAUNCH_PURPOSE = "launch"
 TEST_PURPOSE = "test"
 PURPOSES = (LAUNCH_PURPOSE, TEST_PURPOSE)
+
+#: The era-0 block's field names, in the order a document writes them.
+ERA0_FIELDS = ("root", "pub_seed", "tree_height", "turns", "scheme",
+               "contributions")
+
+
+def canonical_era0(era0: dict) -> dict:
+    """Total and order-fixing, so `body()` never depends on how a dict was
+    built.  Says nothing about whether the contents are *right* — that is
+    `verify`'s job, and keeping the two apart is what lets a document with a
+    nonsense era 0 be reported on rather than raise out of its own digest."""
+    if not era0:
+        return {}
+    out = {}
+    for name in ERA0_FIELDS:
+        if name not in era0:
+            continue
+        value = era0[name]
+        if name == "contributions":
+            value = sorted((list(c) for c in value),
+                           key=lambda c: (c[1] if len(c) > 1 else 0))
+        out[name] = value
+    for name in sorted(set(era0) - set(ERA0_FIELDS)):   # keep the unknown
+        out[name] = era0[name]                          # so verify can refuse it
+    return out
 ID_PREFIX = "fin6:"
 
 
@@ -92,6 +119,14 @@ class GenesisDocument:
     #: hash of and inside the signatures.  A test document cannot be quietly
     #: promoted: changing this word changes the chain id.
     purpose: str = LAUNCH_PURPOSE
+    #: Era 0 of the hardening pool, as a ceremony rather than as a seed
+    #: somebody had: the root, the public randomiser, and one signed claim per
+    #: holder to a contiguous slice of the turns.  A holder's share of the pool
+    #: is its rewrite ceiling exactly (`max_fork_depth`), so this map is the
+    #: security parameter and not an operational detail — see
+    #: chain/hardening/contrib.py and review A4.  Empty is allowed only for a
+    #: test document.
+    era0: dict = dataclasses.field(default_factory=dict)
 
     # ── identity ─────────────────────────────────────────────────────────────
 
@@ -115,6 +150,7 @@ class GenesisDocument:
             "ratification_threshold": self.ratification_threshold,
             "activations": protocol.canonical(self.activations),
             "purpose": self.purpose,
+            "era0": canonical_era0(self.era0),
         }
 
     def digest(self) -> str:
@@ -320,6 +356,15 @@ class GenesisDocument:
                     f"{hard.turns:,} turns do not divide evenly among "
                     f"{len(self.turn_holders)} holders")
 
+        # 6b. era 0, if the document builds one.
+        #
+        # A4: the holder map is the rewrite ceiling, exactly, because
+        # `max_fork_depth = attacker turns / width` is a bound and not a
+        # probability.  A map nobody attested is a security parameter on
+        # trust, and era n+1 is authorised by era n, so era 0 is the anchor
+        # for all of it.
+        problems.extend(self._era0_problems(hard, ids, caveats))
+
         # 7. the supply.
         total = sum(sum(v) for v in self.supply.values())
         if total != self.declared_total:
@@ -330,11 +375,109 @@ class GenesisDocument:
                        "which only a party holding the openings can do. A "
                        "genesis mint transaction would make it checkable by "
                        "anyone (design §2)")
-        caveats.append("era 0 is described by its holder map, not built from "
-                       "contributed leaves (design §4)")
         caveats.append("the first view seed is a value in the document, not "
                        "the output of a commit-reveal (design §5)")
         return not problems, problems, caveats
+
+    def _era0_problems(self, hard, ids, caveats) -> list:
+        """Era 0's contributed-leaf ceremony, checked from the document alone.
+
+        What is checkable here: that the slices cover the pool exactly once,
+        that every holder is a founder, that each claim is signed by the key
+        the roster names it by, that the era agrees with the hardening
+        parameters, and what the concentration implies for the rewrite ceiling.
+
+        What is not: that the leaves behind each digest are real public keys —
+        that needs the published transcript, and `verify_transcript` is the
+        function for it. The document commits to the digests, so the two halves
+        cannot disagree without one of them failing.
+        """
+        problems = []
+        if not self.era0:
+            if self.purpose == LAUNCH_PURPOSE:
+                problems.append(
+                    "era 0 has no contributed-leaf ceremony: the pool would be "
+                    "one seed somebody holds, and a holder's share of the pool "
+                    "is its rewrite ceiling exactly (review A4)")
+            else:
+                caveats.append("era 0 is described by its holder map, not "
+                               "built from contributed leaves (design §4)")
+            return problems
+
+        unknown = set(self.era0) - set(ERA0_FIELDS)
+        if unknown:
+            problems.append(f"era 0 carries unknown fields {sorted(unknown)}")
+        missing = [f for f in ERA0_FIELDS if f not in self.era0]
+        if missing:
+            problems.append(f"era 0 is missing {missing}")
+            return problems
+
+        if hard is not None:
+            if self.era0["turns"] != hard.turns:
+                problems.append(
+                    f"era 0 has {self.era0['turns']:,} turns, the hardening "
+                    f"parameters say {hard.turns:,}")
+            if self.era0["tree_height"] != hard.tree_height:
+                problems.append(
+                    f"era 0's tree is 2^{self.era0['tree_height']}, the "
+                    f"parameters say 2^{hard.tree_height}")
+            if self.era0["scheme"] != hard.wots_scheme:
+                problems.append(
+                    f"era 0's leaves are {self.era0['scheme']!r} keys, the "
+                    f"chain signs turns with {hard.wots_scheme!r}")
+
+        expected = contrib.pub_seed_for(self.network, self.first_seed).hex()
+        if self.era0["pub_seed"] != expected:
+            problems.append(
+                "era 0's public seed is not the one derived from the network "
+                "and the first seed: a randomiser somebody chose is a "
+                "randomiser somebody could have ground")
+
+        try:
+            claims = [contrib.Contribution(*c) for c in
+                      self.era0["contributions"]]
+        except TypeError:
+            problems.append("era 0's contributions are not (holder, first, "
+                            "count, digest, signature)")
+            return problems
+        try:
+            contrib.check_coverage(claims, self.era0["turns"])
+        except contrib.ContributionError as exc:
+            problems.append(f"era 0's slices: {exc}")
+
+        keys = self.keys()
+        for c in claims:
+            if c.holder not in ids:
+                problems.append(f"era 0: {c.holder} holds turns and is not a "
+                                f"founder")
+                continue
+            msg = contrib.Contribution.message(
+                self.network, c.holder, c.first, c.count, c.digest,
+                self.era0["root"], self.era0["scheme"])
+            if not verify_sig(keys[c.holder], msg, c.signature):
+                problems.append(
+                    f"era 0: {c.holder}'s claim to turns {c.first}–"
+                    f"{c.first + c.count - 1} is not signed by its roster key")
+
+        # Concentration.  This is the number the whole ceremony exists for, so
+        # it is stated in blocks and hours rather than left as a fraction.
+        if hard is not None and claims:
+            share = contrib.shares(claims, self.era0["turns"])
+            worst, biggest = max(share.items(), key=lambda kv: kv[1])
+            depth = hard.max_fork_depth(biggest)
+            hours = depth * hard.block_interval / 3600
+            if biggest * 3 > 1:
+                problems.append(
+                    f"era 0: {worst} holds {biggest:.0%} of the pool, which "
+                    f"is a rewrite ceiling of {depth:,} blocks "
+                    f"({hours:.1f} h) for one party")
+            caveats.append(
+                f"era 0's largest holder is {worst} with {biggest:.0%} of the "
+                f"pool: {depth:,} blocks ({hours:.1f} h) of rewrite ceiling. "
+                f"Nothing here proves two holders are not the same operator — "
+                f"that is an identity claim, and it is signed rather than "
+                f"assumed (review A4)")
+        return problems
 
     # ── serialisation ────────────────────────────────────────────────────────
 
@@ -372,6 +515,7 @@ class GenesisDocument:
             activations={int(v): int(h)
                          for v, h in (raw.get("activations") or {}).items()},
             purpose=raw.get("purpose", LAUNCH_PURPOSE),
+            era0=canonical_era0(raw.get("era0") or {}),
         )
         stated = raw.get("chain_id")
         if stated is not None and stated != doc.chain_id:
@@ -404,6 +548,28 @@ def save(doc: GenesisDocument, path):
 # ═══════════════════════════════════════════════════════════════════════════════
 # Booting a network from a document
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def first_seed_for(network: str, node_ids) -> str:
+    """The default first seed: the roster's own digest.
+
+    Public and derived rather than chosen, which is why era 0's public
+    randomiser can be derived from it — and still not a commit-reveal, which
+    the document says out loud.
+    """
+    return h_hex("first-seed", network, list(node_ids))
+
+
+def dev_turn_seed(node_id: str) -> bytes:
+    """Era-0 key material for a development network.
+
+    A demonstration of the ceremony's *shape*: a real holder generates this on
+    its own machine and never sends it anywhere, and a document whose turn
+    seeds are derivable from a label has a pool anyone can spend. The shipped
+    document is a demonstration in exactly this sense already — its roster keys
+    come from `dev_keyring`.
+    """
+    return hashlib.sha256(f"fin6-turn-seed:{node_id}".encode()).digest()
+
 
 def dev_keyring(node_id: str) -> Signer:
     """Reproducible keys for a development network.
@@ -472,6 +638,7 @@ def draft(network: str, node_ids, params: ChainParams,
           epoch_millis: int | None = None,
           keyring=dev_keyring,
           purpose: str = LAUNCH_PURPOSE,
+          era0: dict | None = None,
           ratification_threshold: int | None = None) -> GenesisDocument:
     """Assemble an unratified document.  `first_seed` defaults to the roster's
     own digest, which is not a commit-reveal and is marked as such."""
@@ -488,8 +655,8 @@ def draft(network: str, node_ids, params: ChainParams,
         hardening_fields=hfields,
         tiers=tiers,
         n_partitions=1 if tiers == 1 else 0,
-        first_seed=first_seed or h_hex("first-seed", network,
-                                       [x.node_id for x in nodes]),
+        first_seed=first_seed or first_seed_for(
+            network, [x.node_id for x in nodes]),
         effective_time=effective_time,
         epoch_millis=(epoch_millis if epoch_millis is not None
                       else round(hardening.block_interval * 1000)),
@@ -503,6 +670,7 @@ def draft(network: str, node_ids, params: ChainParams,
             # document, which is what the suite's fixtures want.
             else (n if purpose == LAUNCH_PURPOSE else params.quorum_size(n))),
         purpose=purpose,
+        era0=canonical_era0(era0 or {}),
     )
 
 
@@ -525,13 +693,27 @@ GENESIS_7 = "config/genesis-7.json"
 GENESIS_7_IDS = tuple(f"fin6-n{i:02d}" for i in range(1, 8))
 
 
-def draft_seven(network: str = "fin6-genesis-7") -> GenesisDocument:
+#: Era 0's commitments for the shipped document.  A separate file because the
+#: ceremony that produces it is 70,000 key generations — 19 s across four
+#: processes, and not something to re-run every time a test builds a document.
+#: Regenerate with `python3 -m chain.hardening.ceremony`.
+GENESIS_7_ERA0 = "config/era0-7.json"
+
+
+def load_era0(path: str = GENESIS_7_ERA0) -> dict:
+    with open(path) as fh:
+        return canonical_era0(json.load(fh))
+
+
+def draft_seven(network: str = "fin6-genesis-7",
+                era0: dict | None = None) -> GenesisDocument:
     """The document this repository ships, assembled from scratch."""
     from .hardening.params import PRODUCTION
     from .params import LAUNCH
     params = LAUNCH
     supply = {"treasury": [1000, 900, 800, 700, 600]}
-    return ratify_all(draft(network, GENESIS_7_IDS, params, PRODUCTION, supply))
+    return ratify_all(draft(network, GENESIS_7_IDS, params, PRODUCTION, supply,
+                            era0=era0 if era0 is not None else load_era0()))
 
 
 if __name__ == "__main__":                                   # pragma: no cover

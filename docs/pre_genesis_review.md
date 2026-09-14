@@ -200,6 +200,39 @@ claims, nor that two holders are not the same operator.
 *Fix now:* a contributed-leaves ceremony for era 0, or at least an attested
 holder map. *Fix live:* era 0 already authorised everything after it.
 
+> **Built: the ceremony, not the attested map.** `chain/hardening/contrib.py`
+> and `chain/hardening/ceremony.py`. Each holder generates the keys for its own
+> contiguous slice from its own secret, publishes the public leaves, and — in a
+> second round, after the tree is assembled — signs a claim to exactly that
+> slice **naming the resulting era root**, with the key the roster names it by.
+> A holder that signed in round one would be vouching for its own slice in
+> isolation, which is the thing that needs no vouching.
+>
+> `GenesisDocument.era0` carries the root, the public randomiser, and the signed
+> claims, inside the bytes the chain id hashes. `verify()` checks that the
+> slices cover the pool exactly once, that every holder is a founder, that every
+> claim verifies under the roster key, that the era matches the hardening
+> parameters and the signature scheme, and that the public seed is the one
+> *derived* from the network and the first seed rather than one somebody chose.
+> A launch document without a ceremony is refused outright.
+>
+> The concentration is now a number in the output rather than an assumption:
+> the largest holder's share, the rewrite ceiling it implies in blocks, and the
+> same in hours. A holder above a third of the pool is a **problem**, not a
+> caveat — `max_fork_depth` is a bound, so that is not a risk appetite. The
+> shipped seven-holder document: **14% each, 312 blocks, 1.7 h**.
+>
+> Nobody can sign outside their slice, and that is not a rule that is enforced
+> — it is a key that does not exist. What none of it proves is that two holders
+> are not the same operator: nothing cryptographic can, so the claim is signed
+> and named rather than assumed, and `verify()` says so every time.
+>
+> The other half — that the digests are really public keys — needs the
+> published leaves, and `ceremony.verify_transcript` is that check. The document
+> commits to the digests, so the two halves cannot disagree without one failing.
+> `python3 -m chain.hardening.ceremony` runs the whole thing for the shipped
+> roster: 70,000 WOTS key generations, 19 s across four processes.
+
 ### A5 · Genesis issuance proves nothing, and its openings are public · **High**
 
 Two separate problems that arrived from opposite directions.
@@ -366,6 +399,7 @@ Two items are safe while the roster is permissioned and fatal if it is not:
    field is a format change. *(Done: `docs/quorum_signature_decision.md`, plus
    `seats_root`, the named scheme, and the bitmap encoding.)*
 4. **A4, A5, A6, A7** — the four other things genesis makes permanent.
+   *(A4 and A7 done, with A8; A5 and A6 outstanding.)*
 5. **B1** — turn the fault machinery on, while the block format is still free.
 6. **C1 and C3** — the two ways a live network stops being one.
 7. Everything else, in the order operations demands it.

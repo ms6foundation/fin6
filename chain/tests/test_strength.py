@@ -16,7 +16,8 @@ import dataclasses
 from .. import genesis as genesis_mod
 from ..genesis import (draft, draft_seven, ratify_all, load, GENESIS_7,
                        LAUNCH_PURPOSE, TEST_PURPOSE)
-from ..hardening.params import PRODUCTION
+from ..hardening.params import PRODUCTION  # noqa: F401  (documented below)
+from .test_era0 import SMALL, _era0_for
 from ..params import (DEMO, LAUNCH, STRONG, PRESETS, BLINDERS_128,
                       RECOMMENDED_FOLDS, NOTE_FIXED_COORDS)
 
@@ -24,8 +25,13 @@ IDS = tuple(f"n{i}" for i in range(7))
 SUPPLY = {"treasury": [1000, 900, 800, 700, 600]}
 
 
+# A small hardening preset, and era 0's ceremony built once for the whole
+# module. Nothing here is about hardening — these tests are about the chain
+# parameters — but a launch document needs a real era 0 since review A4, and
+# `PRODUCTION`'s is 70,000 key generations.
 def _doc(params, **kw):
-    return ratify_all(draft("t", IDS, params, PRODUCTION, SUPPLY, **kw))
+    kw.setdefault("era0", _era0_for(IDS, "t"))
+    return ratify_all(draft("t", IDS, params, SMALL, SUPPLY, **kw))
 
 
 def _problems(params, **kw):
@@ -207,7 +213,8 @@ def test_a_document_with_no_purpose_field_reads_as_launch():
 # ── who is enough to found it (A8) ───────────────────────────────────────────
 
 def test_a_launch_document_is_ratified_by_every_founder_it_names():
-    weak = ratify_all(draft("t", IDS, LAUNCH, PRODUCTION, SUPPLY,
+    weak = ratify_all(draft("t", IDS, LAUNCH, SMALL, SUPPLY,
+                            era0=_era0_for(IDS, "t"),
                             ratification_threshold=5))
     ok, problems, _ = weak.verify()
     assert not ok
@@ -217,13 +224,14 @@ def test_a_launch_document_is_ratified_by_every_founder_it_names():
 def test_a_threshold_below_the_quorum_rule_is_refused():
     """A set of founders too small to finalise a block cannot be enough to
     agree what the chain is."""
-    weak = ratify_all(draft("t", IDS, LAUNCH, PRODUCTION, SUPPLY,
+    weak = ratify_all(draft("t", IDS, LAUNCH, SMALL, SUPPLY,
                             purpose=TEST_PURPOSE, ratification_threshold=2))
     assert any("finalise a block" in p for p in weak.verify()[1])
 
 
 def test_an_unreachable_threshold_is_refused():
-    odd = ratify_all(draft("t", IDS, LAUNCH, PRODUCTION, SUPPLY,
+    odd = ratify_all(draft("t", IDS, LAUNCH, SMALL, SUPPLY,
+                           era0=_era0_for(IDS, "t"),
                            ratification_threshold=9))
     assert any("unreachable" in p for p in odd.verify()[1])
 
