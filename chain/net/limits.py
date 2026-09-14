@@ -28,6 +28,9 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import OrderedDict
+
+from .frame import CLIENT_MAX_FRAME
 
 #: What each request costs a caller, in tokens.  Roughly proportional to what
 #: it costs the node: a status is a dictionary, an inclusion proof is 32 hashes,
@@ -91,8 +94,40 @@ def bytes_cost(nbytes: int) -> float:
     """
     return int(nbytes) / BYTES_PER_TOKEN
 
+#: What one unit of verification cost when the prices above were written:
+#: mpcith at `LOCAL` parameters, the same number `budget.INITIAL_UNIT_MS`
+#: starts from.  `tx` is 50 tokens *because* of this figure, and at `LAUNCH`
+#: parameters the same backend takes 0.31 s — twelve times as long, for a
+#: price that never moved.  A stranger could therefore buy 6.4% of a core,
+#: sustained, for the price of a 25 ms proof.  Review class D, part thirteen.
+PRICED_AT_MS = 25.4
+
+#: The kinds whose price tracks what the work actually costs now, rather than
+#: what it cost when somebody wrote the number down.  Only submissions: every
+#: other kind is a lookup or a page whose cost has not moved.
+METERED_KINDS = ("tx",)
+
+#: And a ceiling on that tracking.  A meter that has just watched one
+#: pathological proof must not be able to close the door on every wallet, and
+#: a node whose machine is simply slow should throttle rather than refuse.
+MAX_PRICE_MULTIPLE = 40.0
+
+
+def price_multiple(unit_ms) -> float:
+    """How much more a unit of work costs now than when the prices were set.
+
+    Never below one: measuring a *cheaper* proof than the written price is not
+    a reason to make submissions cheaper than the number somebody argued for.
+    """
+    if not unit_ms:
+        return 1.0
+    return min(MAX_PRICE_MULTIPLE, max(1.0, float(unit_ms) / PRICED_AT_MS))
+
+
 #: A client may spend 240 tokens at once and earns 20 a second: two dozen
 #: inclusion proofs back to back, or four transactions a minute sustained.
+#: The rate is what bounds sustained abuse; the capacity is a burst allowance,
+#: and it has a floor it must never fall below — see `Limiter.floor_capacity`.
 CLIENT_CAPACITY, CLIENT_RATE = 240.0, 20.0
 #: A seated peer gossips continuously and must not be throttled into silence.
 PEER_CAPACITY, PEER_RATE = 6000.0, 2000.0
@@ -144,13 +179,53 @@ class Limiter:
         self.capacity, self.rate = capacity, rate
         self.peer_capacity, self.peer_rate = peer_capacity, peer_rate
         self.idle_after, self.max_sources = idle_after, max_sources
-        self._buckets: dict = {}
+        #: What one unit of work measured at, or 0 for "use the written
+        #: prices".  Set once an epoch from the budget's meter.
+        self.unit_ms = 0.0
+        #: Least-recently-used first, so the sweep is a pop rather than a sort.
+        #: The policy is unchanged — idle sources go, oldest first when
+        #: crowded — but it used to be paid for by sorting every bucket on the
+        #: path that *creates* one, which an attacker walks by sending a frame
+        #: from an address it has not used yet: 5.8 us with no sources, 332 us
+        #: at the 4,096 cap.  Same shape as the penalty box's, and cheaper for
+        #: an attacker to reach, because it costs no disconnect.  Review class
+        #: D, part thirteen.
+        self._buckets: "OrderedDict" = OrderedDict()
         self._lock = threading.Lock()
         self.allowed = 0
         self.refused = 0
 
     def cost_of(self, kind: str) -> float:
-        return COSTS.get(kind, DEFAULT_COST)
+        """Tokens for one request of this kind, at what the work costs *now*."""
+        base = COSTS.get(kind, DEFAULT_COST)
+        if kind in METERED_KINDS:
+            return base * price_multiple(self.unit_ms)
+        return base
+
+    def observe_unit(self, unit_ms: float):
+        """The measured cost of one unit of work, from the epoch budget's meter.
+
+        A plain attribute and no lock: it is read to compute a price, a stale
+        read costs one request the old price, and the alternative is taking a
+        lock on every frame to learn a number that moves once an epoch.
+        """
+        self.unit_ms = float(unit_ms or 0.0)
+
+    def floor_capacity(self) -> float:
+        """The smallest burst a client bucket may have.
+
+        `limits` already carries the warning this enforces — *a per-frame
+        ceiling a source can never afford is not a ceiling, it is a decoy* —
+        and making the submission price track the work reintroduces exactly
+        that failure if nothing watches it: at twelve times the written price a
+        `tx` costs 610 tokens against a 240-token bucket, so no client could
+        ever submit anything, ever, and the limiter would have become a ban.
+
+        So the burst floor is one largest-possible submission.  The *rate* is
+        untouched, which is the half that bounds sustained abuse: a dearer
+        submission means fewer per minute, not none.
+        """
+        return self.cost_of("tx") + bytes_cost(CLIENT_MAX_FRAME)
 
     def check(self, source, kind: str, *, peer: bool = False,
               now: float | None = None, nbytes: int = 0):
@@ -162,10 +237,22 @@ class Limiter:
             if bucket is None:
                 self._sweep(now)
                 bucket = Bucket(
-                    self.peer_capacity if peer else self.capacity,
+                    self.peer_capacity if peer else max(self.capacity,
+                                                        self.floor_capacity()),
                     self.peer_rate if peer else self.rate, now=now)
                 self._buckets[source] = bucket
-            elif peer and bucket.capacity < self.peer_capacity:
+            else:
+                # Touching it is what makes the ordering an LRU, and it has to
+                # happen on every use rather than only on eviction, or "oldest"
+                # would mean "first seen".
+                self._buckets.move_to_end(source)
+            floor = self.floor_capacity()
+            if not peer and bucket.capacity < floor:
+                # The price moved under an open connection.  Raising the burst
+                # is not a favour to the caller: it is what keeps the ceiling
+                # from becoming a ban (see `floor_capacity`).
+                bucket.capacity = floor
+            if peer and bucket.capacity < self.peer_capacity:
                 # A source that turns out to be a seated peer is promoted, not
                 # left on a client's budget for the rest of its connection.
                 bucket.capacity, bucket.rate = self.peer_capacity, self.peer_rate
@@ -179,15 +266,20 @@ class Limiter:
                            + (f", try in {wait:.1f}s" if wait else ""))
 
     def _sweep(self, now: float):
-        """Forget sources that have gone quiet, oldest first if crowded."""
-        stale = [k for k, b in self._buckets.items()
-                 if now - b.last > self.idle_after]
-        for key in stale:
-            del self._buckets[key]
-        if len(self._buckets) >= self.max_sources:
-            oldest = sorted(self._buckets, key=lambda k: self._buckets[k].last)
-            for key in oldest[:len(self._buckets) - self.max_sources + 1]:
-                del self._buckets[key]
+        """Forget sources that have gone quiet, oldest first if crowded.
+
+        The same policy as before and none of the scanning.  Least recently
+        used sits at the front, so the idle ones are a prefix: stop at the
+        first bucket that is not idle, then pop while over the cap.
+        """
+        buckets = self._buckets
+        while buckets:
+            key, bucket = next(iter(buckets.items()))
+            if now - bucket.last <= self.idle_after:
+                break
+            del buckets[key]
+        while len(buckets) >= self.max_sources:
+            buckets.popitem(last=False)
 
     def stats(self) -> dict:
         with self._lock:

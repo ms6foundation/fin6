@@ -95,6 +95,52 @@ def test_expired_penalties_are_swept():
     g.penalise("a", now=0.0)
     g.penalise("b", now=100.0)          # the sweep runs on the way past
     assert not g.penalised("a", now=100.0)
+    assert g.stats()["penalised"] == 1, "and the entry is gone, not just stale"
+
+
+def test_a_flood_of_first_offenders_evicts_itself():
+    """Eviction takes the entry that would expire soonest, which is the right
+    one to lose: a thousand addresses at two seconds each must not displace one
+    that has worked its way up to a minute."""
+    g = Gate(penalty_seconds=2.0, penalty_max=60.0, max_penalised=8)
+    for _ in range(6):
+        g.penalise("hardened", now=0.0)          # 2, 4, 8, 16, 32, 60
+    for i in range(500):
+        g.penalise(f"flood-{i}", now=0.0)
+    assert g.stats()["penalised"] <= 8
+    assert g.penalised("hardened", now=1.0), \
+        "the flood evicted the offender the box exists to remember"
+
+
+def test_remembering_an_offender_does_not_cost_more_as_more_are_remembered():
+    """The class D finding, asserted rather than described.
+
+    `penalise` is on the attacker's path — it is what a malformed frame
+    causes — so anything in it that scales with the size of the box is a
+    defence whose cost the attacker sets.  The old sweep sorted the whole box
+    on every call: 2.9 us empty, 288 us at the 4,096 cap, which is 29.5% of a
+    core at a thousand violations a second.
+
+    Asserted as a *ratio* rather than in microseconds, because an absolute
+    timing is a claim about the machine that happens to be running the suite.
+    Flat is the design claim, and flat is machine-independent.
+    """
+    def cost_at(size):
+        g = Gate(penalty_seconds=3600.0, max_penalised=size)
+        for i in range(size):
+            g.penalise(f"a{i}", now=0.0)
+        best = None
+        for i in range(400):                     # best-of, to dodge scheduling
+            started = time.perf_counter()
+            g.penalise(f"attacker-{i}", now=0.0)
+            taken = time.perf_counter() - started
+            best = taken if best is None else min(best, taken)
+        return best
+
+    small, full = cost_at(16), cost_at(4096)
+    assert full < small * 8, (
+        f"one violation costs {full * 1e6:.1f} us against a full box and "
+        f"{small * 1e6:.1f} us against a small one — the box is being scanned")
 
 
 # ── the two deadlines ────────────────────────────────────────────────────────

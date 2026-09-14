@@ -229,9 +229,9 @@ like a threshold somebody could tune.
 
 | | work | why here |
 |---|---|---|
-| 1 | Move `_sweep` off the hot path | §2.1 is a live denial-of-service amplifier with a one-function fix. |
-| 2 | Derive `QUEUE_CAPACITY` and the submission price from the measured unit cost | §2.2. Both are already computable at start-up from numbers the node holds. |
-| 3 | The measurement runner and its committed output | Everything below needs it, and it is the item that stops the others from rotting. |
+| 1 | ~~Move `_sweep` off the hot path~~ **Done** | §2.1 is a live denial-of-service amplifier with a one-function fix. It was two — see §7.1. |
+| 2 | ~~Derive `QUEUE_CAPACITY` and the submission price from the measured unit cost~~ **Done** | §2.2. Both are already computable at start-up from numbers the node holds. See §7.2. |
+| 3 | ~~The measurement runner and its committed output~~ **Done** | Everything below needs it, and it is the item that stops the others from rotting. See §7.3. |
 | 4 | Assertions on partition and skew; a flood stage | Part six's stage 4, finished. |
 | 5 | Stage 5 — growth over sockets, tiers 1 → 2 → 3 | Unblocked by C6, and it is also the first live exercise of part twelve's tiers. |
 | 6 | One power-cut test, recorded | §3.3. Cheap, once, and the crash-safety claim depends on it. |
@@ -240,7 +240,98 @@ Items 1 and 2 are fixes that measurement found and are not really design work.
 Item 3 is the actual deliverable of class D. Items 4–6 are what the instrument
 is for.
 
-## 7. What this does not do
+## 7. Built — items 1 to 3
+
+### 7.1 Both hot paths, not one
+
+The sketch named `Gate._sweep`. Fixing it turned up **the same amplifier in a
+second place**, and a cheaper one for an attacker to reach: `Limiter._sweep`
+sorts every bucket it holds, and it runs when a frame arrives from an address
+the node has not seen. That costs an attacker no disconnect at all — just an
+address it has not used yet.
+
+| path | trigger | before | after |
+|---|---|---|---|
+| `Gate.penalise` | a malformed frame | 2.9 µs empty → **288.5 µs** at 4,096 | 0.8 µs → **1.3 µs** |
+| `Limiter.check` on a new source | a frame from an unseen address | 5.8 µs empty → **331.7 µs** at 4,096 | 1.3 µs → **1.3 µs** |
+
+Neither policy changed, which is the part worth insisting on. The penalty box
+still evicts the entry that would expire soonest — so a flood of first
+offenders at two seconds each evicts itself rather than displacing an address
+that has worked its way up to a minute — and the limiter still forgets idle
+sources, oldest first. What changed is that both now keep their state *in the
+order they need it*: the box is a min-heap on expiry, so dropping what has
+expired and evicting when full are a pop from the same end; the bucket table is
+an `OrderedDict` used as an LRU, so the sweep is a pop rather than a sort.
+
+One thing the rewrite had to get right: "oldest" in the limiter means least
+recently *used*, not first seen. An `OrderedDict` gives that only if every use
+touches the entry, which is now asserted — a source that has been talking all
+along must not be evicted before one that went quiet.
+
+### 7.2 Two constants became derivations
+
+`EpochBudget.servable()` reads the budget's own arithmetic forwards — slack,
+minus this priority's floor, over the measured unit, times how many epochs a
+job may wait — and `WorkQueue.resize()` applies it at the top of every epoch.
+`Limiter.cost_of("tx")` multiplies the written price by how much dearer a unit
+of work is now than the 25.4 ms it was priced at.
+
+| measured unit | queue depth | `tx` price | client burst |
+|---|---|---|---|
+| 25.4 ms — what the numbers were written for | 256 | 50 | 178 |
+| 100 ms | 88 | 197 | 325 |
+| 310 ms — `LAUNCH` | **28** | **610** | 738 |
+| 900 ms | 9 | 1,772 | 1,900 |
+
+The first row is the test that matters most: **at the unit both constants were
+argued for, the derivation reproduces both of them exactly.** A fix that
+quietly becomes a new policy is not a fix.
+
+Three guards came out of building it, and the middle one is a trap the module's
+own docstring had already warned about:
+
+- the price never falls below the number somebody argued for, because measuring
+  a cheap proof is not an argument for cheap submissions;
+- **the ceiling must never become a ban.** At twelve times the written price a
+  submission costs 610 tokens against a 240-token bucket — so no client could
+  ever submit anything again, which is precisely the failure `limits` describes
+  as *"a per-frame ceiling a source can never afford is not a ceiling, it is a
+  decoy"*. The burst floor now rises with the price so one largest-possible
+  submission still fits. The refill *rate* does not move, and that is the half
+  that bounds sustained abuse: a dearer submission means fewer per minute, not
+  none;
+- and the multiple is capped, so one pathological proof cannot close the door
+  on every wallet.
+
+### 7.3 The record, and what a regression check can honestly assert
+
+`python3 -m chain.measure` writes `docs/measurements.md`: the two hot paths at
+three sizes each, the append cost at three tree sizes, prove/verify/bytes per
+preset, and the numbers the node derives from them. It takes about three
+minutes; `--quick` skips the proving and takes about fifteen seconds.
+
+The open item this closes is the sketch's own — *what does "a material move"
+mean?* It means nothing, between machines, and the honest answer is to stop
+pretending otherwise. So the split is:
+
+- **`docs/measurements.md` records the numbers**, with the build, the Python
+  version and the platform beside them, because a timing without a machine is
+  not a measurement;
+- **`chain/tests/test_measure.py` asserts the shapes**, which do travel: flat
+  is flat anywhere, a cost that scales with state an attacker can grow scales
+  everywhere, and a derived number moves in the direction its derivation says.
+  Reverting either sweep fails the suite on any machine.
+
+The append probe changed estimator on the way, for a reason worth keeping: the
+defect part four fixed was *periodic* — a rebuild whenever a new `sbs` group
+opened — and a best-of-n is exactly the statistic that cannot see a cost paid
+every thousandth call. It is a mean over a window wider than a group. The test
+also says what it cannot catch: the `N x 4.1 us / 1000` term crosses the flat
+cost at about 340,000 notes, which no test suite is going to fill, so that one
+is watched by a human comparing two runs of the 100,000-note row.
+
+## 8. What this does not do
 
 - **It sets no thresholds.** Deliberately. Three of the nine turned out to have
   a *derivation* rather than a judgement behind them (§4), and the rest need a
@@ -258,7 +349,8 @@ is for.
 | item | why it is still open |
 |---|---|
 | An address-level strike rule for invalid proofs | `PROOF_STRIKES` bounds one body; nothing bounds one address across bodies. A strike rule there has a censorship shape to avoid — the same one the per-body rule already had to dodge. |
-| What "material move" means in a regression check | Proof timings vary by machine; a threshold too tight makes CI a coin flip and too loose makes it decorative. It needs a run-to-run variance measurement before it can be a number. |
+| ~~What "material move" means in a regression check~~ **Answered** | It means nothing between machines, so nothing compares timings across them: `docs/measurements.md` records the numbers with the machine beside them, and `test_measure.py` asserts the shapes, which do travel. §7.3. |
+| An address-level cost for a queue that shrank | The derived depth is smaller than the written one at launch parameters, which is correct and also means `offer` refuses sooner. Whether a refused submission should cost its sender more than an accepted one is the same question as the strike rule below, and neither is settled. |
 | Snapshot cadence as a restart strategy | Today exports serve peers only. Whether a node should checkpoint for its own restart is a different question with a different answer, and neither has been measured. |
 | The upper tiers' sample mechanism | §5 defers it rather than settling it; it needs the tier work of part twelve to land first. |
 | Nothing here has run on more than one host | Every figure on this page came from one laptop-class machine. The numbers that matter most — decide-deadline margin under load — are the ones a single host cannot produce. |

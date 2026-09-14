@@ -11,7 +11,9 @@ import time
 
 from chain.crypto import Signer
 from wallet.keys import WalletKeys
-from chain.net.limits import (BYTES_PER_TOKEN, Bucket, COSTS, Limiter,
+from chain.net.frame import CLIENT_MAX_FRAME
+from chain.net.limits import (BYTES_PER_TOKEN, Bucket, CLIENT_RATE, COSTS,
+                              Limiter, MAX_PRICE_MULTIPLE, PRICED_AT_MS,
                               bytes_cost)
 from chain.node import (MAX_INPUTS, MAX_MEMPOOL, MAX_OUTPUTS,
                         MAX_REFUSED_PROOFS, PROOF_STRIKES, Node)
@@ -91,12 +93,121 @@ def test_cost_follows_what_the_request_makes_the_node_do():
     assert COSTS["tx"] > COSTS["getoutputs"] > COSTS["inclusion"] > COSTS["status"]
 
 
+# ── and what the work costs now, not when the number was written ─────────────
+
+def test_a_submission_is_priced_at_what_a_proof_costs_today():
+    """Review class D. `tx` is 50 tokens because a proof verified in 25 ms.
+    At `LAUNCH` the same backend takes 0.31 s, and the price never moved — so
+    a stranger bought 6.4% of a core, sustained, at the price of a proof
+    twelve times cheaper than the one it was buying."""
+    lim = Limiter()
+    assert lim.cost_of("tx") == COSTS["tx"], "unmeasured is the written price"
+    lim.observe_unit(PRICED_AT_MS)
+    assert lim.cost_of("tx") == COSTS["tx"], "and so is the price it was set at"
+    lim.observe_unit(310.0)
+    assert lim.cost_of("tx") > 10 * COSTS["tx"]
+    assert lim.cost_of("status") == COSTS["status"], \
+        "a lookup did not get dearer because a proof did"
+
+
+def test_a_cheaper_proof_does_not_make_submissions_cheap():
+    lim = Limiter()
+    lim.observe_unit(0.5)
+    assert lim.cost_of("tx") == COSTS["tx"], \
+        "measuring a cheap proof is not an argument against the written price"
+
+
+def test_the_price_cannot_run_away():
+    lim = Limiter()
+    lim.observe_unit(1e9)
+    assert lim.cost_of("tx") == COSTS["tx"] * MAX_PRICE_MULTIPLE, \
+        "one pathological proof must not close the door on every wallet"
+
+
+def test_the_ceiling_never_becomes_a_ban():
+    """`limits` warns that a ceiling a source can never afford is a decoy.
+    Pricing the work reintroduces exactly that if nothing watches it: at twelve
+    times the written price a submission costs 610 tokens against a 240-token
+    bucket, and no client could ever submit anything again."""
+    for unit in (0.0, 25.4, 100.0, 310.0, 2_000.0, 1e9):
+        lim = Limiter()
+        lim.observe_unit(unit)
+        ok, why = lim.check("a-wallet", "tx", nbytes=CLIENT_MAX_FRAME, now=0.0)
+        assert ok, f"at {unit} ms a unit, the largest client frame is unbuyable: {why}"
+
+
+def test_a_dearer_submission_is_fewer_per_minute_and_not_none():
+    """The burst floor rises so one submission still fits; the *rate* does not,
+    which is the half that bounds sustained abuse."""
+    lim = Limiter()
+    lim.observe_unit(310.0)
+    assert lim.rate == CLIENT_RATE, "the refill rate is not a price"
+    assert lim.check("w", "tx", nbytes=378 * 1024, now=0.0)[0]
+    assert not lim.check("w", "tx", nbytes=378 * 1024, now=1.0)[0], \
+        "back to back at launch prices is exactly what should not fit"
+    assert lim.check("w", "tx", nbytes=378 * 1024, now=60.0)[0], \
+        "a minute later it should"
+
+
+def test_a_bucket_opened_before_the_price_moved_is_not_stuck_under_it():
+    """Raising the burst floor does not hand out tokens — it lets the bucket
+    fill to a size the new price fits in.  What must not happen is a
+    connection opened under the old price being permanently unable to afford
+    the new one."""
+    lim = Limiter()
+    lim.check("w", "status", now=0.0)             # the bucket exists already
+    lim.observe_unit(310.0)
+    assert not lim.check("w", "tx", nbytes=CLIENT_MAX_FRAME, now=0.0)[0], \
+        "the price rose and the bucket has not refilled yet"
+    ok, why = lim.check("w", "tx", nbytes=CLIENT_MAX_FRAME, now=120.0)
+    assert ok, why
+
+
 def test_quiet_sources_are_forgotten():
     lim = Limiter(idle_after=10.0)
     lim.check(("4.4.4.4", 1), "status", now=0.0)
     assert lim.stats()["sources"] == 1
     lim.check(("5.5.5.5", 1), "status", now=100.0)
     assert lim.stats()["sources"] == 1, "the idle one was swept"
+
+
+def test_a_busy_source_is_not_the_oldest_one():
+    """"Oldest" has to mean least recently *used*, not first seen, or a source
+    that has been talking all along is evicted before one that went quiet."""
+    lim = Limiter(idle_after=1e9, max_sources=2)
+    lim.check("early", "status", now=0.0)
+    lim.check("quiet", "status", now=1.0)
+    lim.check("early", "status", now=2.0)        # still talking
+    lim.check("newcomer", "status", now=3.0)     # makes room first
+    assert "early" in lim._buckets, "the busiest source was evicted"
+    assert "quiet" not in lim._buckets
+
+
+def test_giving_a_new_source_a_bucket_does_not_cost_more_as_more_exist():
+    """The same class D finding as the penalty box, in the place an attacker
+    reaches without even having to be disconnected: a frame from an address
+    the node has not seen creates a bucket, and creating one used to sort every
+    bucket there was — 5.8 us with none, 332 us at the 4,096 cap.
+
+    A ratio, not a timing: absolute microseconds are a claim about the machine
+    running the suite, and flat is the claim being made here.
+    """
+    def cost_at(size):
+        lim = Limiter(idle_after=1e9, max_sources=size + 1)
+        for i in range(size):
+            lim.check(f"src-{i}", "status", now=0.0)
+        best = None
+        for i in range(400):
+            started = time.perf_counter()
+            lim.check(f"new-{i}", "status", now=0.0)
+            taken = time.perf_counter() - started
+            best = taken if best is None else min(best, taken)
+        return best
+
+    small, full = cost_at(16), cost_at(4096)
+    assert full < small * 8, (
+        f"a new source costs {full * 1e6:.1f} us with a full table and "
+        f"{small * 1e6:.1f} us with a small one — the table is being scanned")
 
 
 # ── the cheaper no ───────────────────────────────────────────────────────────

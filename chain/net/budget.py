@@ -81,11 +81,21 @@ RESERVE_CAP = 0.5
 #: mpcith at LOCAL params, which is what a testnet node runs.
 INITIAL_UNIT_MS = 25.4
 
-#: The queue is bounded because it is fed by strangers.  256 submissions is
-#: about 6.5 seconds of verification — already more than one decide window has
-#: to spare, so a deeper queue would only hold work that is going to be
-#: dropped anyway, and would hold it for longer.
+#: The queue is bounded because it is fed by strangers, and 256 is now the
+#: *ceiling* on that bound rather than the bound itself.  It was written as
+#: "about 6.5 seconds of verification", which it was at 25.4 ms a unit — but a
+#: count cannot notice that the unit has moved, and at `LAUNCH` parameters one
+#: unit is 0.31 s, so the same 256 is 79 seconds of work that three epochs
+#: could never pay for.  Nine tenths of a full queue was guaranteed to expire
+#: unserved.  `EpochBudget.servable` derives the working depth from what this
+#: node has actually measured; this is the memory bound behind it.  Review
+#: class D, part thirteen.
 QUEUE_CAPACITY = 256
+
+#: And a floor, because a derived number can be derived to nothing: a node
+#: whose window is briefly tiny should still hold a handful of submissions
+#: rather than answer every stranger with "full".
+QUEUE_FLOOR = 8
 
 #: How many epochs a job may wait before it is given up on.  Work the budget
 #: will not pay for *now* is usually affordable at the top of the next epoch,
@@ -193,6 +203,28 @@ class EpochBudget:
                            f"above {priority.name}")
         return True, "ok"
 
+    def servable(self, priority: Priority = Priority.ANON,
+                 epochs: int = MAX_EPOCHS_QUEUED) -> int:
+        """How many units of work this node could actually serve, for this
+        priority, before a queued job would have expired anyway.
+
+        This is the queue's depth, derived rather than written down.  A queue
+        deeper than this does not hold more work, it holds the same work for
+        longer and then drops it — and it drops it *after* a wallet has spent
+        three epochs believing the transaction was accepted.
+
+        The arithmetic is the budget's own, read forwards:
+
+            slack   = window - reserve
+            usable  = slack x (1 - this priority's floor)
+            depth   = epochs x usable / one unit
+        """
+        slack = max(0.0, self.window_ms - self.reserve_ms)
+        usable = slack * (1.0 - FLOORS.get(priority, 0.0))
+        unit = max(1e-6, self.meter.estimate)
+        depth = int(max(1, epochs) * usable / unit)
+        return max(QUEUE_FLOOR, min(QUEUE_CAPACITY, depth))
+
     def spend(self, priority: Priority, ms: float):
         """Record what a piece of work actually cost."""
         self.spent_ms += max(0.0, float(ms))
@@ -256,6 +288,7 @@ class WorkQueue:
     def __init__(self, capacity: int = QUEUE_CAPACITY,
                  max_epochs: int = MAX_EPOCHS_QUEUED):
         self.capacity = capacity
+        self.resized = 0
         self.max_epochs = max_epochs
         self._items: list = []        # (priority, seq, key, job, epoch)
         self._keys: set = set()
@@ -285,6 +318,25 @@ class WorkQueue:
         if key is not None:
             self._keys.add(key)
         return True, "ok"
+
+    def resize(self, capacity: int):
+        """Set the depth to what the budget says it can serve.
+
+        Shrinking drops the least important items first — the same rule
+        `offer` uses when the queue is full, applied all at once — because a
+        queue that shrinks by refusing *future* work while holding work it can
+        no longer serve has kept the wrong half.
+        """
+        capacity = max(1, int(capacity))
+        if capacity == self.capacity:
+            return self.capacity
+        self.capacity = capacity
+        self.resized += 1
+        while len(self._items) > capacity:
+            worst = max(self._items, key=lambda it: (it[0], it[1]))
+            self._remove(worst)
+            self.dropped[worst[0]] = self.dropped.get(worst[0], 0) + 1
+        return self.capacity
 
     def _remove(self, item):
         self._items.remove(item)
@@ -334,7 +386,8 @@ class WorkQueue:
         return len(stale)
 
     def stats(self) -> dict:
-        return {"queued": len(self._items), "offered": self.offered,
+        return {"queued": len(self._items), "capacity": self.capacity,
+                "offered": self.offered,
                 "expired": self.expired,
                 "dropped": {p.name: n for p, n in self.dropped.items() if n}}
 

@@ -625,6 +625,14 @@ class NodeProcess:
         # before the seating check, because an unseated node still serves
         # clients and still must not be talked into spending the epoch on them.
         self.budget.open(epoch)
+        # Two numbers that used to be written down and are now derived from
+        # what this node has measured (review class D, part thirteen).  Both
+        # were sized against a 25 ms verification and neither could notice
+        # that `LAUNCH` made one 0.31 s: the queue would hold four epochs of
+        # work three epochs could pay for, and a submission would cost the
+        # price of a proof twelve times cheaper than the one it buys.
+        self.work.resize(self.budget.servable())
+        self.limiter.observe_unit(self.budget.meter.estimate)
         # Once an epoch, before anything expensive: the directory is how a
         # node that was handed one address finds the rest of the seats, and
         # how a seat that moved is found again (review C6).

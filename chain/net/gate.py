@@ -28,6 +28,7 @@ network and what keeps the policy in one place.
 """
 from __future__ import annotations
 
+import heapq
 import threading
 import time
 
@@ -58,6 +59,16 @@ PENALTY_MAX = 60.0
 #: Addresses remembered in the box.  Bounded because it is keyed by something
 #: an attacker chooses: remembering offenders is itself state they can grow,
 #: so the box is a cache with an eviction policy and not a ledger.
+#:
+#: Bounding the *size* was only half of it.  The first version paid for the
+#: eviction policy on the hot path — `penalise` sorted the whole box, and
+#: `penalise` is what a malformed frame causes — so the cost of remembering
+#: offenders was charged to the node at a rate the offender set: 2.9 us with an
+#: empty box, 288 us with a full one, which is 29.5% of a core at a thousand
+#: violations a second.  A defence whose cost scales with the attack is not a
+#: defence.  The box is now kept in expiry order (`_order`), so both jobs the
+#: sweep did — dropping what has expired, and evicting when full — are a pop
+#: from the same end.  Review class D, part thirteen.
 MAX_PENALISED = 4096
 
 
@@ -77,6 +88,12 @@ class Gate:
         self._lock = threading.Lock()
         self._open: dict = {}          # address -> how many sockets it holds
         self._penalty: dict = {}       # address -> (until, strikes)
+        #: (until, address), a min-heap.  The head is both the next entry to
+        #: expire and the cheapest one to evict, which is why one structure
+        #: does both jobs.  Entries are superseded rather than deleted when an
+        #: address is penalised again — a stale one is recognised by its
+        #: `until` disagreeing with the dictionary, and discarded on sight.
+        self._order: list = []
         self.total = 0
         self.admitted = 0
         self.refused_total = 0
@@ -132,19 +149,47 @@ class Gate:
             strikes += 1
             wait = min(self.penalty_max,
                        self.penalty_seconds * (2 ** (strikes - 1)))
-            self._penalty[address] = (now + wait, strikes)
+            until = now + wait
+            self._penalty[address] = (until, strikes)
+            heapq.heappush(self._order, (until, address))
             self._sweep(now)
             return wait
 
     def _sweep(self, now: float):
-        expired = [a for a, (until, _) in self._penalty.items()
-                   if until <= now]
-        for address in expired:
-            del self._penalty[address]
-        if len(self._penalty) > self.max_penalised:
-            oldest = sorted(self._penalty, key=lambda a: self._penalty[a][0])
-            for address in oldest[:len(self._penalty) - self.max_penalised]:
-                del self._penalty[address]
+        """Drop what has expired, and evict while full.  Both from the head.
+
+        Amortised constant: every push is popped at most once, and the loop
+        stops at the first entry that is neither stale nor expired while the
+        box is inside its bound.  What it must *not* do is scan or sort, which
+        is the whole point — see `MAX_PENALISED`.
+
+        Evicting the head means evicting the entry that would have expired
+        soonest, which is the right one to lose: a flood of first offenders at
+        two seconds each evicts itself rather than displacing an address that
+        has worked its way up to a minute.
+        """
+        order, box = self._order, self._penalty
+        while order:
+            until, address = order[0]
+            current = box.get(address)
+            if current is None or current[0] != until:
+                heapq.heappop(order)          # superseded by a later penalty
+                continue
+            if until <= now:
+                heapq.heappop(order)
+                del box[address]
+                continue
+            if len(box) > self.max_penalised:
+                heapq.heappop(order)
+                del box[address]
+                continue
+            break
+        # Superseded entries are only noticed when they reach the head, so a
+        # repeat offender could otherwise leave the heap growing behind a
+        # long-lived entry.  Rebuilding is O(n) and happens once per doubling.
+        if len(order) > 2 * (len(box) + 16):
+            self._order = [(until, a) for a, (until, _) in box.items()]
+            heapq.heapify(self._order)
 
     def penalised(self, address: str, now: float | None = None) -> bool:
         now = time.monotonic() if now is None else now

@@ -796,7 +796,16 @@ client · snapshot cadence · archive incentives · fsync honesty on consumer SS
 · the 1.4 ms flat fold cost (an interpreter ceiling, ~125 tx/s at ten million
 notes) · sample rates at the upper tiers · locality tags being self-declared.
 
-Sketched as part thirteen — `docs/operational_design.md`. The nine items are
+Sketched as part thirteen — `docs/operational_design.md`, with items 1 to 3 of
+its order **built**: both hot-path sweeps are off the attacker's path (288 µs →
+1.3 µs, and the same amplifier turned up in the rate limiter, where it costs an
+attacker no disconnect at all), the work queue's depth and a submission's price
+are derived from the measured unit cost rather than written down, and
+`python3 -m chain.measure` writes `docs/measurements.md` with the shapes
+asserted in `chain/tests/test_measure.py` — timings are a claim about a
+machine, shapes travel. §7 of that document.
+
+The nine items are
 four stories, three of them are misfiled, and measuring three before writing
 found two wrong: the penalty box costs the *node* 288 µs a violation once it is
 full (2.9 µs empty), and a submission's token price was set when a proof

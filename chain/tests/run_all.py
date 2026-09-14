@@ -22,7 +22,7 @@ MODULES = ["test_notes", "test_nullifiers", "test_transaction", "test_state", "t
            # the network, and what it will do for a stranger
            "test_net", "test_viewchange", "test_handshake", "test_gate", "test_limits",
            "test_authgaps", "test_session", "test_protocol", "test_strength", "test_seats",
-           "test_budget",
+           "test_budget", "test_measure",
            "test_catchup", "test_snapshot_chunks", "test_directory",
            # hardening
            "test_hardening", "test_reorg", "test_wots_vectors", "test_era0", "test_mint"]

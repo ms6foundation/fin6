@@ -10,8 +10,9 @@ in no time and the arithmetic is checkable by hand.
 import dataclasses
 
 from chain.net.budget import (FLOORS, INITIAL_UNIT_MS, MAX_EPOCHS_QUEUED,
-                              Meter, EpochBudget, Priority, RESERVE_CAP,
-                              RESERVE_UNITS, WorkQueue)
+                              Meter, EpochBudget, Priority, QUEUE_CAPACITY,
+                              QUEUE_FLOOR, RESERVE_CAP, RESERVE_UNITS,
+                              WorkQueue)
 from chain.net.clock import Clock
 from chain.node import PROOF_STRIKES
 from chain.store import codec
@@ -295,3 +296,51 @@ def test_a_struck_body_is_demoted_and_not_refused():
     q.offer(lambda: ran.append("clean"), Priority.OWNER, key="clean")
     q.drain(b, now_ms=b.clock.start_of(1))
     assert ran == ["clean", "struck"], ran
+
+
+# ── the depth, derived ───────────────────────────────────────────────────────
+
+def test_the_queue_holds_what_the_node_can_serve():
+    """Review class D. `QUEUE_CAPACITY = 256` was justified as "about 6.5
+    seconds of verification", which it was at 25.4 ms a unit. A count cannot
+    notice that the unit has moved, and `LAUNCH` made one 0.31 s."""
+    b = _budget(unit_ms=INITIAL_UNIT_MS)
+    assert b.servable() == QUEUE_CAPACITY, \
+        "at the unit the number was written for, nothing should change"
+    b = _budget(unit_ms=310.0)
+    assert 20 <= b.servable() <= 40, b.servable()
+    assert b.servable() < QUEUE_CAPACITY / 5
+
+
+def test_a_dearer_unit_is_a_shallower_queue():
+    depths = [_budget(unit_ms=u).servable() for u in (25.4, 100.0, 310.0, 900.0)]
+    assert depths == sorted(depths, reverse=True), depths
+    assert depths[-1] >= QUEUE_FLOOR, "a derived number can be derived to zero"
+
+
+def test_the_depth_is_bounded_at_both_ends():
+    assert _budget(unit_ms=0.001).servable() == QUEUE_CAPACITY
+    assert _budget(unit_ms=1e6).servable() == QUEUE_FLOOR
+    assert _budget(epoch_millis=200, unit_ms=310.0).servable() == QUEUE_FLOOR
+
+
+def test_a_shrinking_queue_drops_the_least_important_first():
+    """A queue that shrinks by refusing future work while holding work it can
+    no longer serve has kept the wrong half."""
+    q = WorkQueue(capacity=8)
+    for i in range(4):
+        q.offer(lambda: None, Priority.ANON, key=f"anon-{i}")
+    for i in range(3):
+        q.offer(lambda: None, Priority.PEER, key=f"peer-{i}")
+    q.resize(3)
+    assert len(q) == 3 and q.capacity == 3
+    kinds = sorted(it[0] for it in q._items)
+    assert kinds == [Priority.PEER] * 3, kinds
+    assert q.resized == 1
+
+
+def test_resizing_to_the_same_depth_changes_nothing():
+    q = WorkQueue(capacity=8)
+    q.offer(lambda: None, Priority.ANON, key="a")
+    q.resize(8)
+    assert q.resized == 0 and len(q) == 1
