@@ -39,6 +39,7 @@ from ..store.db import ChainStore
 from ..locality import tx_partition
 from ..tiers import SoloWorkload, run_tiered_epoch
 from .budget import EpochBudget, Priority, WorkQueue
+from .directory import Directory, sign_address
 from .catchup import (BATCH, BODY_WINDOW, MAX_SNAPSHOT, BodyCache,
                       Catchup)
 from .clock import Clock
@@ -125,8 +126,23 @@ class NodeProcess:
         # rather than a setting — see MIN_VIEW_MS.
         self.max_views = self.clock.views_for(self._view_cap, MIN_VIEW_MS)
         self.inbox: queue.Queue = queue.Queue()
-        peers = {nid: tuple(spec["listen"])
-                 for nid, spec in self.config["nodes"].items() if nid != node_id}
+        # `net.json` is a *seed* list, not the whole truth about where everyone
+        # is.  A node needs one reachable peer; the rest it learns from signed
+        # address records, which is what lets a network grow without editing a
+        # file on every machine (review C6).
+        seeded = self.settings.get("peers")
+        if seeded:
+            # This node was handed a short list — one address, usually, which
+            # is the situation a joiner is actually in. Everything else it has
+            # to learn.
+            peers = {nid: tuple(listen) for nid, listen in seeded.items()
+                     if nid != node_id and listen}
+        else:
+            peers = {nid: tuple(spec["listen"])
+                     for nid, spec in self.config["nodes"].items()
+                     if nid != node_id and spec.get("listen")}
+        self.directory = Directory(self.doc.chain_id, self.validators,
+                                   node_id=node_id)
         # Metering lives at the wire, in front of everything: a request that
         # cannot be afforded costs the node a dictionary lookup, not a proof.
         # `limits` in net.json tightens or loosens the budget per node, which
@@ -240,6 +256,9 @@ class NodeProcess:
             "tiers": 1 if len(self.world.topology.grid_ids()) < 2 else 2,
             "mempool": len(self.node.mempool),
             "homeless": self.homeless,
+            "directory": {"known": len(self.directory),
+                          "seats": len(self.validators),
+                          "refused": self.directory.refused},
             "peers": len(self.mesh.connected),
             "epoch": self.clock.epoch_now(),
             "epochs_run": self.epochs_run,
@@ -603,6 +622,10 @@ class NodeProcess:
         # before the seating check, because an unseated node still serves
         # clients and still must not be talked into spending the epoch on them.
         self.budget.open(epoch)
+        # Once an epoch, before anything expensive: the directory is how a
+        # node that was handed one address finds the rest of the seats, and
+        # how a seat that moved is found again (review C6).
+        self._share_addresses()
         # Before seating, not after.  Catching up once the ceremony has been
         # and gone leaves a node permanently one block short: it learns the
         # height from this epoch's proposal, fetches the block, applies it —
@@ -807,6 +830,65 @@ class NodeProcess:
         return self.seat.accepted()
 
     # ── messages ─────────────────────────────────────────────────────────────
+
+    # ── where everybody is (review C6) ───────────────────────────────────────
+
+    def my_address(self):
+        """This node's own signed record, re-signed once an epoch.
+
+        Re-signed rather than signed once at boot so that a record ages out of
+        other nodes' directories when a node goes away — `Directory.MAX_AGE_
+        EPOCHS` is the window, and a record nobody refreshes stops being
+        gossiped rather than being dialled for ever.
+        """
+        epoch = self.clock.epoch_now()
+        held = self.directory.records.get(self.id)
+        if held is None or held.epoch < epoch:
+            record = sign_address(self.signer, self.id, self.doc.chain_id,
+                                  self.settings["listen"], epoch)
+            self.directory.learn(record, epoch)
+        return self.directory.records[self.id]
+
+    def _share_addresses(self):
+        """Tell the peers we are talking to where the seats are.
+
+        Everything this node believes, not just its own record, so one hop is
+        enough for a joiner: a node that reaches any seat learns the whole
+        directory that seat holds.
+        """
+        self.my_address()
+        peers = list(self.mesh.connected)
+        if not peers:
+            return
+        self.mesh.broadcast(
+            peers, "addrs",
+            {"records": self.directory.fresh(self.clock.epoch_now())})
+
+    def _take_addresses(self, who: str, payload: dict):
+        """Records from a peer: check each against the roster, then dial.
+
+        The check is the whole security argument, and it is a short one. The
+        genesis document names every seat and its key, so a record signed by
+        anything else is not an unknown peer — it is noise. There is no sybil
+        question to answer, because nobody is being admitted here: an address
+        record says *where*, never *who*.
+        """
+        learned = self.directory.absorb((payload or {}).get("records"),
+                                        self.clock.epoch_now())
+        if not learned:
+            return
+        known = set(self.mesh.peers) | {self.id}
+        for node_id in self.directory.unknown(known):
+            address = self.directory.address_of(node_id)
+            if address is not None:
+                self.mesh.learn(node_id, address)
+        # A seat that moved: same check, and `Mesh.learn` refuses to move a
+        # connection that is live.
+        for node_id, record in sorted(self.directory.records.items()):
+            if node_id in self.mesh.peers and node_id != self.id:
+                self.mesh.learn(node_id, record.address)
+        self.log(f"addresses: {learned} new from {who}; directory holds "
+                 f"{len(self.directory)} of {len(self.validators)} seats")
 
     def _serve_until(self, when_ms: int, epoch: int | None = None):
         """Keep answering after deciding.
@@ -1275,6 +1357,11 @@ class NodeProcess:
         if kind == "snapshot":
             if who in self.mesh.connected:
                 self._begin_snapshot(who, payload if isinstance(payload, dict)
+                                     else {})
+            return
+        if kind == "addrs":
+            if who in self.mesh.connected:
+                self._take_addresses(who, payload if isinstance(payload, dict)
                                      else {})
             return
         if kind == "getchunk":

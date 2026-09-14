@@ -148,12 +148,64 @@ class Mesh:
 
     # ── loops ────────────────────────────────────────────────────────────────
 
+    def learn(self, peer_id: str, listen) -> bool:
+        """Start dialling a seat this node was not configured for.
+
+        Review C6. `net.json` names addresses, which made it the whole truth
+        about where everybody is — and a network that grows has seats nobody's
+        file mentions. This is the other way in: an address learned from a
+        signed record, which the caller has already checked against the roster,
+        because a Mesh has no business deciding who is a validator.
+
+        Idempotent, and it never moves a peer that is currently connected:
+        rerouting a live connection because somebody said an address changed is
+        exactly the lever an attacker would want.
+        """
+        if not peer_id or peer_id == self.node_id:
+            return False
+        host, port = str(listen[0]), int(listen[1])
+        if peer_id in self.peers:
+            if self.peers[peer_id] == (host, port) or peer_id in self.out:
+                return False
+            self.peers[peer_id] = (host, port)
+            self.log(f"{peer_id} moved to {host}:{port}")
+            return True
+        self.peers[peer_id] = (host, port)
+        self._locks.setdefault(peer_id, threading.Lock())
+        if self._server is not None and not self._stop.is_set():
+            self._spawn(self._dial_loop, f"dial:{peer_id}", peer_id)
+        self.log(f"learned {peer_id} at {host}:{port}")
+        return True
+
+    def _seated(self, who) -> bool:
+        """Has this connection proved a seat on this chain?
+
+        Proving it is the handshake's job, and `_greet` returns a name only
+        when the handshake verified it against the roster — so with a
+        handshake configured, a name *is* the proof.
+
+        This used to be `who in self.peers`, which is the *dial list*, and the
+        two were the same set only because `net.json` happened to name every
+        seat. Review C6 makes them differ — a node may know one address and
+        learn the rest — and then a validator dialling in was treated as a
+        stranger and refused for sending peer traffic. The roster authorises;
+        the file only says where to dial.
+        """
+        if who is None:
+            return False
+        if self.handshake is not None:
+            return True
+        return who in self.peers            # no handshake: the weaker rule
+
     def _dial_loop(self, peer_id: str):
-        host, port = self.peers[peer_id]
         while not self._stop.is_set():
             if peer_id in self.out:
                 time.sleep(CONNECT_RETRY)
                 continue
+            # Read the address every time round rather than once: a seat that
+            # moves is learned by `learn`, and a loop holding the old address
+            # in a local would go on dialling it for ever.
+            host, port = self.peers[peer_id]
             try:
                 sock = socket.create_connection((host, port), timeout=2)
                 sock.settimeout(None)
@@ -234,7 +286,7 @@ class Mesh:
             per-tier ceiling is possible at all — whether a connection has
             proved a roster name is known before a byte of any body is parsed.
             """
-            seated = who is not None and who in self.peers
+            seated = self._seated(who)
             key = ("peer", who) if seated else ("client", source)
             return self._afford(key, "frame", seated, nbytes=nbytes)
 
@@ -280,10 +332,10 @@ class Mesh:
                         who = self._greet(msg["payload"] or {}, source)
                         # A proven peer may send a block, so it gets the real
                         # ceiling.  Nothing before the handshake could have.
-                        if who is not None and who in self.peers:
+                        if self._seated(who):
                             reader.max_frame = MAX_FRAME
                         continue
-                    seated = who is not None and who in self.peers
+                    seated = self._seated(who)
                     if not seated and msg["kind"] not in OPEN_KINDS:
                         # A peer message from a connection that never proved a
                         # seat.  Every *reply* path in `node.py` already checked

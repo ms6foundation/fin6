@@ -201,3 +201,52 @@ def test_the_window_reopens_once_its_entries_age_out():
     ok, why, _ = v.check(handshake.build(signer, CHAIN, "v1", "v0", 40))
     assert ok, why
     assert v.stats()["nonces"] <= 4
+
+
+def test_a_seat_this_node_does_not_dial_is_still_a_seat():
+    """The roster authorises; `net.json` only says where to dial.
+
+    These two were the same set for as long as every node's file named every
+    other node, and the seated test was `who in self.peers` — the dial list.
+    Peer discovery (review C6) makes them differ: a node may be handed one
+    address and learn the rest, and until that moment a validator dialling
+    *in* was treated as a stranger and refused for sending peer traffic, which
+    is a partition that heals only if somebody edits a file.
+    """
+    inbox = queue.Queue()
+    port = _port() + 3
+    # A mesh that dials nobody at all: `v1` is a seat on the roster and not in
+    # this node's peer list.
+    mesh = Mesh("v0", CHAIN, ("127.0.0.1", port), {}, inbox,
+                signer=Signer.from_seed("v0"), validators=VALIDATORS,
+                epoch_now=lambda: EPOCH)
+    mesh.start()
+    try:
+        hello = handshake.build(Signer.from_seed("v1"), CHAIN, "v1", "v0",
+                                EPOCH)
+        _send(port, [("env", {"epoch": 1})], hello=hello)
+        kinds = []
+        while not inbox.empty():
+            kinds.append(inbox.get_nowait()[1]["kind"])
+        assert "env" in kinds, "a proven seat was refused for not being dialled"
+    finally:
+        mesh.stop()
+
+
+def test_a_stranger_is_still_a_stranger_when_the_dial_list_is_empty():
+    """The other half: dropping the dial-list test must not drop the check."""
+    inbox = queue.Queue()
+    port = _port() + 4
+    mesh = Mesh("v0", CHAIN, ("127.0.0.1", port), {}, inbox,
+                signer=Signer.from_seed("v0"), validators=VALIDATORS,
+                epoch_now=lambda: EPOCH)
+    mesh.start()
+    try:
+        _send(port, [("env", {"epoch": 1})],
+              hello={"node_id": "some-wallet"})
+        kinds = []
+        while not inbox.empty():
+            kinds.append(inbox.get_nowait()[1]["kind"])
+        assert "env" not in kinds
+    finally:
+        mesh.stop()

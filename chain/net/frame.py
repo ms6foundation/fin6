@@ -40,6 +40,9 @@ KINDS = ("hello", "tx", "env", "getblock", "block",
          # and past the window bodies reach: state that proves itself against
          # a header, for a node too far behind for any peer to replay to
          "getsnapshot", "snapshot", "getchunk", "chunk",
+         # where the other seats are: signed address records, gossiped, so a
+         # node needs one peer's address rather than everybody's
+         "addrs",
          # what a client — a wallet — may ask a node
          "status", "status_reply", "getoutputs", "outputs_reply",
          "txstatus", "txstatus_reply", "submit_reply",

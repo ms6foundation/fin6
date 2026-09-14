@@ -537,8 +537,36 @@ so the first definition had never run.
 | C3 | ~~**Reorg past the undo ceiling diverges permanently**~~ **Done** | High | Undo records are kept to `retention_depth` — 729 blocks at a third of the pool. Beyond it a node that cannot roll back diverged from one that can, with no reconciliation path but a snapshot, and *silently*. See §4.1. |
 | C4 | **Grids never merge** | Medium-High | Split works and founding cohorts keep their standing. A network that shrinks keeps grids it cannot fill, and founding seating is permanent because merge does not exist. |
 | C5 | **Apprentice density stalls a grid** | Medium | Apprentices hold seats and cannot make quorum. Admission needs a rate limit tied to attester count. |
-| C6 | **No peer discovery** | Medium | Peers come from the roster and `net.toml`. A network that grows needs joiners to find seats. |
+| C6 | ~~**No peer discovery**~~ **Done** | Medium | Peers came from the roster and `net.json`, so a network that grows needed every machine's file edited. Signed address records, gossiped — §4.4. |
 | C7 | ~~**Body window is 21 minutes**~~ **Done** | Medium | Past it, catch-up falls back to `getsnapshot`, which cost the serving node a full state copy on demand and was one frame rather than the chunked ranges `store/snapshot.py` was built for. Both halves fixed — §4.3. |
+
+### 4.4 · C6, resolved: one address is enough
+
+What keeps this small is that **the identities are already settled**. The
+genesis document names every seat and its key, so discovery is only ever about
+*addresses*: a record signed by a key the roster does not name is not an unknown
+peer, it is noise. There is no sybil question to answer, because nothing here
+admits anybody — `Topology.assign_newcomer` and the register decide membership,
+and an address record says *where*, never *who*.
+
+So the whole of it is one signed statement — "I am `fin6-n03`, I am listening
+here, as of epoch 41" — gossiped between peers, newest-per-seat wins, bounded by
+the roster so the memory is the size of the network rather than the size of what
+somebody sends. A record ages out after an hour of nobody refreshing it, and one
+from the future is refused, so a bad clock cannot pin a stale address in place.
+`net.json` becomes a *seed* list: a node may be handed one address and learn the
+rest, which the live test does with four processes.
+
+**And it surfaced a real bug.** The admission rule from the authentication pass
+— a connection that has not proved a seat may not send peer traffic — tested
+`who in self.peers`, which is the *dial list*. That was the same set as the
+roster only because every node's file named every node. The moment they differ,
+a validator dialling *in* is treated as a stranger and refused, which is a
+partition that heals only if somebody edits a file. The handshake already proves
+a roster seat before `_greet` returns a name, so the roster is what authorises
+now and the file only says where to dial. Both directions are tested: a seat
+this node does not dial is seated, and a stranger is still a stranger when the
+dial list is empty.
 
 ### 4.3 · C7, resolved: a state that arrives in pieces
 
