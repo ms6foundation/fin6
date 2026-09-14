@@ -88,6 +88,15 @@ decision, and the note commitment is what the entire ledger's binding rests on.
 *Fix now:* choose the preset, regenerate the document. Minutes.
 *Fix live:* impossible. Every commitment ever made is under those parameters.
 
+> **Resolved.** The preset is now `LAUNCH`, and it is neither `DEMO` nor
+> `STRONG`: measurement said `STRONG` was not what its own docstring claimed
+> (44 blinders against the 62 `mq/mq.md` sizes for 2^128, and 8 fold rows
+> against the 2 it recommends — and the fold count sets the security loss
+> directly, since `m - h = n_folds + opened - 1` does not shrink as *n* grows).
+> `LAUNCH` is 62 blinders, 2 folds, `range_bits=48` — 0.59 s to prove, 0.32 s
+> to verify, 378 KB a transaction — and it ships **one** proof backend, for the
+> reason in A9. `config/genesis-7.json` is regenerated from it.
+
 ### A2 · `verify()` checks parameter names, never their values · **Critical**
 
 The document above returns `ok: True`, **zero problems and zero caveats**.
@@ -106,6 +115,24 @@ reached, so nobody mistakes silence for a check. Right now, silence is what a
 weak parameter set gets.
 
 *Fix now:* an afternoon. *Fix live:* the document is already signed.
+
+> **Resolved.** `ChainParams.assess(tiers=…)` is `mq/mq.md`'s closing mandate
+> — *"treat these as a floor for rejecting bad parameters, not a guarantee"* —
+> written down: Gröbner range and soundness bits are problems, a short-but-not
+> absurd hidden block and a high fold count are caveats, and four
+> internal-consistency checks that nothing anywhere made (a `default_backend`
+> no wallet proves in, a tier verifying with a backend nobody makes, a quorum
+> below two thirds, a founding cohort that cannot tolerate a fault) are
+> problems. `GenesisDocument.verify()` calls it.
+>
+> The awkward part was that the test suite and the runnable demo *need*
+> undersized commitments to finish in a second, and an off switch on the check
+> is an off switch a founder can reach for. So the document says what it is
+> **for**: `purpose` is `"launch"` or `"test"`, it sits inside `body()`, and
+> therefore inside the hash the chain id is and inside every ratification. A
+> test document cannot be quietly promoted — changing the word changes the
+> chain. A file with no `purpose` field reads as `"launch"`, which is the safe
+> direction: it gets held to the floor rather than excused.
 
 ### A3 · The quorum signature scheme is a placeholder · **Critical**
 
@@ -201,6 +228,23 @@ The document declares how many ratifications the document needs. Something has
 to say how many founders are enough, and that something is governance, not code
 — which is §0 again, arriving from a different direction.
 
+### A9 · Three proof backends do not fit through the client frame · **High**
+
+Found while measuring for A1. At launch parameters a transaction carrying all
+three backends is **3,265 KB**. `CLIENT_MAX_FRAME` is **1 MB**. The ceiling was
+sized against `DEMO`, where the same transaction is 568 KB, so it has never
+been hit — and nothing in the repository relates the two numbers.
+
+At one tier this is not a live problem, because one tier needs one backend and
+`LAUNCH` ships one. It becomes one the moment somebody turns on the upper
+tiers, which is precisely a genesis or succession decision rather than a
+configuration change. `assess()` now raises it as a caveat whenever a document
+carries backends no tier verifies, naming both numbers.
+
+*Fix now:* free — it is a choice about the proof policy.
+*Fix live:* the frame ceiling is a wire-format constant; raising it is a
+protocol version, which after step 1 is at least possible.
+
 ## 3. Class B — format changes, permanent until §0 exists
 
 | | item | severity | why |
@@ -255,8 +299,11 @@ Two items are safe while the roster is permissioned and fatal if it is not:
 
 1. **A protocol version and an activation height** — because everything below
    costs less once it exists, and it cannot be added retroactively.
+   *(Done: `chain/protocol.py`, an activation schedule inside the genesis hash,
+   and `HaltRequired` so a node that cannot follow the rules stops.)*
 2. **A1 and A2 together** — pick the preset, and make `verify()` refuse the ones
-   that should never launch. Hours, not days.
+   that should never launch. Hours, not days. *(Done: `LAUNCH`,
+   `ChainParams.assess`, and `purpose` in the document. A9 came out of it.)*
 3. **A3's dependency decision** — it gates the header field, and the header
    field is a format change.
 4. **A4, A5, A6, A7** — the four other things genesis makes permanent.

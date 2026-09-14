@@ -46,7 +46,11 @@ def new_testnet(root: str, *, nodes: int = 7, preset: str = "local",
     doc = genesis_mod.ratify_all(genesis_mod.draft(
         f"fin6-testnet-{nodes}", ids, params, hardening,
         supply or {"treasury": [1000, 900, 800, 700, 600]},
-        epoch_millis=epoch_millis))
+        epoch_millis=epoch_millis,
+        # A supervisor testnet is a testnet.  Founding a network is
+        # `python3 -m chain.genesis`, which drafts for launch and is held to
+        # the parameter floor.
+        purpose=genesis_mod.TEST_PURPOSE))
     genesis_mod.save(doc, os.path.join(root, "genesis.json"))
 
     net = {

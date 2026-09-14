@@ -26,6 +26,7 @@ _CACHE = {}
 
 
 def draft(**kw):
+    kw.setdefault("purpose", genesis.TEST_PURPOSE)
     return genesis.draft("test-net", IDS, PARAMS, PRODUCTION, SUPPLY, **kw)
 
 

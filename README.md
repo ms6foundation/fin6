@@ -213,8 +213,13 @@ simulation with no clock.
 
 - **Unaudited.** Novel constructions, no external review.
 - **The `DEMO` preset is deliberately insecure**: 8 note coordinates of which 4
-  are random puts the note-commitment MQ instance inside Gröbner range. `STRONG`
-  (48 coordinates) is sized per `mq/mq.md` and costs 0.33 s per transaction.
+  are random puts the note-commitment MQ instance inside Gröbner range. `LAUNCH`
+  is the preset sized per `mq/mq.md` — 62 blinder coordinates, 2 fold rows, a
+  48-bit range — and costs 0.59 s to prove and 0.32 s to verify, at 378 KB a
+  transaction. `ChainParams.assess()` is that sizing written down as a floor,
+  and `GenesisDocument.verify()` refuses a document that does not clear it
+  unless the document says `purpose: test`, which is inside the hash its chain
+  id is.
 - **The spend graph is public.** Amounts, output owners and note randomness are
   hidden; which note is being spent is not. This is the confidential-transactions
   model, not the Zcash one.

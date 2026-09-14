@@ -35,6 +35,11 @@ from .params import ChainParams
 from .store import codec
 
 FORMAT_VERSION = 1
+
+#: What a document is for.  See `GenesisDocument.purpose`.
+LAUNCH_PURPOSE = "launch"
+TEST_PURPOSE = "test"
+PURPOSES = (LAUNCH_PURPOSE, TEST_PURPOSE)
 ID_PREFIX = "fin6:"
 
 
@@ -79,6 +84,14 @@ class GenesisDocument:
     #: a rule change in advance is a number, and adding one afterwards is a
     #: new document and, by construction, a new chain.  See chain/protocol.py.
     activations: dict = dataclasses.field(default_factory=dict)
+    #: "launch" or "test".  The parameter floor in `ChainParams.assess` would
+    #: refuse every document the test suite and the runnable demo build, since
+    #: those deliberately use undersized commitments to finish in a second.
+    #: Rather than give the check an off switch that a founder could reach for,
+    #: the document says what it is *for*, inside the bytes its identity is the
+    #: hash of and inside the signatures.  A test document cannot be quietly
+    #: promoted: changing this word changes the chain id.
+    purpose: str = LAUNCH_PURPOSE
 
     # ── identity ─────────────────────────────────────────────────────────────
 
@@ -101,6 +114,7 @@ class GenesisDocument:
             "declared_total": self.declared_total,
             "ratification_threshold": self.ratification_threshold,
             "activations": protocol.canonical(self.activations),
+            "purpose": self.purpose,
         }
 
     def digest(self) -> str:
@@ -177,6 +191,26 @@ class GenesisDocument:
         if missing:
             problems.append(f"parameters this build needs are absent: "
                             f"{sorted(missing)}")
+
+        # 2b. the parameters have to be *strong*, not merely well-named.  Until
+        # now nothing read the values: a document could ask for four blinder
+        # coordinates and a 12-bit range and verify clean.  `assess` is mq.md's
+        # floor written down, and it is scoped to the tiers this document
+        # launches, because a backend no tier verifies is pure carried weight.
+        if self.purpose not in PURPOSES:
+            problems.append(f"unknown purpose {self.purpose!r}")
+        if not unknown and not missing:
+            strength, strength_caveats = \
+                self.chain_params().assess(tiers=self.tiers)
+            caveats.extend(strength_caveats)
+            if self.purpose == LAUNCH_PURPOSE:
+                problems.extend(strength)
+            else:
+                caveats.append(
+                    "this document is marked purpose=test and must not be "
+                    "used to found a network")
+                caveats.extend(f"test document, so not a problem here: {s}"
+                               for s in strength)
 
         # 3. the roster: unique ids, unique keys, well-formed.
         ids = [n.node_id for n in self.nodes]
@@ -297,6 +331,7 @@ class GenesisDocument:
                                 for r in raw.get("ratifications", ())),
             activations={int(v): int(h)
                          for v, h in (raw.get("activations") or {}).items()},
+            purpose=raw.get("purpose", LAUNCH_PURPOSE),
         )
         stated = raw.get("chain_id")
         if stated is not None and stated != doc.chain_id:
@@ -396,6 +431,7 @@ def draft(network: str, node_ids, params: ChainParams,
           effective_time: str = "1970-01-01T00:00:00Z",
           epoch_millis: int | None = None,
           keyring=dev_keyring,
+          purpose: str = LAUNCH_PURPOSE,
           ratification_threshold: int | None = None) -> GenesisDocument:
     """Assemble an unratified document.  `first_seed` defaults to the roster's
     own digest, which is not a commit-reveal and is marked as such."""
@@ -424,6 +460,7 @@ def draft(network: str, node_ids, params: ChainParams,
         ratification_threshold=(ratification_threshold
                                 if ratification_threshold is not None
                                 else params.quorum_size(n)),
+        purpose=purpose,
     )
 
 
@@ -449,9 +486,8 @@ GENESIS_7_IDS = tuple(f"fin6-n{i:02d}" for i in range(1, 8))
 def draft_seven(network: str = "fin6-genesis-7") -> GenesisDocument:
     """The document this repository ships, assembled from scratch."""
     from .hardening.params import PRODUCTION
-    from .params import DEMO
-    params = dataclasses.replace(DEMO, attend_threshold=40, grid_size=7,
-                                 row_size=5)
+    from .params import LAUNCH
+    params = LAUNCH
     supply = {"treasury": [1000, 900, 800, 700, 600]}
     return ratify_all(draft(network, GENESIS_7_IDS, params, PRODUCTION, supply))
 
