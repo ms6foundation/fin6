@@ -356,6 +356,81 @@ def test_three_tiers_when_the_roster_is_large_enough():
     assert r.finalised and r.tiers == 3
 
 
+# ── the committee, which is the whole of C2 ──────────────────────────────────
+
+def test_the_supreme_grid_seats_the_tier_below_and_not_its_leaders():
+    """Review C2. One seat per super grid made the whole network's liveness as
+    fragile as one tiny grid's — and the tiny grid was the one every partition
+    depended on."""
+    w, _, _ = funded(n=40)
+    r = run_tiered_epoch(w, epoch=1, base_seed="s")
+    assert r.finalised, r.reason
+    seated = set(r.supreme.grid.seats)
+    below = {n for res in r.supers.finalised.values() for n in res.grid.seats}
+    assert seated == below, "the committee is every seat of every super grid"
+    leaders = {res.grid.leader for res in r.supers.finalised.values()}
+    assert leaders < seated, "which is strictly more than one seat each"
+    assert not (seated - set(w.nodes)), "and wakes nobody who was not already up"
+
+
+def test_a_committee_of_leaders_tolerated_no_absence_at_all():
+    """The arithmetic, against a real epoch rather than an example.
+
+    At this size the old rule seated one node per super grid: two seats, quorum
+    two, so a *single* silent node stopped every partition on the network for
+    an epoch.  Seating the tier below gives eight and a quorum of six.
+    """
+    w, _, _ = funded(n=40)
+    r = run_tiered_epoch(w, epoch=1, base_seed="s")
+    assert r.finalised, r.reason
+    seats = len(r.supreme.grid.seats)
+    tolerated = seats - r.block.header.quorum
+    old_seats = len(r.supers.finalised)
+    old_tolerated = old_seats - w.params.quorum_size(old_seats)
+    assert old_tolerated == 0, "this fixture is supposed to show the worst of it"
+    assert tolerated > old_tolerated
+    assert r.block.header.quorum == w.params.quorum_size(seats), \
+        "and the block still says what its own certificate had to reach"
+
+
+def test_one_super_grid_is_the_same_rule_and_not_a_special_case():
+    """The collapse to two tiers used to be a separate branch seating the only
+    super grid's members.  That is now what the general rule already does."""
+    w, _, _ = funded(n=10)                 # 2 grids -> 2 leaders -> 1 super grid
+    r = run_tiered_epoch(w, epoch=1, base_seed="s")
+    assert r.finalised and r.tiers == 2
+    only = next(iter(r.supers.finalised.values()))
+    assert set(r.supreme.grid.seats) == set(only.grid.seats)
+
+
+def test_a_member_may_ask_whether_its_own_super_grid_was_left_out():
+    """`owner_of` answers "was my grid omitted", and a member that is not a
+    leader has exactly as much right to ask."""
+    import dataclasses as _dc
+
+    from ..tiers import SupremeWorkload
+
+    w, _, _ = funded(n=40)
+    r = run_tiered_epoch(w, epoch=1, base_seed="s")
+    assert r.finalised, r.reason
+    block = r.block
+    dropped_id = block.supers[0].header.super_id
+    thinned = _dc.replace(block, supers=block.supers[1:])
+    # Re-root it, so the block is not refused for the shallower reason first.
+    thinned = _dc.replace(thinned, header=_dc.replace(
+        block.header, super_root=thinned.compute_super_root()))
+    owner = {nid: sid for sid, res in r.supers.finalised.items()
+             for nid in res.grid.seats}
+    mine = [n for n, sid in owner.items()
+            if sid == dropped_id
+            and n != r.supers.finalised[dropped_id].grid.leader]
+    assert mine, "this fixture needs a super grid with a non-leader member"
+    work = SupremeWorkload(w, r.supers.blocks, 1, owner, tiers=r.tiers,
+                           quorum=block.header.quorum)
+    ok, why = work.validate(w.nodes[sorted(mine)[0]], thinned)
+    assert not ok and "omitted" in why, why
+
+
 def test_the_single_grid_case_collapses_to_one_tier():
     """One grid used to be refused.  It now degenerates instead — same block
     format, one ceremony, one certificate, and a header that says so."""

@@ -253,7 +253,7 @@ change and has nowhere to put one is not.
 
 | | work | fixes | cost |
 |---|---|---|---|
-| 1 | **Road A** — seat the super grids' members, not their leaders | the committee, which is where §2's numbers live | one selection rule; latency and certificate size |
+| 1 | ~~**Road A** — seat the super grids' members, not their leaders~~ **Done** | the committee, which is where §2's numbers live | one selection rule; latency and certificate size |
 | 2 | **§7** — tier-1/2 attendance in the home-grid register | absence at the top being free | a roll derivation and two governance decisions |
 | 3 | **Road C** — C1's views at the supreme tier | the dead leader | budget arithmetic; reuses `viewchange.py` |
 | 4 | **Road B** — leaderless assembly with a set-preference rule | the leader as a role at tier 2 | a reconciliation rule and a fetch bound |
@@ -261,6 +261,35 @@ change and has nowhere to put one is not.
 
 Items 1–4 are live-network changes and can be sequenced; item 5 is not, and is
 the only part of C2 that expires at genesis.
+
+## 9.1 Built — Road A
+
+`supreme_members` is the union of the seats of every super grid that finalised,
+rather than one leader from each. Two things fell out of writing it that the
+sketch did not say.
+
+**The collapse stopped being a special case.** Two tiers used to be a separate
+branch that seated the only super grid's members; the union of one super grid's
+seats *is* that grid, so the branch is gone and both cases are one rule.
+
+**`owner_of` had to widen with it.** It answers "was my own super grid left out
+of this block", and it was keyed by leader, because leaders were the only seats
+there were. A member that is not a leader has exactly as much right to ask, and
+now does.
+
+The numbers, from the test fixture rather than from the sizing table — 40 nodes,
+eight local grids, two super grids:
+
+| | seats | quorum | absences tolerated |
+|---|---|---|---|
+| one leader per super grid | 2 | 2 | **0** |
+| every super seat | 8 | 6 | 2 |
+
+Zero is the number worth keeping. At that size the old committee could not
+survive a *single* silent node: one absence and every partition on the network
+lost the epoch. It is asserted in `test_a_committee_of_leaders_tolerated_no_absence_at_all`,
+against a real epoch rather than an example, so it fails if the seating ever
+narrows again.
 
 ## 10. What this does not do
 

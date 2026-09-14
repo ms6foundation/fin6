@@ -1418,16 +1418,32 @@ def run_tiered_epoch(world: TierWorld, epoch: int, base_seed: str,
                                  local, supers)
 
     # ── Phase X ──────────────────────────────────────────────────────────────
-    super_led_by = {r.grid.leader: sid for sid, r in supers.ceremonies.items()
-                    if r.finalised}
-    super_leaders = sorted(super_led_by)
-    if len(super_leaders) >= 2:
-        supreme_members, tiers = super_leaders, 3
-    else:
-        # One super grid: the supreme tier collapses onto it, exactly as the
-        # sizing rule says it should below g^2 nodes.
-        only = next(iter(supers.finalised.values()))
-        supreme_members, tiers = sorted(only.grid.seats), 2
+    # Every seat of every super grid that finalised, not one leader each.
+    #
+    # This is the committee, and the committee is the whole of C2.  Seating
+    # only the leaders gave the supreme grid one seat per super grid — seven,
+    # at the sizing rule's own example of 343 nodes — so three absent nodes out
+    # of 343 stopped the entire network for an epoch, redrawn every epoch.  At
+    # a 10% absence rate that is a network-wide stall every 13 minutes; the
+    # same rate against 49 seats is one every 82 days.  Nothing about the
+    # protocol differs between those two numbers, only how many seats were
+    # asked.  See docs/supreme_tier_design.md §2 and §4.
+    #
+    # It wakes nobody new: these nodes are already in this epoch's ceremony and
+    # already hold the super blocks.  What it costs is messages and certificate
+    # size, which is what the committed seat order and the bitmap encoding were
+    # built for (review A3).
+    #
+    # `owner_of` follows the same widening.  It answers "was my own super grid
+    # left out of this block", and a member that is not a leader has exactly as
+    # much right to ask.
+    super_owner = {nid: sid for sid, r in supers.ceremonies.items()
+                   if r.finalised for nid in r.grid.seats}
+    supreme_members = sorted(super_owner)
+    # Two or more super grids is the full hierarchy.  One means the supreme
+    # tier collapses onto it — which is now the *same* seating rather than a
+    # special case, because the union of one super grid's seats is that grid.
+    tiers = 3 if len(supers.finalised) >= 2 else 2
 
     seed = h_hex("view", base_seed, epoch, "supreme", 0)
     grid = Grid.seat(supreme_members, params.row_size, seed)
@@ -1435,7 +1451,7 @@ def run_tiered_epoch(world: TierWorld, epoch: int, base_seed: str,
         grid, {n: world.nodes[n] for n in supreme_members}, params,
         height=epoch, epoch=epoch, rounds=rounds,
         quorum=params.quorum_size(len(supreme_members)),
-        workload=SupremeWorkload(world, supers.blocks, epoch, super_led_by,
+        workload=SupremeWorkload(world, supers.blocks, epoch, super_owner,
                                  tiers=tiers,
                                  quorum=params.quorum_size(
                                      len(supreme_members))),
