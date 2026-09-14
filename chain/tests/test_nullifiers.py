@@ -164,3 +164,117 @@ def test_two_ordinary_notes_still_differ():
     a = Note.create(100, "aa" * 32, DEMO)
     b = Note.create(100, "aa" * 32, DEMO)
     assert a.nullifier(DEMO) != b.nullifier(DEMO), "rho differs"
+
+
+# ── does the set need to exist? (review B5) ──────────────────────────────────
+#
+# Part nine's finding: this chain's spend graph is public, so a replay names
+# the same commitment and `cm not in utxo` refuses it before a nullifier is
+# looked at.  The nullifier set is therefore a second record of something the
+# first record already knows, and the decision — measured in
+# docs/nullifier_decision.md — is to keep it and make the redundancy a check.
+
+def _state(params=None):
+    from ..params import DEMO
+    from ..state import ChainState
+
+    return ChainState(params or DEMO)
+
+
+def _spendable(state, value=100, params=None):
+    """A note in the state, and the transaction that spends it."""
+    from ..crypto import Signer
+    from ..params import DEMO
+    from ..transaction import build_transaction
+
+    params = params or DEMO
+    signer = Signer.from_seed("holder")
+    note = Note.create(value, signer.public_hex, params)
+    cm = note_id(note_vector(note, params))
+    state.issue(cm)
+    out = Note.create(value - 1, signer.public_hex, params)
+    tx = build_transaction([(note, signer)], [out], 1, params,
+                           chain_id=state.chain_id)
+    return tx
+
+
+def test_the_utxo_set_refuses_a_replay_on_its_own():
+    """The finding, asserted rather than repeated: with the spend graph in the
+    clear, the commitment is what stops the second spend."""
+    state = _state()
+    tx = _spendable(state)
+    state.height = 0
+    ok, why = state.check_transaction(tx, verify_proof=False)
+    assert ok, why
+    state.apply_transaction(tx)
+    # Now forget the nullifiers entirely and try the replay again.
+    state.nullifiers = type(state.nullifiers)("nf", d=state.params.seal_d)
+    ok, why = state.check_transaction(tx, verify_proof=False)
+    assert not ok and "unspent note" in why, why
+
+
+def test_the_two_records_move_together():
+    state = _state()
+    tx = _spendable(state)
+    state.height = 0
+    assert state.cross_check()[0]
+    assert state.utxo.spent_count == state.nullifiers.size == 0
+    state.apply_transaction(tx)
+    assert state.utxo.spent_count == state.nullifiers.size == 1
+    ok, why = state.cross_check()
+    assert ok, why
+
+
+def test_a_spend_that_published_no_nullifier_is_caught():
+    """The check earning its keep. A tombstone without a marker is the ledger
+    losing track of a spend, which is the one thing it exists to track."""
+    state = _state()
+    tx = _spendable(state)
+    state.height = 0
+    for tin in tx.inputs:
+        state.utxo.spend(tin.cm)               # as a broken apply would
+    ok, why = state.cross_check()
+    assert not ok
+    assert "two records of a spend disagree" in why
+
+
+def test_a_nullifier_for_a_note_nobody_spent_is_caught():
+    state = _state()
+    _spendable(state)
+    state.height = 0
+    state.nullifiers.add("nf:" + "ab" * 32)
+    assert not state.cross_check()[0]
+
+
+def test_applying_a_delta_that_breaks_the_invariant_stops_the_node():
+    """Fail-stop rather than a wrong root: a ledger whose own records disagree
+    cannot be reasoned about, and carrying on is a silent fork."""
+    from ..state import LedgerInconsistent, UtxoDelta
+
+    state = _state()
+    tx = _spendable(state)
+    state.height = 0
+    broken = UtxoDelta(spent=tuple(tx.input_cms), created=(), nullifiers=(),
+                       fees=0)
+    try:
+        state.apply_delta(broken)
+    except LedgerInconsistent as exc:
+        assert "disagree" in str(exc)
+    else:
+        raise AssertionError("a lost spend was applied quietly")
+
+
+def test_the_honest_path_never_trips_it():
+    """Every test in every suite runs through `apply_delta`; this one says so
+    on purpose, because a tripwire that fires on honest work is worse than no
+    tripwire."""
+    from ..params import DEMO
+    from ..state import UtxoDelta
+
+    state = _state()
+    tx = _spendable(state)
+    state.height = 0
+    delta = UtxoDelta.from_txs([tx])
+    state.apply_delta(delta)
+    assert state.cross_check()[0]
+    assert state.utxo.spent_count == 1 == state.nullifiers.size

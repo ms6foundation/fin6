@@ -394,6 +394,17 @@ class SealAccumulator:
     def ever_contained(self, value) -> bool:
         return value in self.index
 
+    @property
+    def spent_count(self) -> int:
+        """How many slots have been tombstoned — every spend, for ever.
+
+        Named because it is one half of a ledger invariant: a spend rewrites a
+        leaf here and publishes a nullifier there, so these two counts move
+        together or something is wrong.  See `ChainState.cross_check` and
+        review B5.
+        """
+        return len(self.dead)
+
     def __len__(self) -> int:
         return len(self.items) - len(self.dead)
 

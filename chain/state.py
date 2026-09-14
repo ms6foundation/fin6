@@ -18,6 +18,17 @@ from .transaction import Transaction, verify_transaction
 # ChainState
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
+class LedgerInconsistent(Exception):
+    """The ledger's two records of a spend disagree.
+
+    Not a validation failure — a validation failure is somebody else's block
+    being wrong, and this is *this* state being wrong. It cannot be recovered
+    from locally, because there is no way to tell which of the two records is
+    the true one; the fix is a resync from a node that agrees with the network
+    (review B5, `ChainState.cross_check`).
+    """
+
 @dataclass
 class ApplyResult:
     ok: bool
@@ -109,6 +120,37 @@ class ChainState:
         self.height = -1
         self.tip = "genesis"
         self.burned_fees = 0
+
+    def cross_check(self) -> tuple:
+        """The two records of one fact, compared.  (ok, reason)
+
+        Review B5 asked whether the nullifier set needs to exist. Its
+        double-spend job is already done by the UTXO set: this chain's spend
+        graph is public, so a replay names the same commitment and
+        `cm not in self.utxo` refuses it before a nullifier is looked at. That
+        is the confidential-transactions model, not the Zcash one, and under it
+        the nullifier is a second record of something the first record already
+        knows.
+
+        The decision — measured and written up in docs/nullifier_decision.md —
+        is to keep it and make the redundancy earn its keep, because a second
+        *independent* record of every spend is worth more than the 0.3% of a
+        proof it costs. This is what earns it: a spend tombstones a leaf in one
+        structure and appends to the other, so
+
+            utxo.spent_count == nullifiers.size
+
+        at every height, for ever. Two integers. If they ever disagree, a note
+        was spent without publishing a nullifier or a nullifier appeared for a
+        note nobody spent — either way the ledger has lost track of a spend,
+        which is the one thing it exists to keep track of.
+        """
+        spent, published = self.utxo.spent_count, self.nullifiers.size
+        if spent != published:
+            return False, (f"{spent} notes are spent and {published} "
+                           f"nullifiers are published: the ledger's two "
+                           f"records of a spend disagree")
+        return True, "ok"
 
     def record_block(self, height: int, block_hash: str):
         """Move the tip, and put the block into the spine.
@@ -230,6 +272,9 @@ class ChainState:
     def apply_block(self, block):
         for tx in block.transactions:
             self.apply_transaction(tx)
+        ok, why = self.cross_check()
+        if not ok:
+            raise LedgerInconsistent(why)
         self.height = block.header.height
         self.tip = block.header.hash()
         return ApplyResult(True, "ok", sum(tx.fee for tx in block.transactions))
@@ -277,6 +322,14 @@ class ChainState:
         for cm in delta.created:
             self.utxo.add(cm)
         self.burned_fees += delta.fees
+        ok, why = self.cross_check()
+        if not ok:
+            # Two integers, checked on the path that moves them.  A ledger
+            # whose own two records of a spend disagree cannot be reasoned
+            # about, and carrying on would mean computing roots nobody else
+            # will reproduce — the same fail-stop discipline as a protocol
+            # version this build cannot run.
+            raise LedgerInconsistent(why)
 
     def can_apply_delta(self, delta: UtxoDelta):
         for cm in delta.spent:

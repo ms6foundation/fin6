@@ -237,6 +237,7 @@ simulation with no clock.
 
 ## Documents
 
+- [`docs/nullifier_decision.md`](docs/nullifier_decision.md) — why a set the UTXO tombstone makes redundant is kept, and the invariant that makes the redundancy a check *(built)*
 - [`docs/view_change_design.md`](docs/view_change_design.md) — what a dead leader costs, and the lock that keeps changing view from forking the height *(built)*
 - [`docs/succession_design.md`](docs/succession_design.md) — freezing a chain, and carrying its notes into a successor with a different protocol *(sketch)*
 - [`docs/address_format_decision.md`](docs/address_format_decision.md) — the scheme byte that lets the viewing key start rotating later without reissuing every address *(built)*
