@@ -28,8 +28,12 @@ What it does **not** check, and says so rather than implying otherwise:
   * that the register it verified is the one that was seated when the block was
     signed.  The roll of the epoch is applied before the root is taken, so the
     register under `registers_root` is one step ahead of the seats that signed.
-    Membership is stable across a roll; standing is not, so the quorum this
-    client computes can be off by one at a founding.
+    Membership is stable across a roll; standing is not — so this client no
+    longer *computes* the quorum from that register.  It reads what the header
+    says the ceremony required (review B4), which a full node refused the block
+    for getting wrong.  The residual is smaller and worth naming: the register
+    this client checks is still the one after the roll, so what it can say
+    about *standing* is a step stale even though the quorum figure is not.
   * anything at all when two nodes disagree.  Weighing two tips is the
     adjudicating client, and it is next door in `client/adjudicate.py`.
 """
@@ -161,10 +165,28 @@ class LightClient:
             return False, "the certificate is for another block"
         if cert.height != header.height or cert.chain_id != self.chain_id:
             return False, "the certificate is off-statement"
-        seats, quorum = set(), 1
+        seats = set()
         for reg in registers.values():
             seats.update(reg.seated_members())
-            quorum = max(quorum, reg.quorum())
+        # The quorum comes off the header, not out of the registers.
+        #
+        # It used to be the largest figure any fetched register implied, and
+        # this client's own docstring recorded why that was wrong: the roll of
+        # the epoch is applied before the root is taken, so the register under
+        # `registers_root` is one step ahead of the seats that signed.
+        # Membership survives a roll and standing does not, so at a founding
+        # the attester count moves and the figure was off by one — in either
+        # direction, which is the part that matters: too low accepts a
+        # certificate that was short.
+        #
+        # The header carries what the ceremony actually required (review B4),
+        # and a full node refuses a block whose claim does not match the
+        # register it ran the ceremony under. So this client is trusting the
+        # same agreement it is already trusting for every other field in the
+        # header, rather than a number it cannot derive.
+        quorum = getattr(header, "quorum", 0)
+        if quorum < 1:
+            return False, "the header does not say what quorum it needed"
         # A certificate no longer carries the keys it was signed with, which
         # this client is better placed than most to appreciate: it holds the
         # roster from the genesis document, and a key a certificate carried

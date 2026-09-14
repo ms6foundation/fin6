@@ -78,6 +78,17 @@ class CeremonyBlockHeader:
     #: committed here so that neither can be swapped after agreement.
     prev_cert_digest: str = ""
     faults_digest: str = ""
+    #: How many attestations this ceremony's certificate had to carry.
+    #:
+    #: Committed because a verifier cannot derive it later.  The register moves
+    #: on: the roll of epoch e-1 is applied when block e lands, so by the time
+    #: anybody checks this block's certificate the register has standing the
+    #: ceremony did not have, and across a founding the attester count — which
+    #: is what quorum is a fraction of — differs.  A full node checks this
+    #: number against the register the ceremony actually ran under and refuses
+    #: a mismatch, so it is verified rather than announced; a light client
+    #: reads it, and stops being off by one (review B4).
+    quorum: int = 0
 
     def hash(self) -> str:
         return "cb:" + h_hex("ceremony-header", self.grid_id, self.partition,
@@ -85,7 +96,8 @@ class CeremonyBlockHeader:
                              self.prev_network_hash, self.tx_root,
                              self.delta_digest, self.roll_digest,
                              self.register_root, self.leader_id,
-                             self.prev_cert_digest, self.faults_digest)
+                             self.prev_cert_digest, self.faults_digest,
+                             self.quorum)
 
 
 @dataclass(eq=False)
@@ -226,6 +238,11 @@ class NetworkBlockHeader:
     #: believes the membership was.  See chain/seats.py and
     #: docs/quorum_signature_decision.md.
     seats_root: str = ""
+    #: How many attestations this block's own certificate had to carry — the
+    #: grid's, at one tier, and the supreme grid's above that.  Same reason as
+    #: `CeremonyBlockHeader.quorum`: the register a verifier holds is not the
+    #: one the ceremony ran under.  See review B4.
+    quorum: int = 0
     """How many ceremonies stand behind this block.
 
     Three is the full hierarchy: a local grid agreed the transactions, a super
@@ -246,7 +263,8 @@ class NetworkBlockHeader:
                              self.registers_root, self.tiers,
                              self.foundings_root, self.witness_root,
                              self.history_root, self.utxo_count,
-                             self.nf_count, self.protocol, self.seats_root)
+                             self.nf_count, self.protocol, self.seats_root,
+                             self.quorum)
 
 
 @dataclass(eq=False)

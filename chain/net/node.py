@@ -915,13 +915,15 @@ class NodeProcess:
         if height <= self.world.height:
             return
         gid = self.grid_id()
-        quorum = self.world.registers[gid].quorum(
+        # The header's own figure, not this node's register.  A snapshot is by
+        # definition from a height this node has not reached, so its register
+        # is the wrong one to ask: membership survives a roll and standing does
+        # not, and across a founding the answer was wrong by one.  The number
+        # travels with the block that needed it now (review B4), and a full
+        # node refused that block if it did not match the register the ceremony
+        # ran under.
+        quorum = getattr(header, "quorum", 0) or self.world.registers[gid].quorum(
             self.world.params.quorum_num, self.world.params.quorum_den)
-        # The quorum figure comes from this node's own register, which is
-        # stale by definition here. Part eight already records the residual:
-        # membership survives a roll and standing does not, so across a
-        # founding this figure can be wrong by one. It is the same limitation
-        # a light client has and not a new one.
         ok, why = cert.verify(quorum, header.hash(), validators=self.validators)
         if not ok:
             self.log(f"snapshot from {who} refused: certificate {why}")
@@ -991,9 +993,12 @@ class NodeProcess:
             return False, f"block is for chain {str(header.chain_id)[:20]}…"
 
         gid = self.grid_id()
-        register = self.world.registers[gid]
-        quorum = register.quorum(self.world.params.quorum_num,
-                                 self.world.params.quorum_den)
+        # The block says what its certificate had to reach, and `SoloWorkload.
+        # validate` — which runs below — refuses a block whose header does not
+        # match this node's own register.  So the number is checked, and it is
+        # checked against the register the ceremony ran under rather than one
+        # that has since moved (review B4).
+        quorum = block.header.quorum or self.world.quorum_for(gid)
         cert = block.quorum_cert
         if cert is None:
             return False, "no quorum certificate"

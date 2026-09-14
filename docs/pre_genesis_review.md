@@ -393,13 +393,57 @@ protocol version, which after step 1 is at least possible.
 | B1 | ~~**Faults are provable and unusable**~~ **Done** | High | `Seat.catch_lazy` produced signed evidence that an attester did not check — an attestation over a block that does not validate. `GridRegister.apply` takes a `faulted` set. The network path passed none, because agreeing about a fault means **carrying it in the block**. So the standing system, apprenticeships and all, was inert against the one fault the code could prove. See §3.1. |
 | B2 | **No canonical seat order in the header** | Medium-High | The prerequisite for a signer bitmap, and therefore for A3's best case: 0.2 KB a certificate instead of 6.8 KB. |
 | B3 | ~~**Cross-partition transactions have no home**~~ **Done** | High | A spend touching two partitions can be included by no grid. It did not bite because `Wallet.send` spent exactly one note — and multi-note spends were a named open item, so shipping them made this live. Shipped, with the three answers in §3.2. |
-| B4 | **The register is one roll late** | Medium | A certificate is checked against a register whose roll has already been applied, so a client's quorum figure can be off by one across a founding. |
+| B4 | ~~**The register is one roll late**~~ **Done** | Medium | A certificate was checked against a register whose roll had already been applied, so a client's quorum figure could be off by one across a founding. The figure now travels in the header — §3.3. |
 | B6 | **Nothing binds a connection after its hello** | High | The handshake authenticates a frame, not a stream. Closing it needs either a transport or an agreement key per validator — and a key in the roster is a genesis decision, which is why a transport-layer answer sits in class B rather than class D. |
-| B5 | **The nullifier set may not need to exist** | Medium | Part nine's finding: the spend graph is public, so `tin.cm not in utxo` already refuses a replay before the nullifier check is reached. Keeping, scoping or dropping it is now a free choice — but `nf_root` is in every header, so making it is a format change. |
+| B5 | ~~**The nullifier set may not need to exist**~~ **Decided: keep** | Medium | Part nine's finding: the spend graph is public, so `tin.cm not in utxo` already refuses a replay before the nullifier check is reached. Measured at 0.3% of a proof and kept as a second independent record, with the redundancy turned into a tripwire — `docs/nullifier_decision.md`, §3.4. |
 
 **B1 deserves the emphasis.** Everything in parts two and five — attendance,
 standing, the forty-ceremony apprenticeship, forgiveness counters — is
 machinery for punishing behaviour the network cannot currently record.
+
+### 3.4 · B5, decided: keep it, and make it earn its keep
+
+Written up in `docs/nullifier_decision.md`. The finding is right — with a
+public spend graph the UTXO tombstone is what stops a double spend, and the
+nullifier is a second record of something the first already knows — but the
+measurement decides it: at `LAUNCH` parameters the nullifier is **one row of
+305**, 0.43 ms of a 600 ms proof, about **0.3% of a 341 KB transaction**, one
+marker and one leaf a spend. Dropping it would move the routing rule onto
+commitments, change what a wallet watches, and take two fields out of every
+header, for a third of one percent.
+
+So it stays, and the redundancy stops being ballast: `utxo.spent_count ==
+nullifiers.size`, at every height, for ever. A spend tombstones a leaf in one
+structure and appends to the other, and nothing else touches either. Two
+integers, checked on the path that moves them, and a disagreement raises
+`LedgerInconsistent` and stops the node — because a ledger whose own two records
+of a spend disagree cannot tell locally which one is true, and carrying on means
+computing roots nobody else will reproduce.
+
+That is what a second record is *for*: a bug in the UTXO accumulator is
+invisible to the UTXO accumulator.
+
+### 3.3 · B4, resolved: the quorum travels with the block
+
+A quorum is a fraction of the attesters, and standing moves. The roll of epoch
+e-1 is applied when block e lands, so by the time anyone checks block e's
+certificate the register has standing the ceremony did not have; across a
+founding the attester count differs and a derived figure is wrong — in either
+direction, and the dangerous direction is *too low*, which accepts a
+certificate that was short. The light client's docstring had carried this as a
+known residual since part eight.
+
+The fix is that the number stops being derived. `CeremonyBlockHeader.quorum` and
+`NetworkBlockHeader.quorum` carry what the ceremony required, inside the block
+hash. A full node checks the claim against the register it ran the ceremony
+under and refuses a mismatch — so among full nodes it is verified rather than
+announced — and the super tier, the snapshot check and the light client all read
+it instead of asking a register that has moved. A leader that understates its
+own quorum gets its block refused by every honest seat.
+
+The residual worth naming, in the light client's own words: the register it
+fetches is still the one after the roll, so what it can say about *standing* is
+a step stale even though the quorum figure no longer is.
 
 ### 3.2 · B3, resolved: multi-note spends, and the grid they belong to
 

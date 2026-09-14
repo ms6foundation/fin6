@@ -121,6 +121,18 @@ class TierWorld:
         return seats_mod.seats_root({gid: self.seat_order(gid)
                                      for gid in grid_ids})
 
+    def quorum_for(self, grid_id: str) -> int:
+        """The attestations a ceremony in this grid needs, right now.
+
+        Right now is the operative phrase and the whole of review B4: this is
+        the register as the ceremony runs, before the block that carries the
+        roll has been applied. A verifier asking the same question after the
+        fact gets a different answer across a founding, which is why the number
+        is committed in the header rather than re-derived.
+        """
+        reg = self.registers[grid_id]
+        return reg.quorum(self.params.quorum_num, self.params.quorum_den)
+
     def verify_cert(self, grid_id: str, cert, quorum: int, block_hash: str):
         """A certificate checked against the roster *and* the seats.
 
@@ -548,7 +560,8 @@ class LocalWorkload:
             delta_digest=delta.digest(), roll_digest=roll.digest(),
             register_root=register_root, leader_id=leader_id,
             prev_cert_digest=prev_cert_digest(prev_cert),
-            faults_digest=faults_digest(faults))
+            faults_digest=faults_digest(faults),
+            quorum=self.world.quorum_for(self.grid_id))
 
     def roll_from(self, block):
         """The roll a block's own certificate proves, for this grid."""
@@ -654,6 +667,14 @@ class LocalWorkload:
             return False, "roll digest does not match the roll"
         if h.register_root != self._register_after(roll, faulted):
             return False, "register_root does not follow from the roll"
+        # Checked against the register *this* node is running the ceremony
+        # under, which is the same one the leader used — so among full nodes
+        # the committed quorum is verified rather than announced, and anybody
+        # reading the block later can take it at the weight of that agreement
+        # (review B4).
+        if h.quorum != self.world.quorum_for(self.grid_id):
+            return False, (f"header claims a quorum of {h.quorum}, this grid "
+                           f"needs {self.world.quorum_for(self.grid_id)}")
         return True, "ok"
 
     def _check_prev_cert(self, node, block):
@@ -768,9 +789,10 @@ class SuperWorkload:
         for child in block.children:
             if child.quorum_cert is None:
                 return False, f"{child.header.grid_id}: no quorum certificate"
-            reg = self.world.registers.get(child.header.grid_id)
-            quorum = reg.quorum(self.world.params.quorum_num,
-                                self.world.params.quorum_den) if reg else 1
+            # The header's number, after `LocalWorkload.validate` has checked
+            # it against the register the ceremony ran under: one place decides
+            # what the quorum was, and everything downstream reads it.
+            quorum = child.header.quorum or 1
             # `seats` as well as the roster: a signature from a key the
             # genesis document names is not evidence that the signer sits in
             # *this* grid, and quorum is a fraction of a grid.  The order is
@@ -855,6 +877,7 @@ class SoloWorkload:
             registers_root=registers_root(
                 {self.grid_id: child.header.register_root}),
             seats_root=self.world.seats_root_for([self.grid_id]),
+            quorum=self.world.quorum_for(self.grid_id),
             tiers=1, foundings_root=block.compute_foundings_root(),
             witness_root=shadow.utxo.witness_root,
             history_root=shadow.history.root,
@@ -909,12 +932,18 @@ class SupremeWorkload:
     name = "supreme"
 
     def __init__(self, world: TierWorld, supers: dict, epoch: int,
-                 owner_of: dict, tiers: int = 3):
+                 owner_of: dict, tiers: int = 3, quorum: int = 0):
         self.world = world
         self.supers = dict(supers)          # super_id -> SuperBlock
         self.epoch = epoch
         self.owner_of = dict(owner_of)
         self.tiers = tiers
+        #: What the supreme grid's own certificate has to reach.  Passed in
+        #: rather than derived, because the supreme grid seats the tier below
+        #: it rather than a register's members — and committed in the header so
+        #: a reader is not left deriving it from a register that has moved
+        #: (review B4).
+        self.supreme_quorum = quorum
 
     def _apply(self, state: ChainState, supers):
         deltas = [c.delta for s in supers for c in s.children]
@@ -945,6 +974,11 @@ class SupremeWorkload:
             super_root=block.compute_super_root(),
             registers_root=registers_root(roots),
             seats_root=self.world.seats_root_for(roots),
+            # The supreme grid seats every super grid's leaders rather than a
+            # register's members, so its quorum is a fraction of the seats it
+            # drew — `supreme_quorum` is where that is decided, and this is it
+            # written down for whoever reads the block later.
+            quorum=self.supreme_quorum,
             tiers=self.tiers,
             foundings_root=block.compute_foundings_root(),
             witness_root=shadow.utxo.witness_root,
@@ -1004,6 +1038,9 @@ class SupremeWorkload:
         if not ok:
             return False, why
 
+        if self.supreme_quorum and h.quorum != self.supreme_quorum:
+            return False, (f"header claims a quorum of {h.quorum}, this "
+                           f"supreme grid needs {self.supreme_quorum}")
         roots = {c.header.grid_id: c.header.register_root
                  for s in block.supers for c in s.children}
         if registers_root(roots) != h.registers_root:
@@ -1268,7 +1305,9 @@ def run_tiered_epoch(world: TierWorld, epoch: int, base_seed: str,
         height=epoch, epoch=epoch, rounds=rounds,
         quorum=params.quorum_size(len(supreme_members)),
         workload=SupremeWorkload(world, supers.blocks, epoch, super_led_by,
-                                 tiers=tiers),
+                                 tiers=tiers,
+                                 quorum=params.quorum_size(
+                                     len(supreme_members))),
         grid_id="supreme")
     supreme = ceremony.run(behaviours.get(grid.leader, HonestLeader()))
 
