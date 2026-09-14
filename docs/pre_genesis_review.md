@@ -450,11 +450,38 @@ so the first definition had never run.
 |---|---|---|---|
 | C1 | **View change over a real network** | High | In-process it is a retry loop with a fresh seed. With timeouts and partial delivery it is a protocol, and it is not designed. This is the liveness path for a dead leader. |
 | C2 | **The supreme grid is a global stall point** | High | If it aborts, nothing finalises anywhere that epoch. |
-| C3 | **Reorg past the undo ceiling diverges permanently** | High | Undo records are kept to `retention_depth` — 729 blocks at a third of the pool. Beyond it a node that cannot roll back diverges from one that can, with no reconciliation path but a snapshot. |
+| C3 | ~~**Reorg past the undo ceiling diverges permanently**~~ **Done** | High | Undo records are kept to `retention_depth` — 729 blocks at a third of the pool. Beyond it a node that cannot roll back diverged from one that can, with no reconciliation path but a snapshot, and *silently*. See §4.1. |
 | C4 | **Grids never merge** | Medium-High | Split works and founding cohorts keep their standing. A network that shrinks keeps grids it cannot fill, and founding seating is permanent because merge does not exist. |
 | C5 | **Apprentice density stalls a grid** | Medium | Apprentices hold seats and cannot make quorum. Admission needs a rate limit tied to attester count. |
 | C6 | **No peer discovery** | Medium | Peers come from the roster and `net.toml`. A network that grows needs joiners to find seats. |
 | C7 | **Body window is 21 minutes** | Medium | Past it, catch-up falls back to `getsnapshot`, which costs the serving node a full state copy on demand and is one frame rather than the chunked ranges `store/snapshot.py` was built for. |
+
+### 4.1 · C3, resolved: a divergence that announces itself
+
+The fix is not a deeper rollback — the ceiling is arithmetic, not a setting.
+`max fork depth = attacker's unspent turns / width`, so a branch that forks
+deeper than the ceiling is not one an adversary inside the assumption could
+have built. Meeting one means the assumption is wrong: a pool more concentrated
+than era 0's ceremony claims, or turns compromised. The failure worth fixing is
+that the node had no opinion about this at all — `_retip` took the heaviest
+branch whatever it cost to follow, and a node that could not roll back that far
+simply went on believing its own history.
+
+`NetworkHistory` now measures what a retip would cost (`reorg_depth`, from the
+common ancestor) and refuses to follow one past `reorg_limit`, raising
+`ReorgBeyondCeiling` through the node's existing fail-stop path — the same
+discipline as a protocol version a build cannot run. The message names the fork
+height, the depth, the limit, and the only reconciliation there is: a snapshot
+at or below the fork from a node on the branch the network agrees on. The
+offending branch is kept, because a stopped node with nothing to look at is
+worse than one holding the evidence.
+
+Two details worth stating. The check is on being *followed*, not on arriving: a
+losing branch may fork as deep as it likes, since nobody has to undo anything
+for it. And the share is now one constant — `hardening.params.
+ASSUMED_ATTACKER_SHARE` — used by both `store.undo.retention_depth` and fork
+choice, because keeping undo records for 729 blocks while following forks to
+800 is C3's divergence with extra steps.
 
 ## 5. Class D — operational, any time
 

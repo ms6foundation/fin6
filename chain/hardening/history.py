@@ -22,11 +22,50 @@ from dataclasses import dataclass, field
 
 from ..seal import seal_root
 from .draw import PoolExhausted, draw_turns, max_fork_depth
-from .params import HardeningParams
+from .params import ASSUMED_ATTACKER_SHARE, HardeningParams
 from .pool import Era, EraSpec
 from .stamp import MiningFailed, Stamp, anchor_bytes, mine, verify_stamp
 
 GENESIS = "nb:genesis"
+
+#: The share of the pool the design is willing to be reorged by — the same
+#: number `store.undo.retention_depth` keeps records for, imported rather than
+#: repeated: a node that keeps undo for 729 blocks and follows a fork 800 deep
+#: has thrown away the only thing that could have followed it.
+DEFAULT_SHARE = ASSUMED_ATTACKER_SHARE
+
+
+class ReorgBeyondCeiling(Exception):
+    """A branch that would need a rollback this chain cannot perform.
+
+    Review C3.  Undo records stop at the rewrite ceiling — 729 blocks at a
+    third of the pool under the shipped parameters — and past that a node that
+    cannot roll back diverges permanently from one that can, with no
+    reconciliation path but a snapshot.  The failure is silent, which is the
+    part worth fixing: divergence that announces itself is an incident, and
+    divergence that does not is two networks that agree they are one.
+
+    The bound is not a policy. `max fork depth = attacker's unspent turns /
+    width` is arithmetic, so a branch deeper than the ceiling is not a branch
+    an adversary within the assumption could have built. Meeting one means the
+    assumption is wrong — a pool more concentrated than the era-0 ceremony
+    claims, or a turn set compromised — and the honest response is to stop and
+    say so, not to pick the heavier side.
+    """
+
+    def __init__(self, depth: int, limit: int, fork_hash: str,
+                 fork_height: int):
+        self.depth = depth
+        self.limit = limit
+        self.fork_hash = fork_hash
+        self.fork_height = fork_height
+        super().__init__(
+            f"a branch arrived that forks {depth} blocks back, past the "
+            f"{limit}-block rewrite ceiling: this node cannot roll back that "
+            f"far and must not follow it. The chain forks at height "
+            f"{fork_height} ({fork_hash[:16]}…). Reconciliation is a snapshot "
+            f"at or below that height from a node on the branch the network "
+            f"agrees on — there is no local way to decide which that is")
 
 
 @dataclass(frozen=True)
@@ -84,13 +123,27 @@ class NetworkHistory:
     """The hardened chain.  Holds every branch it has seen and picks the heaviest."""
 
     def __init__(self, spec: EraSpec, params: HardeningParams,
-                 genesis: str = GENESIS):
+                 genesis: str = GENESIS, reorg_limit: int | None = None):
         self.spec = spec
         self.params = params
         self.genesis = genesis
         self.blocks: dict = {}
         self.children: dict = {}
         self.tip_hash = genesis
+        #: How deep a reorg this node is *able* to perform — undo records do
+        #: not go back further, and neither does anybody else's.  Defaults to
+        #: the pool's own ceiling at the share the design assumes, which is the
+        #: same number `store.undo.retention_depth` keeps records for: the two
+        #: have to agree or the storage policy and the protocol disagree about
+        #: what is reversible.  See review C3.
+        self.reorg_limit = (max(1, params.max_fork_depth(DEFAULT_SHARE))
+                            if reorg_limit is None else reorg_limit)
+        #: Set when a branch arrives that would need a deeper rollback than
+        #: that.  Not a block to reject and not a branch to follow: under the
+        #: design's own assumption it cannot exist, so its existence means the
+        #: assumption failed.  A node that picked one and carried on would be
+        #: silently on a different chain from its peers.
+        self.halt: ReorgBeyondCeiling | None = None
 
     # ── branch walking ───────────────────────────────────────────────────────
 
@@ -111,6 +164,39 @@ class NetworkHistory:
         for hb in self._branch(block_hash):
             spent.update(hb.drawn)
         return spent
+
+    def common_ancestor(self, a: str, b: str) -> str:
+        """The deepest block both branches contain, or genesis.
+
+        Walks one branch into a set and the other until it lands in it, which
+        is linear in the two branches and needs no heights to agree.
+        """
+        seen = {a}
+        cur = a
+        while cur != self.genesis:
+            hb = self.blocks.get(cur)
+            if hb is None:
+                break
+            cur = hb.prev_hash
+            seen.add(cur)
+        cur = b
+        while cur != self.genesis:
+            if cur in seen:
+                return cur
+            hb = self.blocks.get(cur)
+            if hb is None:
+                break
+            cur = hb.prev_hash
+        return self.genesis
+
+    def reorg_depth(self, block_hash: str) -> int:
+        """How many blocks this node would have to undo to adopt that branch.
+
+        Zero when the branch extends the current tip — the common case, and the
+        one that is not a reorg at all.
+        """
+        fork = self.common_ancestor(self.tip_hash, block_hash)
+        return max(0, self.height_at(self.tip_hash) - self.height_at(fork))
 
     def cumulative_at(self, block_hash: str) -> int:
         if block_hash == self.genesis:
@@ -310,15 +396,36 @@ class NetworkHistory:
         self.blocks[hb.block_hash] = hb
         self.children.setdefault(hb.prev_hash, []).append(hb.block_hash)
         self._retip()
+        if self.halt is not None:
+            # The block is kept — it is evidence, and throwing away the thing
+            # that proves the assumption broke would leave an operator with a
+            # stopped node and nothing to look at.
+            return False, str(self.halt)
         return True, "ok"
 
     # ── fork choice ──────────────────────────────────────────────────────────
 
     def _retip(self):
+        """Heaviest branch — unless adopting it is a rollback this node cannot
+        perform, in which case nothing moves and the node stops.
+
+        The check is here rather than in `accept` because this is the moment
+        the choice is actually made: a block can arrive, be perfectly valid,
+        and sit on a losing branch for ever without anybody having to decide
+        anything. It is being *followed* that requires the undo records.
+        """
         best, best_w = self.genesis, 0
         for h, hb in self.blocks.items():
             if hb.cumulative > best_w or (hb.cumulative == best_w and h < best):
                 best, best_w = h, hb.cumulative
+        if best == self.tip_hash:
+            return
+        depth = self.reorg_depth(best)
+        if depth > self.reorg_limit:
+            fork = self.common_ancestor(self.tip_hash, best)
+            self.halt = ReorgBeyondCeiling(depth, self.reorg_limit, fork,
+                                           self.height_at(fork))
+            return
         self.tip_hash = best
 
     @property

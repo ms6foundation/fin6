@@ -109,8 +109,17 @@ def apply_undo(state, record: UndoRecord):
     return state
 
 
-def retention_depth(hardening_params, attacker_share: float = 1 / 3) -> int:
+def retention_depth(hardening_params, attacker_share: float | None = None) -> int:
     """How many undo records to keep, from the share of the pool you are
     willing to be reorged by.  Bitcoin cannot compute this; the finite pool is
-    what makes it computable."""
-    return max(1, hardening_params.max_fork_depth(attacker_share))
+    what makes it computable.
+
+    The default share is `hardening.params.ASSUMED_ATTACKER_SHARE`, which is
+    also what fork choice refuses to reorg past — one number, because storage
+    keeping records for one depth while the chain follows forks to another is
+    exactly review C3's divergence with extra steps.
+    """
+    from ..hardening.params import ASSUMED_ATTACKER_SHARE
+
+    share = ASSUMED_ATTACKER_SHARE if attacker_share is None else attacker_share
+    return max(1, hardening_params.max_fork_depth(share))

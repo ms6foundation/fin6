@@ -25,7 +25,7 @@ MODULES = ["test_notes", "test_nullifiers", "test_transaction", "test_state", "t
            "test_budget",
            "test_catchup",
            # hardening
-           "test_hardening", "test_wots_vectors", "test_era0", "test_mint"]
+           "test_hardening", "test_reorg", "test_wots_vectors", "test_era0", "test_mint"]
 
 
 def main(pattern: str | None = None) -> int:

@@ -31,7 +31,7 @@ from ..ceremony import Grid
 from ..crypto import Signer, h_bytes, h_hex
 from ..register import Standing
 from .. import protocol
-from ..hardening.history import NetworkHistory
+from ..hardening.history import NetworkHistory, ReorgBeyondCeiling
 from ..hardening.pool import Era
 from ..store import snapshot as snap
 from ..store.db import ChainStore
@@ -403,6 +403,15 @@ class NodeProcess:
                     break
                 try:
                     self.run_epoch(epoch)
+                except ReorgBeyondCeiling as split:
+                    # The other fail-stop, and it stops for the same reason:
+                    # carrying on means being quietly on a different chain
+                    # from the network.  There is no local way to decide which
+                    # branch is the real one, so the node does not try.
+                    self.halted = str(split)
+                    self.log(f"HALTED: {split}")
+                    self.stop.set()
+                    break
                 except protocol.HaltRequired as need:
                     # Not caught deeper down and turned into a skipped block:
                     # the whole value of this exception is that it ends the
@@ -621,6 +630,14 @@ class NodeProcess:
             return False
         hardened = self.history.assemble(block, pool.values())
         ok, why = self.history.accept(hardened)
+        if self.history.halt is not None:
+            # Review C3.  A branch that forks deeper than this node can roll
+            # back is not a branch to follow and not a block to shrug off: the
+            # bound it breaks is arithmetic, so meeting one means the
+            # assumption behind the bound is wrong.  Same discipline as a
+            # protocol version this build cannot run — stop, and say exactly
+            # what would reconcile it.
+            raise self.history.halt
         if not ok:
             self.log(f"not hardened {block_hash[:14]}…: {why}")
             return False

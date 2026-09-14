@@ -16,6 +16,13 @@ from dataclasses import dataclass
 from . import wots
 
 
+#: The share of the pool the design is willing to be reorged by.  One number
+#: in one place, because two copies of it is a node that keeps undo records for
+#: one depth and follows forks to another — which is review C3's failure with
+#: extra steps.
+ASSUMED_ATTACKER_SHARE = 1 / 3
+
+
 @dataclass(frozen=True)
 class HardeningParams:
     name: str = "production"
