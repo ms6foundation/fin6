@@ -362,10 +362,26 @@ class GenesisDocument:
                 f"implements {protocol.PROTOCOL_VERSION}")
         ahead = sorted(v for v in schedule if v > protocol.PROTOCOL_VERSION)
         if ahead:
+            when = ", ".join(
+                f"{v} at {schedule[v]:,} (~{schedule[v] / protocol.BLOCKS_PER_YEAR:.0f}y)"
+                for v in ahead)
             caveats.append(
                 f"protocol {ahead} activate later and this build implements "
                 f"{protocol.PROTOCOL_VERSION}: a node running it will halt at "
-                f"the first of those heights rather than fork")
+                f"the first of those heights rather than fork — {when}. A "
+                f"reserved slot is a deadline, and shipping the version as "
+                f"\"no rule changes\" is the escape hatch")
+        elif not schedule:
+            # The one part of review C2 that expires at genesis.  The schedule
+            # is inside the hash the chain id is, so a chain that reserves
+            # nothing can never adopt a rule change — it can only be replaced
+            # by a different chain.  See protocol.RESERVED_SLOTS and
+            # docs/supreme_tier_design.md §8.
+            caveats.append(
+                "no activation heights are reserved, so this chain has "
+                "nowhere to put a rule change: adding one later produces a "
+                "different document and therefore a different chain "
+                "(review C2 §8)")
 
         # 5. the tier count has to match what the roster can actually run.
         if self.tiers != 1:
@@ -743,7 +759,8 @@ def draft(network: str, node_ids, params: ChainParams,
           era0: dict | None = None,
           mint: dict | None = None,
           declared_total: int | None = None,
-          ratification_threshold: int | None = None) -> GenesisDocument:
+          ratification_threshold: int | None = None,
+          activations: dict | None = None) -> GenesisDocument:
     """Assemble an unratified document.  `first_seed` defaults to the roster's
     own digest, which is not a commit-reveal and is marked as such."""
     nodes = tuple(NodeEntry(nid, region, keyring(nid).public_hex)
@@ -782,6 +799,14 @@ def draft(network: str, node_ids, params: ChainParams,
         purpose=purpose,
         era0=canonical_era0(era0 or {}),
         mint=canonical_mint(mint or {}),
+        # A launch reserves somewhere to put a rule change; a test document
+        # does not, because a fixture that halts at a height is a fixture with
+        # a fuse in it.  Reserving is the one part of review C2 that expires at
+        # genesis: the schedule is inside the hash the chain id is, so adding a
+        # slot later produces a different chain.  See protocol.RESERVED_SLOTS.
+        activations=dict(activations if activations is not None
+                         else (protocol.RESERVED_SLOTS
+                               if purpose == LAUNCH_PURPOSE else {})),
     )
 
 

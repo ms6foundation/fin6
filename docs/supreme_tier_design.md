@@ -257,7 +257,7 @@ change and has nowhere to put one is not.
 | 2 | ~~**§7** — tier-1/2 attendance in the home-grid register~~ **Done** | absence at the top being free | a roll derivation and two governance decisions. See §9.2 |
 | 3 | **Road C** — C1's views at the supreme tier | the dead leader | budget arithmetic; reuses `viewchange.py` |
 | 4 | **Road B** — leaderless assembly with a set-preference rule | the leader as a role at tier 2 | a reconciliation rule and a fetch bound |
-| 5 | **§8** — reserve activation heights in the genesis document | keeping the structural road open | a number, before genesis |
+| 5 | ~~**§8** — reserve activation heights in the genesis document~~ **Done** | keeping the structural road open | a number, before genesis. See §9.3 |
 
 Items 1–4 are live-network changes and can be sequenced; item 5 is not, and is
 the only part of C2 that expires at genesis.
@@ -341,6 +341,30 @@ visible anywhere at all.
 block touches, and the store commit then tried to write a register for a grid
 this block had merged away — a `KeyError` that C4 had left behind and that only
 a block both merging a grid *and* touching it could reach.
+
+## 9.3 Built — the slots are reserved
+
+`protocol.RESERVED_SLOTS` schedules protocol 2 at height 1,596,840 and protocol
+3 at 4,790,520 — about one year and three years at the shipped 19.749 s epoch —
+and a **launch** document carries them. A test document carries none, because a
+fixture that halts at a height is a fixture with a fuse in it.
+
+The document says what that commits an operator to, in its own caveats, naming
+the heights:
+
+> protocol [2, 3] activate later and this build implements 1: a node running it
+> will halt at the first of those heights rather than fork — 2 at 1,596,840
+> (~1y), 3 at 4,790,520 (~3y). A reserved slot is a deadline, and shipping the
+> version as "no rule changes" is the escape hatch.
+
+And a document that reserves *nothing* now says that too, which is the caveat
+that matters more: a chain with no slot cannot adopt a rule change at all, only
+be replaced by a different chain.
+
+Adding the schedule re-digested `config/genesis-7.json` — it is inside the hash
+the chain id is, which is the whole reason this had to happen before genesis
+rather than after — so the founders re-ratified and the mint, which binds to
+`mint_context()`, was minted again.
 
 ## 10. What this does not do
 

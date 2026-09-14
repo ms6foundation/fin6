@@ -11,8 +11,12 @@ silent fork, and an operator watching a running node would never find out.
 """
 import dataclasses
 
+from .. import genesis
+from .. import protocol
 from .. import protocol as pr
 from ..crypto import Signer
+from ..hardening.params import PRODUCTION
+from ..params import DEMO
 from ..net import handshake
 from ..protocol import HaltRequired, ProtocolError
 
@@ -195,3 +199,54 @@ def test_a_peer_that_predates_the_field_still_authenticates():
     ok, why, who = v.check(old)
     assert ok, why
     assert v.stats()["peers"] == {"v1": 1}
+
+
+# ── reserving somewhere to put a rule change ─────────────────────────────────
+
+def test_a_launch_document_reserves_activation_heights():
+    """Review C2 §8, and the one part of it that expires at genesis.
+
+    The schedule is inside the hash the chain id is, so a chain that reserves
+    nothing can never adopt a rule change — it can only be replaced by a
+    different chain.  Partitioned finality, the only design that takes the
+    supreme grid off the critical path, is exactly such a change.
+    """
+    doc = genesis.draft_seven()
+    assert doc.schedule() == protocol.RESERVED_SLOTS
+    assert doc.verify()[0], doc.verify()[1]
+    assert min(protocol.RESERVED_SLOTS.values()) > protocol.BLOCKS_PER_YEAR / 2, \
+        "a slot inside six months is a release deadline, not a reservation"
+
+
+def test_the_document_says_the_slot_is_a_deadline():
+    """A node that reaches an activation for a version it does not implement
+    halts.  That is right, and it is the sort of thing a document should say
+    before anybody signs it rather than after a network stops."""
+    doc = genesis.draft_seven()
+    caveats = doc.verify()[2]
+    said = [c for c in caveats if "activate later" in c]
+    assert said, caveats
+    assert "halt" in said[0] and "no rule changes" in said[0], said[0]
+    for height in protocol.RESERVED_SLOTS.values():
+        assert f"{height:,}" in said[0], "it should name the heights"
+
+
+def test_a_chain_that_reserves_nothing_is_told_so():
+    doc = dataclasses.replace(genesis.draft_seven(), activations={},
+                              ratifications=())
+    assert any("nowhere to put a rule change" in c for c in doc.verify()[2])
+
+
+def test_a_test_document_reserves_nothing():
+    """A fixture that halts at a height is a fixture with a fuse in it."""
+    doc = genesis.draft("t", genesis.GENESIS_7_IDS[:4], DEMO, PRODUCTION,
+                        {"alice": [10]}, purpose="test")
+    assert doc.schedule() == {}
+
+
+def test_the_next_activation_is_findable_without_scanning():
+    assert protocol.next_activation(0, protocol.RESERVED_SLOTS) == \
+        (2, protocol.RESERVED_SLOTS[2])
+    assert protocol.next_activation(protocol.RESERVED_SLOTS[3],
+                                    protocol.RESERVED_SLOTS) is None
+    assert protocol.next_activation(0, {}) is None

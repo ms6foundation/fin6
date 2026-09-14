@@ -63,7 +63,39 @@ PROTOCOL_VERSION = 1
 #: version with no entry here is one this build has never heard of.
 CHANGES = {
     1: "genesis: the rules parts one through nine describe",
+    2: "reserved: nothing is scheduled into it yet",
+    3: "reserved: nothing is scheduled into it yet",
 }
+
+#: Roughly a year of blocks at the shipped 19.749 s epoch, for reading the
+#: heights below as dates.
+BLOCKS_PER_YEAR = 1_596_840
+
+#: Slots a launching chain reserves for rule changes it has not designed.
+#:
+#: This is the one part of review C2 that expires at genesis.  Activation
+#: heights live in the genesis document, so — as this module's own docstring
+#: puts it — "adding one later is a governance act that produces a new document
+#: and, by construction, a new chain; scheduling one in advance is just a
+#: number."  A chain that discovers it needs a rule change and has nowhere to
+#: put one has to migrate instead of upgrade.  Partitioned finality, the only
+#: design that removes the supreme grid from the critical path, is exactly such
+#: a change (docs/supreme_tier_design.md §8).
+#:
+#: Read it as a deadline rather than an option, because that is what it is: a
+#: node that reaches an activation height for a version it does not implement
+#: **halts**, correctly.  The escape hatch is shipping the version as "no rule
+#: changes" if the slot arrives unused, which is cheap; the alternative — a
+#: chain with nowhere to put an upgrade — is not.
+RESERVED_SLOTS = {2: BLOCKS_PER_YEAR, 3: 3 * BLOCKS_PER_YEAR}
+
+
+def next_activation(height: int, activations):
+    """(version, height) of the next rule change after `height`, or None."""
+    for version, at in sorted(normalise(activations).items()):
+        if at > height:
+            return version, at
+    return None
 
 
 class ProtocolError(Exception):
