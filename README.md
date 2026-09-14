@@ -237,6 +237,11 @@ simulation with no clock.
 
 ## Documents
 
+**Start here if you are running one or holding money on one:**
+
+- [`docs/admin_guide.md`](docs/admin_guide.md) — lay out a network, start it, watch it, and read it when it stops *(guide)*
+- [`docs/user_guide.md`](docs/user_guide.md) — make a wallet, be paid, pay, and check for yourself *(guide)*
+
 - [`docs/nullifier_decision.md`](docs/nullifier_decision.md) — why a set the UTXO tombstone makes redundant is kept, and the invariant that makes the redundancy a check *(built)*
 - [`docs/view_change_design.md`](docs/view_change_design.md) — what a dead leader costs, and the lock that keeps changing view from forking the height *(built)*
 - [`docs/succession_design.md`](docs/succession_design.md) — freezing a chain, and carrying its notes into a successor with a different protocol *(sketch)*
