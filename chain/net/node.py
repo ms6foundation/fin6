@@ -35,6 +35,7 @@ from ..hardening.history import NetworkHistory, ReorgBeyondCeiling
 from ..hardening.pool import Era
 from ..store import snapshot as snap
 from ..store.db import ChainStore
+from ..locality import tx_partition
 from ..tiers import SoloWorkload, run_tiered_epoch
 from .budget import EpochBudget, Priority, WorkQueue
 from .catchup import (BATCH, BODY_WINDOW, MAX_SNAPSHOT, BodyCache,
@@ -84,6 +85,10 @@ class NodeProcess:
         self.signer: Signer = keyring(node_id)
         self.world, self.wallets = genesis_mod.boot(self.doc, keyring=keyring)
         self.halted = ""
+        #: Submissions refused for spanning partitions.  Counted rather than
+        #: only logged, because it is the number that says whether some wallet
+        #: out there is building transactions nobody can include.
+        self.homeless = 0
         # A node speaks only for itself.  The rest of the roster is a set of
         # public keys and an address, not a set of objects.
         self.validators = {n.node_id: n.public_hex for n in self.doc.nodes}
@@ -225,6 +230,7 @@ class NodeProcess:
             "grids": len(self.world.topology.grid_ids()),
             "tiers": 1 if len(self.world.topology.grid_ids()) < 2 else 2,
             "mempool": len(self.node.mempool),
+            "homeless": self.homeless,
             "peers": len(self.mesh.connected),
             "epoch": self.clock.epoch_now(),
             "epochs_run": self.epochs_run,
@@ -1064,6 +1070,18 @@ class NodeProcess:
         Everything after it is queued.
         """
         backend = self.world.params.backend_for("local")
+        # Before authentication, because it is a lookup and because a
+        # transaction with no home is not a transaction anybody can act on: a
+        # note is spendable in exactly one grid, so one spending notes from two
+        # would need two grids to agree, and no grid may include it.  It used
+        # to be accepted here and then silently sit in mempools until it was
+        # forgotten — review B3.  The wallet is what stops these being built
+        # (`Wallet.select`); this is what stops one being taken in.
+        if tx_partition(tx, self.world.topology.n_partitions) is None:
+            self.log(f"refused {tx.txid[:14]}…: inputs span partitions, so no "
+                     f"grid may include it")
+            self.homeless += 1
+            return
         ok, why, auth = self.node.authenticate(tx, backend)
         if not ok:
             return

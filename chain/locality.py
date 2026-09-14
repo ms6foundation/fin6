@@ -166,11 +166,62 @@ def partition_of_nullifier(nullifier: str, n_partitions: int) -> int:
 
 
 def tx_partition(tx, n_partitions: int):
-    """The partition a transaction belongs to, or None if it spans several."""
+    """The partition a transaction belongs to, or None if it spans several.
+
+    None is not a routing problem to solve later.  A note is spendable in
+    exactly one grid, which is what makes a cross-grid double spend
+    structurally impossible rather than merely detectable; a transaction that
+    spent notes from two grids would need two grids to agree, and agreeing is
+    the thing partitioning exists to avoid.  So such a transaction has no home
+    by construction, and the answer is that nobody builds one — see
+    `partition_of_note` and `wallet.Wallet.select`, and review B3.
+    """
     parts = {partition_of_nullifier(nf, n_partitions) for nf in tx.nullifiers}
     if len(parts) != 1:
         return None                 # cross-partition: no grid may include it
     return parts.pop()
+
+
+def partition_of_note(note, params, n_partitions: int) -> int:
+    """Which grid this note will be spendable in, before it is spent.
+
+    The nullifier is a function of the note alone — its commitment and the
+    quadratic form over its coordinates — with no key material in it, so a
+    holder can compute where a note lives the moment it holds it. That is what
+    lets a wallet pick inputs that share a partition instead of discovering at
+    proving time that it has built something no grid will take.
+    """
+    from .notes import note_id, note_vector, nullifier_id, nullifier_value
+
+    cm = note_id(note_vector(note, params))
+    nf = nullifier_id(cm, nullifier_value(note.coords()))
+    return partition_of_nullifier(nf, n_partitions)
+
+
+def note_in_partition(value: int, owner_pub_hex: str, params, partition: int,
+                      n_partitions: int, *, asset="USD", tries: int = 4096):
+    """Mint a note that will be spendable in `partition`.
+
+    Drawing `rho` again is the whole mechanism: the partition is a hash of the
+    note, `rho` is fresh randomness the payer already chooses, and one in
+    `n_partitions` draws lands where it is wanted. So steering costs a few
+    hashes and nothing else — no proof, no round trip, and no information: the
+    partition of a note is public from the moment it is spent anyway.
+
+    This is what keeps a balance spendable. Without it a wallet's notes drift
+    across partitions and a payment large enough to need two of them can never
+    be made; with it, change comes home and a consolidation can gather a
+    balance into one grid.
+    """
+    from .notes import Note
+
+    for _ in range(max(1, tries)):
+        note = Note.create(value, owner_pub_hex, params, asset=asset)
+        if partition_of_note(note, params, n_partitions) == partition:
+            return note
+    raise ValueError(
+        f"could not draw a note in partition {partition} of {n_partitions} "
+        f"in {tries} tries — which should not happen: the draw is uniform")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

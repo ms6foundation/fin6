@@ -392,7 +392,7 @@ protocol version, which after step 1 is at least possible.
 |---|---|---|---|
 | B1 | ~~**Faults are provable and unusable**~~ **Done** | High | `Seat.catch_lazy` produced signed evidence that an attester did not check — an attestation over a block that does not validate. `GridRegister.apply` takes a `faulted` set. The network path passed none, because agreeing about a fault means **carrying it in the block**. So the standing system, apprenticeships and all, was inert against the one fault the code could prove. See §3.1. |
 | B2 | **No canonical seat order in the header** | Medium-High | The prerequisite for a signer bitmap, and therefore for A3's best case: 0.2 KB a certificate instead of 6.8 KB. |
-| B3 | **Cross-partition transactions have no home** | High | A spend touching two partitions can be included by no grid. It does not bite today only because `Wallet.send` spends exactly one note — and multi-note spends are a named open item, so shipping them makes this live. |
+| B3 | ~~**Cross-partition transactions have no home**~~ **Done** | High | A spend touching two partitions can be included by no grid. It did not bite because `Wallet.send` spent exactly one note — and multi-note spends were a named open item, so shipping them made this live. Shipped, with the three answers in §3.2. |
 | B4 | **The register is one roll late** | Medium | A certificate is checked against a register whose roll has already been applied, so a client's quorum figure can be off by one across a founding. |
 | B6 | **Nothing binds a connection after its hello** | High | The handshake authenticates a frame, not a stream. Closing it needs either a transport or an agreement key per validator — and a key in the roster is a genesis decision, which is why a transport-layer answer sits in class B rather than class D. |
 | B5 | **The nullifier set may not need to exist** | Medium | Part nine's finding: the spend graph is public, so `tin.cm not in utxo` already refuses a replay before the nullifier check is reached. Keeping, scoping or dropping it is now a free choice — but `nf_root` is in every header, so making it is a format change. |
@@ -400,6 +400,46 @@ protocol version, which after step 1 is at least possible.
 **B1 deserves the emphasis.** Everything in parts two and five — attendance,
 standing, the forty-ceremony apprenticeship, forgiveness counters — is
 machinery for punishing behaviour the network cannot currently record.
+
+### 3.2 · B3, resolved: multi-note spends, and the grid they belong to
+
+Closing this meant shipping the thing that makes it live. `TxSystem` has always
+handled *k* inputs; `Wallet.send` refused to use more than one and said so, so
+a wallet holding change could be unable to spend what it plainly had. With two
+inputs, the two can live in two different grids.
+
+A note is spendable in exactly one grid — that is what makes a cross-grid
+double spend structurally impossible rather than merely detectable — so a
+transaction spending notes from two grids would need two grids to agree about
+it, which is the thing partitioning exists to avoid. Such a transaction is not
+rejected so much as **homeless**, and a homeless transaction used to be
+accepted by a node and then sit in mempools until it was forgotten.
+
+Three answers, and the first is the real one:
+
+1. **The wallet does not build one.** `Wallet.select` chooses inputs from a
+   single partition, largest-first, and returns which. When no single grid
+   holds enough it says so, prints the spread, and names the remedy — that is a
+   different failure from being poor and it gets a different message.
+2. **A node does not take one in.** `_offer_tx` refuses before authentication
+   and counts it in `status` as `homeless`, so a wallet somewhere building
+   unroutable transactions is visible rather than mysterious.
+3. **Change comes home.** The partition is a hash of the note and `rho` is
+   randomness the payer draws anyway, so `note_in_partition` aims it for a few
+   hashes and no information — a note's partition is public from the moment it
+   is spent. Without that, a wallet's notes scatter one payment at a time until
+   a balance that is plainly sufficient can no longer make a payment.
+   `Wallet.consolidate` is the escape hatch for a balance that has already
+   scattered: it gathers one grid's notes into one note *in that grid*.
+
+Two things surfaced while building it. `select`'s comment said smallest-first
+"keeps the note count down", which is the opposite of what smallest-first does
+— covering 55 from 10, 50 and 100 takes two notes ascending and one descending.
+The rationale was right and the sort was backwards; it is largest-first now.
+And a **founding can make a transaction in flight homeless**, since K is the
+routing rule: inputs that shared a partition at K can split at K+1.
+`reroute_mempools` already drops those rather than stranding them, and there is
+now a test that says so out loud.
 
 ### 3.1 · B1, resolved: a fault that costs something
 

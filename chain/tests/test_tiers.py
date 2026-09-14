@@ -83,6 +83,16 @@ def test_several_epochs_chain():
     assert len({n.state.utxo.root for n in w.nodes.values()}) == 1
 
 
+def nullifier_of(note, params=None):
+    """The marker this note will publish when it is spent, which is what its
+    partition is computed from."""
+    from ..notes import note_id, note_vector, nullifier_id, nullifier_value
+
+    params = params or PARAMS
+    cm = note_id(note_vector(note, params))
+    return nullifier_id(cm, nullifier_value(note.coords()))
+
+
 # ── partitioning ─────────────────────────────────────────────────────────────
 
 def test_a_transaction_routes_to_exactly_one_grid():
@@ -112,15 +122,28 @@ def test_a_grid_refuses_a_transaction_from_another_partition():
 
 
 def test_a_cross_partition_spend_has_no_home():
-    """Two inputs whose nullifiers fall in different partitions."""
+    """Two inputs whose nullifiers fall in different partitions.
+
+    This used to shrug and return when the two genesis notes happened to land
+    in the same grid, which is most of the time at small K — a test that
+    passes by not running. `note_in_partition` makes the case constructible,
+    because the partition is a hash of the note and `rho` is randomness the
+    payer draws anyway (review B3).
+    """
+    from ..locality import note_in_partition
+
     w, wallets = world()
     K = w.topology.n_partitions
+    assert K > 1, "this world has one grid; nothing can span two"
     alice = wallets["alice"]
-    a, b = alice.notes[0], alice.notes[1]
-    out = Note.create(a.value + b.value - 5, alice.public_hex, PARAMS, asset=a.asset)
-    tx = build_transaction([(a, alice.signer), (b, alice.signer)], [out], 5, PARAMS)
-    if partition_of_nullifier(tx.nullifiers[0], K) == partition_of_nullifier(tx.nullifiers[1], K):
-        return                      # they happened to land together; nothing to test
+    a = note_in_partition(500, alice.public_hex, PARAMS, 0, K)
+    b = note_in_partition(400, alice.public_hex, PARAMS, 1, K)
+    out = Note.create(a.value + b.value - 5, alice.public_hex, PARAMS,
+                      asset=a.asset)
+    tx = build_transaction([(a, alice.signer), (b, alice.signer)], [out], 5,
+                           PARAMS)
+    assert partition_of_nullifier(tx.nullifiers[0], K) != \
+        partition_of_nullifier(tx.nullifiers[1], K)
     assert tx_partition(tx, K) is None
     ok, why, _ = w.submit(tx)
     assert not ok and "span partitions" in why, why
@@ -351,3 +374,56 @@ def test_the_single_grid_case_collapses_to_one_tier():
     assert block.supers[0].quorum_cert is None
     assert block.supers[0].children[0].quorum_cert is None
     assert result.stats()["ceremonies"] == 1, "one ceremony, counted once"
+
+
+def test_a_founding_can_make_a_transaction_in_flight_homeless():
+    """K is the routing rule, so a grid founding re-homes everything — and a
+    multi-note spend whose inputs shared a partition at K can find them split
+    at K+1.
+
+    Not a bug to fix so much as a hazard to name: the transaction is dropped
+    rather than left in a mempool that will never include it, and the payer
+    builds another. What would be wrong is the third option, which is what the
+    code did before review B3 closed it on the network path — keep it, and
+    never say so.
+    """
+    from ..locality import note_in_partition
+
+    w, wallets = world()
+    K = w.topology.n_partitions
+    alice = wallets["alice"]
+    a = note_in_partition(500, alice.public_hex, PARAMS, 0, K)
+    for value in range(400, 460):
+        b = note_in_partition(value, alice.public_hex, PARAMS, 0, K)
+        if partition_of_nullifier(nullifier_of(b), K + 1) != \
+                partition_of_nullifier(nullifier_of(a), K + 1):
+            break
+    else:
+        raise AssertionError("could not find two notes that split at K+1")
+    out = Note.create(a.value + b.value - 5, alice.public_hex, PARAMS,
+                      asset=a.asset)
+    tx = build_transaction([(a, alice.signer), (b, alice.signer)], [out], 5,
+                           PARAMS)
+    assert tx_partition(tx, K) is not None, "one home today"
+    assert tx_partition(tx, K + 1) is None, "and none after a founding"
+
+
+def test_rerouting_drops_what_no_longer_belongs_anywhere():
+    """`reroute_mempools` is what a founding runs, and this is the case that
+    matters: not moving a transaction to another grid, but finding it has
+    none."""
+    from ..locality import note_in_partition
+
+    w, wallets = world()
+    K = w.topology.n_partitions
+    alice = wallets["alice"]
+    a = note_in_partition(500, alice.public_hex, PARAMS, 0, K)
+    b = note_in_partition(400, alice.public_hex, PARAMS, 1, K)
+    out = Note.create(880, alice.public_hex, PARAMS, asset=a.asset)
+    tx = build_transaction([(a, alice.signer), (b, alice.signer)], [out], 20,
+                           PARAMS)
+    node = w.nodes[next(iter(w.nodes))]
+    node.mempool[tx.txid] = tx                    # as if K had just moved
+    rerouted, seen = w.reroute_mempools()
+    assert seen >= 1 and rerouted == 0
+    assert tx.txid not in node.mempool, "left to sit in a mempool for ever"

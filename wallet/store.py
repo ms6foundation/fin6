@@ -28,6 +28,8 @@ from chain.crypto import Signer
 from .keys import Address, WalletKeys
 from .sealing import (decrypt_opening, disclosure_key,
                       open_disclosed, seal_output)
+from chain.locality import note_in_partition, partition_of_note
+from chain.node import MAX_INPUTS
 from chain.notes import Note, note_id, note_vector, nullifier_id
 from chain.notes import nullifier_value
 from chain.params import ChainParams
@@ -65,11 +67,19 @@ class Wallet:
     """The user's side of the chain."""
 
     def __init__(self, keys: WalletKeys, params: ChainParams,
-                 chain_id: str | None = None, name: str = "wallet"):
+                 chain_id: str | None = None, name: str = "wallet",
+                 n_partitions: int = 1):
         self.keys = keys
         self.params = params
         self.chain_id = chain_id or params.chain_id
         self.name = name
+        #: How many grids the chain currently runs, which is how many
+        #: partitions its notes are spread across.  A wallet has to know,
+        #: because a note is spendable in exactly one grid and a transaction
+        #: that spends notes from two has no home — see `select` and review B3.
+        #: One at launch, and it grows by foundings; a caller that talks to a
+        #: node sets it from the chain's status.
+        self.n_partitions = max(1, int(n_partitions))
         self.held: dict = {}          # cm -> Held
         self.scanned_to = 0           # the last height this wallet has seen
         # One seed, many addresses. Kept because a viewing key is scoped to
@@ -171,24 +181,67 @@ class Wallet:
 
     # ── spending ─────────────────────────────────────────────────────────────
 
-    def select(self, amount: int):
-        """Enough notes to cover `amount`, smallest-first.
+    def partition_of(self, held) -> int:
+        """Which grid this note is spendable in."""
+        return partition_of_note(held.note, self.params, self.n_partitions)
 
-        Smallest-first keeps the note count down, which matters here because a
-        transaction proves every input: the coin selection policy is a proof
-        size policy.
+    def by_partition(self) -> dict:
+        """Unspent notes grouped by the grid that can spend them."""
+        out: dict = {}
+        for held in self.unspent():
+            out.setdefault(self.partition_of(held), []).append(held)
+        return out
+
+    def select(self, amount: int):
+        """Enough notes to cover `amount`, from **one** partition.
+
+        Two policies in one method, and they pull in different directions.
+
+        *Smallest-first* keeps the note count down, because a transaction
+        proves every input: coin selection is a proof-size policy before it is
+        anything else.
+
+        *One partition* is not a policy at all — it is the shape of the chain.
+        A note is spendable in exactly one grid, and a transaction spending
+        notes from two grids would need two grids to agree about it, which is
+        precisely what partitioning exists to avoid. Such a transaction is not
+        rejected so much as homeless: no grid may include it, and it would sit
+        in mempools until it was forgotten. So the choice is made here, where
+        there is still a choice (review B3).
+
+        Returns (chosen, total, partition).
         """
-        pool = sorted(self.unspent(), key=lambda h: h.value)
-        chosen, total = [], 0
-        for held in pool:
-            if total >= amount:
-                break
-            chosen.append(held)
-            total += held.value
-        if total < amount:
+        best = None
+        for part, pool in sorted(self.by_partition().items()):
+            chosen, total = [], 0
+            for held in sorted(pool, key=lambda h: h.value, reverse=True):
+                if total >= amount:
+                    break
+                chosen.append(held)
+                total += held.value
+            if total < amount or len(chosen) > MAX_INPUTS:
+                continue
+            # Fewest inputs wins, and a tie goes to the smaller total, which
+            # is the change this payment leaves lying around.
+            key = (len(chosen), total)
+            if best is None or key < best[0]:
+                best = (key, chosen, total, part)
+        if best is not None:
+            _, chosen, total, part = best
+            return chosen, total, part
+
+        # Nothing single-partition can cover it. Say which of the two
+        # situations this is, because the answers are different.
+        if self.balance() < amount:
             raise WalletError(
                 f"balance is {self.balance()}, cannot cover {amount}")
-        return chosen, total
+        spread = {p: sum(h.value for h in pool)
+                  for p, pool in sorted(self.by_partition().items())}
+        raise WalletError(
+            f"balance is {self.balance()} but no single grid holds {amount}: "
+            f"{spread}. A note is spendable in one grid only, so a payment is "
+            f"too — pay from each grid separately, or consolidate first "
+            f"(`Wallet.consolidate`)")
 
     def send(self, to: Address, amount: int, fee: int = 1, *, backends=None):
         """Build and prove a transfer.  Returns (tx, change_note or None).
@@ -199,36 +252,84 @@ class Wallet:
         """
         if amount < 0 or fee < 0:
             raise WalletError("amount and fee must not be negative")
-        chosen, total = self.select(amount + fee)
-        if len(chosen) != 1:
-            # TxSystem handles k inputs; `send` does not yet, and pretending
-            # otherwise would produce an unprovable statement at the last step.
-            raise WalletError(
-                f"this payment needs {len(chosen)} notes and multi-note spends "
-                f"are not built yet — the design's open item")
-        held = chosen[0]
-        # The address that received the input is the one that signs for it and
-        # the one the change goes back to. Sending change to index 0 would be
-        # the quiet way to defeat the whole point: disclose one address and
-        # the change from every other address's notes is sitting in it.
-        mine = self._keys.get(held.index, self.keys)
+        chosen, total, part = self.select(amount + fee)
+        # The address that received an input is the one that signs for it, and
+        # the change goes back to the address that paid the most of it.
+        # Sending change to index 0 would be the quiet way to defeat the whole
+        # point: disclose one address and the change from every other address's
+        # notes is sitting in it.
+        biggest = max(chosen, key=lambda h: h.value)
+        mine = self._keys.get(biggest.index, self.keys)
+        asset = chosen[0].note.asset
+        if len({h.note.asset for h in chosen}) != 1:
+            raise WalletError("a transaction spends one asset at a time")
         change = total - amount - fee
-        outs = [Note.create(amount, to.spend_hex, self.params,
-                            asset=held.note.asset),
-                Note.create(change, mine.address.spend_hex, self.params,
-                            asset=held.note.asset)]
+        outs = [Note.create(amount, to.spend_hex, self.params, asset=asset),
+                # Change is steered back into the partition it came from.
+                # Without that a wallet's notes scatter across grids one
+                # payment at a time, and a balance that is spread thin enough
+                # can no longer make a payment at all — the partition is a
+                # hash of the note and `rho` is randomness we were drawing
+                # anyway, so aiming it costs a few hashes (review B3).
+                note_in_partition(change, mine.address.spend_hex, self.params,
+                                  part, self.n_partitions, asset=asset)]
         # Sealed here, not in `build_transaction`: sealing needs an address and
         # the ledger has no business knowing what an address is.  What the
         # ledger does is bind what it is handed.
         cms = [note_id(note_vector(n, self.params)) for n in outs]
         pairs = [seal_output(note, address, cm, self.params)
                  for note, address, cm in zip(outs, [to, mine.address], cms)]
-        tx = build_transaction([(held.note, mine.signer)], outs, fee,
+        spends = [(h.note, self._keys.get(h.index, self.keys).signer)
+                  for h in chosen]
+        tx = build_transaction(spends, outs, fee,
                                self.params, chain_id=self.chain_id,
                                backends=backends,
                                sealed=[blob for blob, _ in pairs],
                                tags=[tag for _, tag in pairs])
         return tx, outs[1]
+
+    def consolidate(self, partition: int | None = None, fee: int = 1, *,
+                    backends=None):
+        """Gather one partition's notes into a single note in that partition.
+
+        The escape hatch that keeps a balance spendable. A wallet paid in small
+        amounts accumulates notes, and a payment proves every input it spends,
+        so at some point the cheapest thing to do is spend them all to
+        yourself. `send` cannot do it, because `send` is a payment to somebody
+        else with change left over; this is the same transaction with the
+        payment pointed at the payer.
+
+        With no `partition`, the one holding the most notes — which is the one
+        most in need of it.
+        """
+        pools = self.by_partition()
+        if not pools:
+            raise WalletError("nothing to consolidate")
+        if partition is None:
+            partition = max(sorted(pools), key=lambda p: len(pools[p]))
+        pool = sorted(pools.get(partition, ()), key=lambda h: h.value,
+                      reverse=True)[:MAX_INPUTS]
+        if len(pool) < 2:
+            raise WalletError(
+                f"partition {partition} holds {len(pool)} note(s); "
+                f"consolidating one note into one note is a fee for nothing")
+        total = sum(h.value for h in pool)
+        if total <= fee:
+            raise WalletError(f"partition {partition} holds {total}, "
+                              f"which will not pay a fee of {fee}")
+        mine = self._keys.get(pool[0].index, self.keys)
+        asset = pool[0].note.asset
+        gathered = note_in_partition(total - fee, mine.address.spend_hex,
+                                     self.params, partition, self.n_partitions,
+                                     asset=asset)
+        cm = note_id(note_vector(gathered, self.params))
+        blob, tag = seal_output(gathered, mine.address, cm, self.params)
+        spends = [(h.note, self._keys.get(h.index, self.keys).signer)
+                  for h in pool]
+        tx = build_transaction(spends, [gathered], fee, self.params,
+                               chain_id=self.chain_id, backends=backends,
+                               sealed=[blob], tags=[tag])
+        return tx, gathered
 
     # ── disclosure ───────────────────────────────────────────────────────────
 

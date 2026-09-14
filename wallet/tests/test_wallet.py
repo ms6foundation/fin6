@@ -155,12 +155,20 @@ def test_a_spent_note_disappears_when_its_nullifier_appears():
     assert alice.balance() == 745, "1000 − 250 − 5, as change"
 
 
-def test_selection_is_smallest_first_and_says_so_when_it_cannot_pay():
+def test_selection_takes_the_fewest_notes_and_says_so_when_it_cannot_pay():
+    """Largest-first, because a transaction proves every input it spends.
+
+    This used to be smallest-first, under a comment explaining that
+    smallest-first "keeps the note count down" — which is the opposite of what
+    it does: covering 55 from 10, 50 and 100 takes two notes ascending and one
+    descending. The rationale was right and the sort was backwards.
+    """
     alice = _wallet("alice")
     for value in (10, 50, 100):
         _fund(alice, value)
-    chosen, total = alice.select(55)
-    assert [h.value for h in chosen] == [10, 50] and total == 60
+    chosen, total, part = alice.select(55)
+    assert [h.value for h in chosen] == [100] and total == 100
+    assert part == 0, "one grid, so everything is in partition 0"
     try:
         alice.select(1000)
     except WalletError as exc:
@@ -169,16 +177,18 @@ def test_selection_is_smallest_first_and_says_so_when_it_cannot_pay():
     raise AssertionError("paid more than it held")
 
 
-def test_a_multi_note_spend_refuses_rather_than_building_a_bad_proof():
+def test_a_multi_note_spend_is_built_and_proved():
+    """The open item this closes. `TxSystem` always handled k inputs; `send`
+    refused to use more than one, so a wallet holding change could be unable
+    to spend what it plainly had."""
     alice, bob = _wallet("alice"), _wallet("bob")
     _fund(alice, 10)
     _fund(alice, 50)
-    try:
-        alice.send(bob.address, 55)
-    except WalletError as exc:
-        assert "multi-note" in str(exc)
-        return
-    raise AssertionError("built a transaction it cannot prove")
+    tx, change = alice.send(bob.address, 55, fee=1)
+    assert len(tx.inputs) == 2, "both notes, because neither covers it alone"
+    assert change.value == 60 - 55 - 1
+    ok, why = verify_transaction(tx, alice.params, chain_id=alice.chain_id)
+    assert ok, why
 
 
 def test_the_note_store_is_a_cache_that_round_trips():

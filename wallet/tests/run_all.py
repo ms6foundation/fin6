@@ -9,7 +9,7 @@ import sys
 from chain.tests.runner import run
 
 MODULES = ["test_wallet", "test_disclosure", "test_address_format",
-           "test_genesis_mint"]
+           "test_genesis_mint", "test_partitions"]
 
 
 def main(pattern: str | None = None) -> int:
