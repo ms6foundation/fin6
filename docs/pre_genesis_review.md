@@ -796,6 +796,12 @@ client · snapshot cadence · archive incentives · fsync honesty on consumer SS
 · the 1.4 ms flat fold cost (an interpreter ceiling, ~125 tx/s at ten million
 notes) · sample rates at the upper tiers · locality tags being self-declared.
 
+Sketched as part thirteen — `docs/operational_design.md`. The nine items are
+four stories, three of them are misfiled, and measuring three before writing
+found two wrong: the penalty box costs the *node* 288 µs a violation once it is
+full (2.9 µs empty), and a submission's token price was set when a proof
+verified in 25 ms and not the 0.31 s it takes at launch parameters.
+
 And the one that keeps recurring across three documents: **nothing measures any
 of this.** "Seven nodes agreed for an hour" and "the node did not fall over"
 are not tests. The chaos stages need assertions — a partition heals within N
