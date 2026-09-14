@@ -235,6 +235,7 @@ simulation with no clock.
 ## Documents
 
 - [`docs/succession_design.md`](docs/succession_design.md) — freezing a chain, and carrying its notes into a successor with a different protocol *(sketch)*
+- [`docs/address_format_decision.md`](docs/address_format_decision.md) — the scheme byte that lets the viewing key start rotating later without reissuing every address *(built)*
 - [`docs/wots_decision.md`](docs/wots_decision.md) — why the teaching one-time signature ships, and the name and known answers that make replacing it a check rather than a leap *(built)*
 - [`docs/quorum_signature_decision.md`](docs/quorum_signature_decision.md) — why not threshold BLS yet, and the three things that make adopting one a value rather than a format change *(built)*
 - [`docs/pre_genesis_review.md`](docs/pre_genesis_review.md) — **what has to be right before the chain exists**: every open item ranked by severity and by what genesis makes permanent

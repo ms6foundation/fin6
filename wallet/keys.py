@@ -30,7 +30,28 @@ from chain.crypto import (Signer, detect_key, ephemeral, h_bytes, seed_from_phra
                           spend_signer, view_key)
 
 PREFIX = "fin6"
-ADDRESS_VERSION = 2
+ADDRESS_VERSION = 3
+
+#: How the keys in an address are used — and the field review A6 is about.
+#:
+#: A viewing key handed to an auditor today still opens payments made to that
+#: address tomorrow.  Diversified addresses mitigate that (the grant is scoped
+#: to one address); era-derived viewing keys would fix it, by rotating the key
+#: every era so a grant is bounded in *time* as well as in scope.
+#:
+#: That construction cannot be added as a software change: it needs the
+#: additive tweak done in Edwards form with an unclamped scalar, so the key
+#: agreement stops being library X25519 — a different scheme with the same
+#: bytes.  An address with no scheme field would have to change shape to say
+#: so, and by then every address ever published is the old shape.  With this
+#: byte, adopting it is a value plus a wallet, and a build that does not
+#: implement a scheme refuses the address instead of paying to a key it has
+#: misread.  See docs/address_format_decision.md.
+X25519_STATIC = 1          # what ships: one viewing key, for ever
+ERA_ROTATING = 2           # reserved: viewing key tweaked per era
+SCHEMES = {X25519_STATIC: "x25519-static-view",
+           ERA_ROTATING: "ed25519-era-rotating-view"}
+IMPLEMENTED = (X25519_STATIC,)
 CHECKSUM_BYTES = 4
 
 
@@ -65,11 +86,19 @@ class Address:
     spend_hex: str
     view_hex: str
     detect_hex: str = ""
+    #: Which key-agreement scheme the viewing and detection keys are in.  See
+    #: SCHEMES above: the address says what its keys *are*, rather than leaving
+    #: every reader to assume the one thing this build happens to do.
+    scheme: int = X25519_STATIC
 
     def payload(self) -> bytes:
-        return (bytes([ADDRESS_VERSION]) + bytes.fromhex(self.spend_hex)
+        return (bytes([ADDRESS_VERSION, self.scheme])
+                + bytes.fromhex(self.spend_hex)
                 + bytes.fromhex(self.view_hex)
                 + bytes.fromhex(self.detect_hex))
+
+    def scheme_name(self) -> str:
+        return SCHEMES.get(self.scheme, f"unknown-{self.scheme}")
 
     def encode(self) -> str:
         body = self.payload()
@@ -82,16 +111,25 @@ class Address:
         if not text.startswith(PREFIX):
             raise AddressError(f"an address starts with {PREFIX!r}")
         raw = _unb32(text[len(PREFIX):])
-        if len(raw) != 1 + 96 + CHECKSUM_BYTES:
-            raise AddressError(f"an address is {1 + 96 + CHECKSUM_BYTES} bytes, "
+        if len(raw) != 2 + 96 + CHECKSUM_BYTES:
+            raise AddressError(f"an address is {2 + 96 + CHECKSUM_BYTES} bytes, "
                                f"this decoded to {len(raw)}")
         body, check = raw[:-CHECKSUM_BYTES], raw[-CHECKSUM_BYTES:]
         if h_bytes("address", body)[:CHECKSUM_BYTES] != check:
             raise AddressError("checksum does not match — a typo, most likely")
         if body[0] != ADDRESS_VERSION:
             raise AddressError(f"address version {body[0]}")
-        return cls(spend_hex=body[1:33].hex(), view_hex=body[33:65].hex(),
-                   detect_hex=body[65:97].hex())
+        scheme = body[1]
+        if scheme not in IMPLEMENTED:
+            # Refusing is the point of the field.  Paying to an address whose
+            # keys are in a scheme this build does not implement means sealing
+            # the opening to something the holder cannot read — money that
+            # arrives and cannot be spent, with nothing on chain to say why.
+            raise AddressError(
+                f"this address uses the {SCHEMES.get(scheme, scheme)!r} "
+                f"scheme, which this build does not implement")
+        return cls(spend_hex=body[2:34].hex(), view_hex=body[34:66].hex(),
+                   detect_hex=body[66:98].hex(), scheme=scheme)
 
     def view_key(self) -> X25519PublicKey:
         return X25519PublicKey.from_public_bytes(bytes.fromhex(self.view_hex))
@@ -176,7 +214,7 @@ class WalletKeys:
     @property
     def address(self) -> Address:
         return Address(spend_hex=self.spend_hex, view_hex=self.view_hex,
-                       detect_hex=self.detect_hex)
+                       detect_hex=self.detect_hex, scheme=X25519_STATIC)
 
     # ── key agreement ────────────────────────────────────────────────────────
 

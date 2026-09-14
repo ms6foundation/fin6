@@ -267,6 +267,26 @@ point arithmetic in Ed25519 form and wants a reviewer.
 *Fix now:* one format change, before any address is published. *Fix live:* every
 address in circulation is the old shape.
 
+> **The format change is made; the construction is not.**
+> `docs/address_format_decision.md`. Working through it turned up why this is
+> not a scheme with an extra parameter: X25519 clamps, so a tweaked scalar
+> cannot be used with the library at all, and a Montgomery public key is the
+> x-coordinate only, so the tweak cannot even be computed on it. Era-derived
+> viewing is a **different key agreement wearing the same thirty-two bytes** —
+> and the failure mode of a silent mismatch is money that arrives on chain and
+> cannot be read, with nothing saying why.
+>
+> So an address now says which scheme its keys are in: version 3 carries a
+> scheme byte inside the checksummed body, `x25519-static-view` is what ships,
+> `ed25519-era-rotating-view` is reserved, and a build that meets a scheme it
+> does not implement **refuses the address** instead of paying into it. When
+> the construction lands it is a value plus a wallet, and the address format
+> does not change again.
+>
+> The construction itself wants the reviewer `wallet_design.md` asks for.
+> Hand-written Edwards arithmetic, unreviewed, on the path that decides whether
+> a payment can be read, is not an improvement on the problem it solves.
+
 ### A7 · `hardening/wots.py` is a teaching implementation · **High**
 
 The README says so. One-time signatures are what make a stamp unforgeable and a
