@@ -176,14 +176,19 @@ def _mesh(port, inbox, limiter):
                 epoch_now=lambda: EPOCH)
 
 
-def _speak(port, frames, wait=0.4):
+def _speak(port, frames, wait=0.4, sealer=None):
     """Send frames down one connection.  A closed pipe is a valid outcome —
-    several of these tests are about the node hanging up."""
+    several of these tests are about the node hanging up.
+
+    `sealer` seals everything after the hello, which is what a real peer does
+    once its hello has opened a session (review B6).
+    """
     sock = socket.create_connection(("127.0.0.1", port), timeout=2)
     try:
         for kind, payload in frames:
             try:
-                sock.sendall(pack(kind, CHAIN, payload, epoch=EPOCH))
+                sock.sendall(pack(kind, CHAIN, payload, epoch=EPOCH,
+                                  sealer=None if kind == "hello" else sealer))
             except OSError:
                 break
             time.sleep(0.05)
@@ -221,7 +226,13 @@ def test_an_authenticated_peer_does_reach_its_own_bucket():
     mesh.start()
     try:
         hello = handshake.build(SIGNERS["v2"], CHAIN, "v2", "v1", EPOCH)
-        _speak(port, [("hello", hello), ("env", {"attestations": []})])
+        # A hello opens a session, and the frames after it are signed for it —
+        # review B6.  A peer that says hello and then talks unsealed is
+        # somebody else writing into the stream, which is the whole point.
+        sealer = handshake.Sealer(SIGNERS["v2"], handshake.session_id(
+            CHAIN, "v2", "v1", EPOCH, hello["nonce"]))
+        _speak(port, [("hello", hello), ("env", {"attestations": []})],
+               sealer=sealer)
         assert ("peer", "v2") in limiter._buckets, "a proven name was refused"
         who, msg, _ = inbox.get(timeout=1)
         assert who == "v2" and msg["kind"] == "env"

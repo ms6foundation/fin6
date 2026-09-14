@@ -221,8 +221,11 @@ def test_an_authenticated_peer_is_unaffected_by_any_of_this():
     sock = socket.create_connection(("127.0.0.1", port), timeout=2)
     try:
         hello = handshake.build(SIGNERS["v2"], CHAIN, "v2", "v1", EPOCH)
+        sealer = handshake.Sealer(SIGNERS["v2"], handshake.session_id(
+            CHAIN, "v2", "v1", EPOCH, hello["nonce"]))
         sock.sendall(pack("hello", CHAIN, hello, epoch=EPOCH))
-        sock.sendall(pack("env", CHAIN, {"attestations": []}, epoch=EPOCH))
+        sock.sendall(pack("env", CHAIN, {"attestations": []}, epoch=EPOCH,
+                          sealer=sealer))
         who, msg, _ = inbox.get(timeout=2)
         assert who == "v2" and msg["kind"] == "env"
         assert not mesh.gate.penalised("127.0.0.1")

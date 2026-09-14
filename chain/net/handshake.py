@@ -48,29 +48,51 @@ epochs and a node whose clock is far enough out to fail this is a node that
 cannot take a seat anyway.  `EPOCH_SLACK` of 1 covers a hello in flight across
 a boundary.
 
-## What this authenticates, and what it does not
+## Binding the stream, not just the frame (review B6)
 
-It authenticates **a frame**, not **a stream**.  The hello proves that whoever
-composed it holds the roster key it names; nothing after it on that socket is
-bound to the same party.  Frames are plaintext over TCP, so an attacker on the
-network path can read every byte, and can take the connection over once the
-hello has passed — inheriting the seat, the budget and the attribution.
+The hello proves that whoever composed it holds the roster key it names.  For a
+while nothing after it was bound to the same party: frames are plaintext over
+TCP, so an attacker on the path could take the connection over once the hello
+had passed and inherit the seat, the budget and the attribution.
 
-Binding the stream needs either a transport (TLS, Noise) or a shared secret to
-MAC each frame with, and the roster holds Ed25519 keys for signing rather than
-keys for agreement — so neither is available without new key material or a new
-dependency, and both are larger decisions than this module.
+The note this replaces said that closing it needed either a transport (TLS,
+Noise) or a shared secret to MAC each frame with, and that the roster holds
+signing keys rather than agreement keys — so neither was available without new
+key material or a new dependency.
 
-Two things make the residual smaller than it sounds, and neither closes it.
-Every *consensus* object carries its own signature, so a hijacker can drop and
-delay but cannot forge a proposal, an attestation or a spend.  And peer
-messages are now refused outright from a connection that never proved a seat
-(`frame.OPEN_KINDS`), so the exposure is a hijacked connection rather than any
-connection.
+The first half was right and the conclusion was wrong.  **A MAC needs a shared
+secret; a signature does not.**  The roster's Ed25519 keys sign frames perfectly
+well, and the only real question was cost, which is a measurement rather than an
+argument:
 
-**A deployment runs this on a private network or inside a tunnel.**  That is a
-requirement, not a recommendation, and it is stated here because this module
-is the place a reader will look for it.
+    sign            25 us      verify      79 us
+    sha256 of 664 KB           0.27 ms     (the largest frame anybody sends)
+
+At the 132 directed messages a seven-node epoch actually carries, that is 3.3 ms
+of signing and 10 ms of verifying per node per 19.75-second epoch.  So every
+frame from a seated connection is now signed, and the signature is over a
+**session** and a **sequence number** as well as the frame:
+
+    session     h(chain_id, from, to, epoch, nonce) — the hello that opened
+                this socket, so a frame lifted from one connection is not
+                valid on another
+    seq         strictly increasing from 1, so a frame cannot be replayed,
+                reordered or dropped without the next one being refused
+
+What that closes: injection, takeover, replay, reordering and splicing.  An
+attacker who owns the path can no longer continue the conversation, because it
+cannot produce the next signature.
+
+**What it does not close is confidentiality.**  Frames are still plaintext, so
+the path can read everything: who is talking to whom, which blocks are being
+fetched, how big a submission is.  The ledger's own privacy is in the proofs and
+not in the transport, but metadata is not nothing — a deployment that cares
+about it still wants a tunnel.  What it no longer needs a tunnel for is
+*integrity*, which is the half that was load-bearing.
+
+And the residual that was always there: a path attacker can still drop frames.
+No authentication scheme fixes that; it is a denial of service, and the
+ceremony's own deadlines are what survive it.
 """
 from __future__ import annotations
 
@@ -263,3 +285,97 @@ class Verifier:
     def __repr__(self):
         return (f"Verifier({self.node_id}, {self.accepted} accepted, "
                 f"{self.refused} refused)")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Binding the stream
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Review B6.  The hello authenticates one frame; these two objects carry that
+# authentication across the rest of the connection, at the cost measured in the
+# module docstring.
+
+#: Domain separation again, and for the same reason: a signature over a frame
+#: must never be a valid signature over a hello, an attestation or a spend.
+FRAME_TAG = "f6-frame"
+SESSION_TAG = "f6-session"
+
+
+def session_id(chain_id: str, from_id: str, to_id: str, epoch: int,
+               nonce: str) -> str:
+    """The name of one connection, derived from the hello that opened it.
+
+    Both ends compute it from the same hello — the dialler when it sends,
+    the listener when it verifies — so nothing has to be exchanged to agree
+    on it. Binding a frame to this is what makes a frame lifted off one
+    connection worthless on another.
+    """
+    return h_bytes(SESSION_TAG, chain_id, from_id, to_id, int(epoch),
+                   nonce).hex()
+
+
+def frame_message(session: str, seq: int, digest: bytes) -> bytes:
+    return h_bytes(FRAME_TAG, session, int(seq), digest)
+
+
+class Sealer:
+    """The sending half: one per outbound connection.
+
+    Sequence numbers start at 1 and never repeat, which is what makes a replay
+    detectable. They are per connection rather than per peer, because a
+    reconnect gets a new hello and therefore a new session.
+    """
+
+    __slots__ = ("signer", "session", "seq")
+
+    def __init__(self, signer, session: str):
+        self.signer = signer
+        self.session = session
+        self.seq = 0
+
+    def next_seq(self) -> int:
+        self.seq += 1
+        return self.seq
+
+    def sign(self, seq: int, digest: bytes) -> str:
+        return self.signer.sign(frame_message(self.session, seq, digest))
+
+
+class SealCheck:
+    """The receiving half: one per inbound connection.
+
+    Holds the session the hello established and the highest sequence number
+    seen. Strictly increasing rather than exactly-one-more, because the reader
+    is the only thing that advances it and a gap means a frame was dropped on
+    the path — which is a denial of service rather than a forgery, and refusing
+    everything after it would turn one lost packet into a dead connection.
+    """
+
+    __slots__ = ("session", "public_hex", "last_seq", "refused")
+
+    def __init__(self, session: str, public_hex: str):
+        self.session = session
+        self.public_hex = public_hex
+        self.last_seq = 0
+        self.refused = 0
+
+    def check(self, seq, signature, digest: bytes) -> tuple:
+        """(ok, reason).  Never raises."""
+        try:
+            seq = int(seq)
+        except (TypeError, ValueError):
+            self.refused += 1
+            return False, "frame carries no sequence number"
+        if seq <= self.last_seq:
+            self.refused += 1
+            return False, (f"frame {seq} is not after {self.last_seq}: "
+                           f"replayed or reordered")
+        if not isinstance(signature, str) or not signature:
+            self.refused += 1
+            return False, "frame carries no signature"
+        if not verify_sig(self.public_hex, frame_message(self.session, seq,
+                                                         digest), signature):
+            self.refused += 1
+            return False, "frame signature does not verify for this session"
+        self.last_seq = seq
+        return True, "ok"

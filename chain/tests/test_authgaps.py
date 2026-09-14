@@ -64,12 +64,23 @@ def _mesh(port, inbox):
                 epoch_now=lambda: EPOCH)
 
 
-def _send(port, frames, hello=None, wait=0.45):
+def _send(port, frames, hello=None, wait=0.45, signer=None):
+    """Open a connection, optionally say hello, send frames.
+
+    A hello from a seat opens a *session*, and every frame after it has to be
+    signed for that session (review B6) — so a caller that says hello as a
+    validator passes the signer too, exactly as a real node would.
+    """
+    sealer = None
     with socket.create_connection(("127.0.0.1", port), timeout=2) as sock:
         if hello is not None:
             sock.sendall(pack("hello", CHAIN, hello))
+            if signer is not None:
+                sealer = handshake.Sealer(signer, handshake.session_id(
+                    CHAIN, hello["node_id"], "v0", hello["epoch"],
+                    hello["nonce"]))
         for kind, payload in frames:
-            sock.sendall(pack(kind, CHAIN, payload))
+            sock.sendall(pack(kind, CHAIN, payload, sealer=sealer))
         time.sleep(wait)
 
 
@@ -114,7 +125,7 @@ def test_a_peer_that_proved_its_seat_is_admitted():
     try:
         hello = handshake.build(Signer.from_seed("v1"), CHAIN, "v1", "v0", EPOCH)
         _send(port, [("env", {"proposals": [], "attestations": []})],
-              hello=hello)
+              hello=hello, signer=Signer.from_seed("v1"))
         who, msg, _ = inbox.get(timeout=2)
         assert who == "v1" and msg["kind"] == "env"
     finally:
@@ -224,7 +235,8 @@ def test_a_seat_this_node_does_not_dial_is_still_a_seat():
     try:
         hello = handshake.build(Signer.from_seed("v1"), CHAIN, "v1", "v0",
                                 EPOCH)
-        _send(port, [("env", {"epoch": 1})], hello=hello)
+        _send(port, [("env", {"epoch": 1})], hello=hello,
+              signer=Signer.from_seed("v1"))
         kinds = []
         while not inbox.empty():
             kinds.append(inbox.get_nowait()[1]["kind"])

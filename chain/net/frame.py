@@ -12,6 +12,8 @@ deeper in.  Nothing here trusts anything.
 """
 from __future__ import annotations
 
+import hashlib
+
 from ..store import codec
 
 MAGIC = b"F6"
@@ -89,17 +91,50 @@ class FrameError(Exception):
     connection: a peer that sent one bad frame has no claim on the next."""
 
 
-def pack(kind: str, chain_id: str, payload=None, *, epoch: int = -1) -> bytes:
+def sealed_digest(body: bytes) -> bytes:
+    """What a frame's signature is over: the encoded frame, minus the
+    signature itself.
+
+    The codec is canonical, so a receiver that decodes a frame and re-encodes
+    everything but the signature gets the bytes the sender signed — the same
+    property the genesis document's round-trip check relies on.
+    """
+    return hashlib.sha256(body).digest()
+
+
+def pack(kind: str, chain_id: str, payload=None, *, epoch: int = -1,
+         sealer=None) -> bytes:
+    """One frame, optionally bound to the connection carrying it.
+
+    `sealer` is a `handshake.Sealer` — present on a seated peer connection and
+    absent on a wallet's, because a wallet has no roster key and its frames are
+    metered rather than authenticated (review B6).
+    """
     if kind not in KINDS:
         raise FrameError(f"unknown kind {kind!r}")
-    body = codec.encode({"kind": kind, "chain_id": chain_id, "epoch": epoch,
-                         "payload": payload})
+    frame = {"kind": kind, "chain_id": chain_id, "epoch": epoch,
+             "payload": payload}
+    if sealer is not None:
+        frame["seq"] = sealer.next_seq()
+        body = codec.encode(frame)
+        frame["sig"] = sealer.sign(frame["seq"], sealed_digest(body))
+    body = codec.encode(frame)
     if len(body) > MAX_FRAME:
         raise FrameError(f"frame of {len(body)} bytes exceeds {MAX_FRAME}")
     head = bytearray(MAGIC)
     head.append(VERSION)
     codec.put_uint(head, len(body))
     return bytes(head) + body
+
+
+def seal_of(msg: dict):
+    """(seq, signature, digest of what was signed) for a decoded frame.
+
+    The digest is recomputed from the frame without its signature, which is
+    the only way to check one: the sender signed exactly those bytes.
+    """
+    unsigned = {k: v for k, v in msg.items() if k != "sig"}
+    return msg.get("seq"), msg.get("sig"), sealed_digest(codec.encode(unsigned))
 
 
 def unpack(body: bytes, expect_chain: str | None = None) -> dict:

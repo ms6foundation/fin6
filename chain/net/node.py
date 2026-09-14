@@ -265,6 +265,9 @@ class NodeProcess:
             "last": self.last_reason,
             "behaviour": self.behaviour,
             "limiter": self.limiter.stats(),
+            # Frames refused for their seal: a connection somebody else was
+            # writing into, or one that stopped signing (review B6).
+            "unsealed": self.mesh.unsealed,
             # An operator's answer to "are we ready for the activation
             # height" should be a number of blocks, not a conversation.
             "protocol": protocol.readiness(state.height, self.world.activations),

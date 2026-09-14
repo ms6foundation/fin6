@@ -394,12 +394,52 @@ protocol version, which after step 1 is at least possible.
 | B2 | **No canonical seat order in the header** | Medium-High | The prerequisite for a signer bitmap, and therefore for A3's best case: 0.2 KB a certificate instead of 6.8 KB. |
 | B3 | ~~**Cross-partition transactions have no home**~~ **Done** | High | A spend touching two partitions can be included by no grid. It did not bite because `Wallet.send` spent exactly one note — and multi-note spends were a named open item, so shipping them made this live. Shipped, with the three answers in §3.2. |
 | B4 | ~~**The register is one roll late**~~ **Done** | Medium | A certificate was checked against a register whose roll had already been applied, so a client's quorum figure could be off by one across a founding. The figure now travels in the header — §3.3. |
-| B6 | **Nothing binds a connection after its hello** | High | The handshake authenticates a frame, not a stream. Closing it needs either a transport or an agreement key per validator — and a key in the roster is a genesis decision, which is why a transport-layer answer sits in class B rather than class D. |
+| B6 | ~~**Nothing binds a connection after its hello**~~ **Done** | High | The handshake authenticated a frame, not a stream. It needed neither a transport nor an agreement key: a MAC needs a shared secret and a *signature does not* — §3.5. |
 | B5 | ~~**The nullifier set may not need to exist**~~ **Decided: keep** | Medium | Part nine's finding: the spend graph is public, so `tin.cm not in utxo` already refuses a replay before the nullifier check is reached. Measured at 0.3% of a proof and kept as a second independent record, with the redundancy turned into a tripwire — `docs/nullifier_decision.md`, §3.4. |
 
 **B1 deserves the emphasis.** Everything in parts two and five — attendance,
 standing, the forty-ceremony apprenticeship, forgiveness counters — is
 machinery for punishing behaviour the network cannot currently record.
+
+### 3.5 · B6, resolved: the roster's own keys bind the stream
+
+The premise was that closing this needed a transport (TLS, Noise) or a shared
+secret to MAC each frame with, and that the roster holds Ed25519 *signing* keys
+rather than keys for agreement — so neither was available without new key
+material or a new dependency.
+
+The first half is right and the conclusion was wrong. **A MAC needs a shared
+secret; a signature does not.** The roster's keys sign frames perfectly well,
+and the only real question was cost — which is a measurement rather than an
+argument:
+
+| | |
+|---|---|
+| sign | 25 µs |
+| verify | 79 µs |
+| sha256 of the largest frame anybody sends (664 KB) | 0.27 ms |
+
+At the 132 directed messages a seven-node epoch actually carries, that is 3.3 ms
+of signing and 10 ms of verifying per node per **19.75-second** epoch.
+
+So a hello now opens a *session* — `h(chain_id, from, to, epoch, nonce)`, which
+both ends derive from the hello itself, nothing exchanged — and every frame
+after it carries a sequence number and a signature over that session. What it
+closes: **injection** (no signature without the key), **takeover** (an attacker
+holding the socket cannot produce the next signature), **replay** and
+**reordering** (strictly increasing sequence), and **splicing from another
+connection** (the session is in the signature). A frame that fails ends the
+connection, because a stream somebody else is writing into is not a stream worth
+reading.
+
+Two deliberate limits. A *gap* in the sequence is accepted — the path dropping a
+frame is a denial of service, not a forgery, and refusing everything after it
+would turn one lost packet into a dead seat. And **confidentiality is
+untouched**: frames are still plaintext, so the path still sees who talks to
+whom and how big a submission is. The ledger's privacy is in its proofs, not its
+transport — but metadata is not nothing, and a deployment that cares still wants
+a tunnel. What it no longer needs one for is integrity, which was the
+load-bearing half.
 
 ### 3.4 · B5, decided: keep it, and make it earn its keep
 

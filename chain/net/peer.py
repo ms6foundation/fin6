@@ -20,7 +20,7 @@ import time
 
 from . import handshake
 from .frame import (CLIENT_KINDS, CLIENT_MAX_FRAME, MAX_FRAME, OPEN_KINDS,
-                    FrameError, Reader, pack)
+                    FrameError, Reader, pack, seal_of)
 from .gate import IDLE_SECONDS, PARTIAL_SECONDS, Deadlines, Gate
 
 CONNECT_RETRY = 0.5
@@ -79,6 +79,11 @@ class Mesh:
             if signer is not None and validators else None)
         self._last_refusal = ""
         self.out: dict = {}                      # peer_id -> socket we dialled
+        #: peer_id -> Sealer for the connection we dialled it on.  A reconnect
+        #: makes a new hello and therefore a new session, which is why this is
+        #: replaced rather than reset (review B6).
+        self.sealers: dict = {}
+        self.unsealed = 0                        # frames refused for their seal
         self._locks: dict = {pid: threading.Lock() for pid in self.peers}
         self._stop = threading.Event()
         self._threads: list = []
@@ -123,13 +128,18 @@ class Mesh:
         sock = self.out.get(peer_id)
         if sock is None:
             return False
-        try:
-            blob = pack(kind, self.chain_id, payload, epoch=epoch)
-        except FrameError as exc:
-            self.log(f"refusing to send {kind}: {exc}")
-            return False
         lock = self._locks.setdefault(peer_id, threading.Lock())
         with lock:
+            # Packed under the lock, because the sequence number and the order
+            # bytes reach the socket have to be the same order: two threads
+            # signing 4 and 5 and then writing 5 before 4 would have the
+            # receiver refuse a frame nobody tampered with.
+            try:
+                blob = pack(kind, self.chain_id, payload, epoch=epoch,
+                            sealer=self.sealers.get(peer_id))
+            except FrameError as exc:
+                self.log(f"refusing to send {kind}: {exc}")
+                return False
             try:
                 sock.sendall(blob)
                 return True
@@ -177,6 +187,20 @@ class Mesh:
         self.log(f"learned {peer_id} at {host}:{port}")
         return True
 
+    def _seal_check(self, who: str, hello: dict):
+        """The receiving half of the session this hello just opened."""
+        key = (self.handshake.validators.get(who)
+               if self.handshake is not None else None)
+        if key is None:
+            return None
+        try:
+            session = handshake.session_id(self.chain_id, who, self.node_id,
+                                           int(hello.get("epoch")),
+                                           str(hello.get("nonce")))
+        except (TypeError, ValueError):
+            return None
+        return handshake.SealCheck(session, key)
+
     def _seated(self, who) -> bool:
         """Has this connection proved a seat on this chain?
 
@@ -217,11 +241,22 @@ class Mesh:
                 time.sleep(CONNECT_RETRY)
 
     def _hello_for(self, peer_id: str) -> dict:
-        """What this node says when it dials.  Signed when it can be."""
+        """What this node says when it dials.  Signed when it can be.
+
+        The hello also opens a *session*: its nonce names this connection, and
+        every frame sent afterwards is signed over that name and a sequence
+        number, so the stream is bound to the party that proved the seat rather
+        than only the first frame being (review B6).
+        """
         if self.signer is None:
             return {"node_id": self.node_id}
-        return handshake.build(self.signer, self.chain_id, self.node_id,
-                               peer_id, self.epoch_now())
+        hello = handshake.build(self.signer, self.chain_id, self.node_id,
+                                peer_id, self.epoch_now())
+        self.sealers[peer_id] = handshake.Sealer(
+            self.signer, handshake.session_id(
+                self.chain_id, self.node_id, peer_id, hello["epoch"],
+                hello["nonce"]))
+        return hello
 
     def _accept_loop(self):
         while not self._stop.is_set():
@@ -272,6 +307,10 @@ class Mesh:
     def _read_loop(self, conn, addr=None):
         who = None
         hellos = 0
+        # The session this connection's hello opened, once it has one.  Until
+        # then nothing here is bound to anybody, which is exactly why an
+        # unseated connection may only send `OPEN_KINDS`.
+        seal = None
         # The bucket is keyed by host, not by host and port: a new connection
         # per request would otherwise buy a fresh budget every time, which is
         # the first thing anybody flooding a node would try.
@@ -334,8 +373,21 @@ class Mesh:
                         # ceiling.  Nothing before the handshake could have.
                         if self._seated(who):
                             reader.max_frame = MAX_FRAME
+                            seal = self._seal_check(who, msg["payload"] or {})
                         continue
                     seated = self._seated(who)
+                    if seated and seal is not None:
+                        # Review B6: the hello proved who opened this
+                        # connection; this is what keeps it proved.  A frame
+                        # that is not signed for *this session*, in sequence,
+                        # did not come from the party that proved the seat —
+                        # so it ends the connection rather than being ignored,
+                        # because a stream somebody else is writing into is
+                        # not a stream worth reading.
+                        ok, why = seal.check(*seal_of(msg))
+                        if not ok:
+                            self.unsealed += 1
+                            raise FrameError(f"{msg['kind']} from {who}: {why}")
                     if not seated and msg["kind"] not in OPEN_KINDS:
                         # A peer message from a connection that never proved a
                         # seat.  Every *reply* path in `node.py` already checked
