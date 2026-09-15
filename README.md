@@ -19,7 +19,7 @@ hardened into history by a finite pool of single-use turns.
 | `wallet/` | one seed, the notes it can spend, and the sealing that makes them findable |
 | `client/` | what talks to a node without being one: ask, follow, adjudicate |
 | `fin6/` | the command line, and the runner for all three suites |
-| `docs/` | the nine design sketches the chain was built from |
+| `docs/` | parts one to sixteen, the three guides, and the decision records |
 
 The three packages depend one way only — `wallet → chain`, `client → chain`,
 and nothing depends on `fin6`. The ledger does not know that anyone is
@@ -241,26 +241,35 @@ simulation with no clock.
 
 - [`docs/admin_guide.md`](docs/admin_guide.md) — lay out a network, start it, watch it, and read it when it stops *(guide)*
 - [`docs/user_guide.md`](docs/user_guide.md) — make a wallet, be paid, pay, and check for yourself *(guide)*
+- [`docs/deployment_guide.md`](docs/deployment_guide.md) — the launch runbook: hosts, the four artefacts, bring-up, and the things that block a launch carrying value *(guide)*
 
+**The parts, in order:**
+
+- [`docs/private_chain_design.md`](docs/private_chain_design.md) — one: the ledger and the single-grid ceremony *(built)*
+- [`docs/tiered_ceremony_design.md`](docs/tiered_ceremony_design.md) — two: many grids, registers, trust, per-tier proofs *(built)*
+- [`docs/hardening_design.md`](docs/hardening_design.md) — three: moving blocks into network history *(built)*
+- [`docs/persistence_design.md`](docs/persistence_design.md) — four: what survives a restart, and what may be thrown away *(built)*
+- [`docs/genesis_design.md`](docs/genesis_design.md) — five: what a new network must be trusted about, and for how long *(the one-tier launch is built; the rest is a sketch)*
+- [`docs/testnet_design.md`](docs/testnet_design.md) — six: running it for real: seven processes, a wire, a clock *(built, through stage 2)*
+- [`docs/wallet_design.md`](docs/wallet_design.md) — seven: how a user holds money, spends it, and finds out they were paid *(built)*
+- [`docs/light_client_design.md`](docs/light_client_design.md) — eight: the query interface, and what a client can check for itself *(built)*
+- [`docs/admission_design.md`](docs/admission_design.md) — nine: four gates, a measured cost ladder, and what a node refuses before it spends anything *(built, stages 1 to 6 of 7)*
+- [`docs/succession_design.md`](docs/succession_design.md) — ten: freezing a chain, and carrying its notes into a successor with a different protocol *(sketch)*
+- [`docs/view_change_design.md`](docs/view_change_design.md) — eleven: what a dead leader costs, and the lock that keeps changing view from forking the height *(built)*
+- [`docs/supreme_tier_design.md`](docs/supreme_tier_design.md) — twelve: the supreme grid as a global stall point, and the roads out of it *(partly built)*
+- [`docs/operational_design.md`](docs/operational_design.md) — thirteen: an instrument before a knob — what to measure before tuning anything *(sketch; items 1 to 3 built)*
+- [`docs/emission_design.md`](docs/emission_design.md) — fourteen: whether a permissioned chain with burned fees needs a block reward, and what a halving must be when nobody can add up the money *(sketch)*
+- [`docs/fee_design.md`](docs/fee_design.md) — fifteen: what a fee buys, what a block's capacity actually is, and why burning is not a placeholder *(sketch)*
+- [`docs/allocation_design.md`](docs/allocation_design.md) — sixteen: vesting without touching the note, and why a chain that can hold any number of assets and count none of them is the stablecoin problem *(sketch)*
+
+**Decisions, reviews, and measurements:**
+
+- [`docs/pre_genesis_review.md`](docs/pre_genesis_review.md) — **what has to be right before the chain exists**: every open item ranked by severity and by what genesis makes permanent
 - [`docs/nullifier_decision.md`](docs/nullifier_decision.md) — why a set the UTXO tombstone makes redundant is kept, and the invariant that makes the redundancy a check *(built)*
-- [`docs/view_change_design.md`](docs/view_change_design.md) — what a dead leader costs, and the lock that keeps changing view from forking the height *(built)*
-- [`docs/succession_design.md`](docs/succession_design.md) — freezing a chain, and carrying its notes into a successor with a different protocol *(sketch)*
 - [`docs/address_format_decision.md`](docs/address_format_decision.md) — the scheme byte that lets the viewing key start rotating later without reissuing every address *(built)*
 - [`docs/wots_decision.md`](docs/wots_decision.md) — why the teaching one-time signature ships, and the name and known answers that make replacing it a check rather than a leap *(built)*
 - [`docs/quorum_signature_decision.md`](docs/quorum_signature_decision.md) — why not threshold BLS yet, and the three things that make adopting one a value rather than a format change *(built)*
-- [`docs/allocation_design.md`](docs/allocation_design.md) — vesting without touching the note, and why a chain that can hold any number of assets and count none of them is the stablecoin problem *(sketch)*
-- [`docs/fee_design.md`](docs/fee_design.md) — what a fee buys, what a block's capacity actually is, and why burning is not a placeholder *(sketch)*
-- [`docs/emission_design.md`](docs/emission_design.md) — whether a permissioned chain with burned fees needs a block reward, and what a halving must be when nobody can add up the money *(sketch)*
-- [`docs/pre_genesis_review.md`](docs/pre_genesis_review.md) — **what has to be right before the chain exists**: every open item ranked by severity and by what genesis makes permanent
-
-- [`docs/private_chain_design.md`](docs/private_chain_design.md) — the ledger and the single-grid ceremony
-- [`docs/tiered_ceremony_design.md`](docs/tiered_ceremony_design.md) — many grids, registers, trust, per-tier proofs
-- [`docs/hardening_design.md`](docs/hardening_design.md) — moving blocks into network history
-- [`docs/persistence_design.md`](docs/persistence_design.md) — what survives a restart, and what may be thrown away
-- [`docs/genesis_design.md`](docs/genesis_design.md) — what a new network must be trusted about, and for how long *(the one-tier launch is built; the rest is a sketch)*
-- [`docs/testnet_design.md`](docs/testnet_design.md) — running it for real: seven processes, a wire, a clock *(built, through stage 2)*
-- [`docs/wallet_design.md`](docs/wallet_design.md) — how a user holds money, spends it, and finds out they were paid *(built)*
-- [`docs/light_client_design.md`](docs/light_client_design.md) — the query interface, and what a client can check for itself *(built)*
+- [`docs/measurements.md`](docs/measurements.md) — what this build costs, measured rather than remembered *(generated by `python3 -m chain.measure`)*
 - [`chain/README.md`](chain/README.md) — implementation notes, measured costs, and what the code changed about the design
 
 ## License
