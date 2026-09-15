@@ -15,7 +15,7 @@ from .. import genesis
 from .. import protocol
 from .. import protocol as pr
 from ..crypto import Signer
-from ..hardening.params import PRODUCTION
+from ..hardening.params import PRESETS, PRODUCTION
 from ..params import DEMO
 from ..net import handshake
 from ..protocol import HaltRequired, ProtocolError
@@ -212,10 +212,10 @@ def test_a_launch_document_reserves_activation_heights():
     supreme grid off the critical path, is exactly such a change.
     """
     doc = genesis.draft_seven()
-    assert doc.schedule() == protocol.RESERVED_SLOTS
+    assert doc.schedule() == protocol.reserved_slots(PRODUCTION)
     assert doc.verify()[0], doc.verify()[1]
-    assert min(protocol.RESERVED_SLOTS.values()) > protocol.BLOCKS_PER_YEAR / 2, \
-        "a slot inside six months is a release deadline, not a reservation"
+    assert min(protocol.RESERVED_SLOT_ERAS.values()) >= 365 * 86400 // PRODUCTION.era_seconds, \
+        "a slot inside a year is a release deadline, not a reservation"
 
 
 def test_the_document_says_the_slot_is_a_deadline():
@@ -227,8 +227,9 @@ def test_the_document_says_the_slot_is_a_deadline():
     said = [c for c in caveats if "activate later" in c]
     assert said, caveats
     assert "halt" in said[0] and "no rule changes" in said[0], said[0]
-    for height in protocol.RESERVED_SLOTS.values():
+    for height in protocol.reserved_slots(PRODUCTION).values():
         assert f"{height:,}" in said[0], "it should name the heights"
+    assert "era " in said[0], "and the unit the slot was actually chosen in"
 
 
 def test_a_chain_that_reserves_nothing_is_told_so():
@@ -245,8 +246,55 @@ def test_a_test_document_reserves_nothing():
 
 
 def test_the_next_activation_is_findable_without_scanning():
-    assert protocol.next_activation(0, protocol.RESERVED_SLOTS) == \
-        (2, protocol.RESERVED_SLOTS[2])
-    assert protocol.next_activation(protocol.RESERVED_SLOTS[3],
-                                    protocol.RESERVED_SLOTS) is None
+    slots = protocol.reserved_slots(PRODUCTION)
+    assert protocol.next_activation(0, slots) == (2, slots[2])
+    assert protocol.next_activation(slots[3], slots) is None
     assert protocol.next_activation(0, {}) is None
+
+
+# ── one definition of the period, and it is the era ──────────────────────────
+
+def test_a_slot_lands_on_an_era_rollover():
+    """Not cosmetic: a rollover is when the signing pool is reallocated, so
+    starting new rules at one means the turns that harden them were handed out
+    after the change was known."""
+    for preset in PRESETS.values():
+        per_era = preset.blocks_per_era
+        for version, height in protocol.reserved_slots(preset).items():
+            assert (height - 1) % per_era == 0, (preset.name, version, height)
+            assert (height - 1) // per_era == protocol.RESERVED_SLOT_ERAS[version]
+
+
+def test_the_heights_come_from_the_chain_and_not_from_a_constant():
+    """The bug this replaced: heights computed from "a year" and written down,
+    so every chain got production's numbers whatever its era was."""
+    production = protocol.reserved_slots(PRODUCTION)
+    local = protocol.reserved_slots(PRESETS["local"])
+    assert production != local
+    assert local[2] < production[2] / 10, \
+        "a five-day era should not reserve a height a year away"
+
+
+def test_there_is_no_second_definition_of_a_year():
+    """A year in blocks has three answers — the era as the chain counts it, the
+    rounded interval, and the exact one — because `blocks_per_era` floors
+    2,187.5 and 19.749 is a rounding of 19.7485714…  So the repository holds
+    none of them: a slot is N eras, converted once.
+    """
+    assert not hasattr(protocol, "BLOCKS_PER_YEAR")
+    year_by_rounded_interval = int(365 * 86400 / 19.749)
+    year_by_exact_interval = int(365 * 86400 / PRODUCTION.block_interval)
+    year_by_era = 730 * PRODUCTION.blocks_per_era
+    assert len({year_by_rounded_interval, year_by_exact_interval,
+                year_by_era}) == 3, "this is the ambiguity being avoided"
+    assert protocol.reserved_slots(PRODUCTION)[2] == year_by_era + 1
+
+
+def test_an_era_of_nothing_cannot_schedule_anything():
+    class Silly:
+        blocks_per_era = 0
+    try:
+        protocol.reserved_slots(Silly())
+    except ProtocolError:
+        return
+    raise AssertionError("scheduled a slot against an era of no blocks")

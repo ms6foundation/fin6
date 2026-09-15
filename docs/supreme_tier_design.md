@@ -344,18 +344,24 @@ a block both merging a grid *and* touching it could reach.
 
 ### 9.3 Built — the slots are reserved
 
-`protocol.RESERVED_SLOTS` schedules protocol 2 at height 1,596,840 and protocol
-3 at 4,790,520 — about one year and three years at the shipped 19.749 s epoch —
-and a **launch** document carries them. A test document carries none, because a
-fixture that halts at a height is a fixture with a fuse in it.
+`protocol.RESERVED_SLOT_ERAS` reserves protocol 2 after 730 eras and protocol 3
+after 2,190 — about one year and three years — and `reserved_slots(hardening)`
+turns that into heights against the chain's own era: **1,596,511** and
+**4,789,531** at the shipped parameters. A **launch** document carries them; a
+test document carries none, because a fixture that halts at a height is a
+fixture with a fuse in it.
+
+*(Originally these were heights computed from "a year", which the emission
+sketch later found had three different answers in this repository. The slots
+are counted in eras now — `docs/emission_design.md` §4.)*
 
 The document says what that commits an operator to, in its own caveats, naming
 the heights:
 
 > protocol [2, 3] activate later and this build implements 1: a node running it
-> will halt at the first of those heights rather than fork — 2 at 1,596,840
-> (~1y), 3 at 4,790,520 (~3y). A reserved slot is a deadline, and shipping the
-> version as "no rule changes" is the escape hatch.
+> will halt at the first of those heights rather than fork — 2 at 1,596,511
+> (era 731, ~1.0y), 3 at 4,789,531 (era 2191, ~3.0y). A reserved slot is a
+> deadline, and shipping the version as "no rule changes" is the escape hatch.
 
 And a document that reserves *nothing* now says that too, which is the caveat
 that matters more: a chain with no slot cannot adopt a rule change at all, only

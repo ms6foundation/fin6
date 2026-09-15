@@ -162,8 +162,11 @@ The fields worth knowing, from `status`:
 Rule changes ship as a **protocol version with an activation height**, and the
 schedule lives in the genesis document — so a chain's whole upgrade plan is
 inside the thing its identity is the hash of. The shipped document reserves two
-slots, at heights 1,596,840 and 4,790,520 (about one and three years at the
-19.75 s epoch).
+slots — after 730 and 2,190 **eras**, which at the shipped parameters is
+heights 1,596,511 and 4,789,531, about one and three years. They are counted in
+eras rather than blocks because a year in blocks has three answers and an era
+has one, and they land on a rollover so new rules start with a freshly
+allocated signing pool.
 
 A reserved slot is a **deadline, not an option**. Every node must implement the
 version before its height or the network halts there, and that is the correct
@@ -176,7 +179,7 @@ cheap.
 conversation:
 
 ```
-protocol:   running 1, builds implement [1] · 2 at height 1,596,840 in 1,596,428 blocks  ALL READY
+protocol:   running 1, builds implement [1] · 2 at height 1,596,511 in 1,596,099 blocks  ALL READY
 ```
 
 Watch two things, and `net status` prints both. The protocol line ends in

@@ -67,11 +67,8 @@ CHANGES = {
     3: "reserved: nothing is scheduled into it yet",
 }
 
-#: Roughly a year of blocks at the shipped 19.749 s epoch, for reading the
-#: heights below as dates.
-BLOCKS_PER_YEAR = 1_596_840
-
-#: Slots a launching chain reserves for rule changes it has not designed.
+#: Slots a launching chain reserves for rule changes it has not designed,
+#: **counted in eras**.
 #:
 #: This is the one part of review C2 that expires at genesis.  Activation
 #: heights live in the genesis document, so — as this module's own docstring
@@ -87,7 +84,48 @@ BLOCKS_PER_YEAR = 1_596_840
 #: **halts**, correctly.  The escape hatch is shipping the version as "no rule
 #: changes" if the slot arrives unused, which is cheap; the alternative — a
 #: chain with nowhere to put an upgrade — is not.
-RESERVED_SLOTS = {2: BLOCKS_PER_YEAR, 3: 3 * BLOCKS_PER_YEAR}
+#:
+#: ## Why eras, and not years
+#:
+#: These were heights, computed from "a year" at the shipped epoch — and the
+#: repository turned out to hold **three** answers to how many blocks that is,
+#: differing for two unrelated reasons:
+#:
+#:     730 x blocks_per_era          1,596,510    the era, as the chain counts it
+#:     year_seconds / 19.749         1,596,840    a rounded block interval
+#:     year_seconds / exact interval 1,596,875    the unrounded one
+#:
+#: The interval is `era_seconds x width / turns` = 19.7485714…, so any figure
+#: quoting 19.749 is a rounding of a rounding; and `blocks_per_era` is
+#: `turns // width`, which *floors* 2,187.5 and leaves 16 turns of every era
+#: unspent — so 730 eras is 364.92 days rather than 365.
+#:
+#: A year in blocks therefore has no exact answer, and a constant claiming one
+#: is a number with nowhere to fail.  The fix is to stop defining it: the chain
+#: counts blocks and eras, so a slot is **N eras**, converted once by the
+#: chain's own `blocks_per_era`.  A network with a different hardening preset
+#: gets different heights, correctly — at `LOCAL`, 730 eras is five days.
+RESERVED_SLOT_ERAS = {2: 730, 3: 2190}
+
+
+def reserved_slots(hardening) -> dict:
+    """{version: height} for this chain's own era length.
+
+    The height is the **first block of the era after** the reserved count, so
+    a rule change lands on an era rollover rather than in the middle of one.
+    That is not cosmetic: a rollover is when the signing pool is reallocated,
+    so starting new rules at one means the turns that harden them were handed
+    out after the change was known.
+
+    Takes the hardening parameters rather than importing them, because the
+    rule about when rules change has no business depending on the layer that
+    makes blocks expensive to rewrite.
+    """
+    per_era = int(hardening.blocks_per_era)
+    if per_era < 1:
+        raise ProtocolError("an era of no blocks cannot schedule anything")
+    return {version: eras * per_era + 1
+            for version, eras in RESERVED_SLOT_ERAS.items()}
 
 
 def next_activation(height: int, activations):

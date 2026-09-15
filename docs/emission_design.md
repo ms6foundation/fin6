@@ -127,11 +127,25 @@ block count the chain already agrees on, it is the period over which the
 signing pool is reallocated, and a schedule expressed in eras cannot drift
 against the thing that actually secures the chain.
 
-A small inconsistency to fix while here: `protocol.RESERVED_SLOTS` uses
-1,596,840 blocks for a year — derived from the epoch length rather than from
-the era — which is 330 blocks off the era-exact figure. Activation heights do
-not need to land on era boundaries, but two definitions of "a year" in one
-repository is how the third one gets written.
+*This section said, when it was written, that the repository held two
+definitions of "a year" and that two is how the third one gets written. It
+already held three.* **Fixed:** there is now no definition at all. The three
+were
+
+    730 x blocks_per_era          1,596,510    the era, as the chain counts it
+    year_seconds / 19.749         1,596,840    a rounded block interval
+    year_seconds / exact interval 1,596,875    the unrounded one
+
+and they differ for two unrelated reasons: the interval is
+`era_seconds x width / turns` = 19.7485714…, so 19.749 is a rounding of a
+rounding; and `blocks_per_era` is `turns // width`, which floors 2,187.5 and
+leaves 16 turns of every era unspent — so 730 eras is 364.92 days, not 365.
+
+A year in blocks has no exact answer, so `protocol.RESERVED_SLOT_ERAS` counts
+**eras** and `protocol.reserved_slots(hardening)` converts once, against the
+chain's own era. The heights land on a rollover, which is not cosmetic: a
+rollover is when the signing pool is reallocated, so new rules start with turns
+that were handed out after the change was known.
 
 ## 5. Who gets it — and why the obvious answer is the wrong one
 

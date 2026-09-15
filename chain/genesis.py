@@ -362,8 +362,17 @@ class GenesisDocument:
                 f"implements {protocol.PROTOCOL_VERSION}")
         ahead = sorted(v for v in schedule if v > protocol.PROTOCOL_VERSION)
         if ahead:
+            # Read back in the units the slot was chosen in — eras — with the
+            # wall-clock figure derived from this document's own hardening
+            # rather than from a constant claiming to know what a year is.
+            # See protocol.RESERVED_SLOT_ERAS for why there is no such
+            # constant any more.
+            hp = self.hardening_params()
+            per_era = max(1, hp.blocks_per_era)
             when = ", ".join(
-                f"{v} at {schedule[v]:,} (~{schedule[v] / protocol.BLOCKS_PER_YEAR:.0f}y)"
+                f"{v} at {schedule[v]:,} "
+                f"(era {(schedule[v] - 1) // per_era + 1}, "
+                f"~{schedule[v] * hp.block_interval / (365 * 86400):.1f}y)"
                 for v in ahead)
             caveats.append(
                 f"protocol {ahead} activate later and this build implements "
@@ -803,9 +812,11 @@ def draft(network: str, node_ids, params: ChainParams,
         # does not, because a fixture that halts at a height is a fixture with
         # a fuse in it.  Reserving is the one part of review C2 that expires at
         # genesis: the schedule is inside the hash the chain id is, so adding a
-        # slot later produces a different chain.  See protocol.RESERVED_SLOTS.
+        # slot later produces a different chain.  The heights come from
+        # this chain's own era, because a year in blocks has three
+        # answers and an era has one — protocol.RESERVED_SLOT_ERAS.
         activations=dict(activations if activations is not None
-                         else (protocol.RESERVED_SLOTS
+                         else (protocol.reserved_slots(hardening)
                                if purpose == LAUNCH_PURPOSE else {})),
     )
 
