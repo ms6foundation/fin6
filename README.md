@@ -248,6 +248,7 @@ simulation with no clock.
 - [`docs/address_format_decision.md`](docs/address_format_decision.md) — the scheme byte that lets the viewing key start rotating later without reissuing every address *(built)*
 - [`docs/wots_decision.md`](docs/wots_decision.md) — why the teaching one-time signature ships, and the name and known answers that make replacing it a check rather than a leap *(built)*
 - [`docs/quorum_signature_decision.md`](docs/quorum_signature_decision.md) — why not threshold BLS yet, and the three things that make adopting one a value rather than a format change *(built)*
+- [`docs/fee_design.md`](docs/fee_design.md) — what a fee buys, what a block's capacity actually is, and why burning is not a placeholder *(sketch)*
 - [`docs/emission_design.md`](docs/emission_design.md) — whether a permissioned chain with burned fees needs a block reward, and what a halving must be when nobody can add up the money *(sketch)*
 - [`docs/pre_genesis_review.md`](docs/pre_genesis_review.md) — **what has to be right before the chain exists**: every open item ranked by severity and by what genesis makes permanent
 
