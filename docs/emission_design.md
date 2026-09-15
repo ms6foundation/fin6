@@ -1,9 +1,6 @@
 # The coin, the mint, and the halving
 
-*Part fifteen. Design only.*
-
-*(Fourteen is reserved for `docs/portability_design.md`, which is written and
-currently numbered eleven — see the review of it.)*
+*Part fourteen. Design only.*
 
 fin6 has a mint and no issuance. `chain/mint.py` builds the genesis supply as a
 transaction with **no inputs**, authorised by the founders' ratifications, and
@@ -295,7 +292,7 @@ code against a document that already committed to the answer.
 | The hardening incentive | §5 rejects paying stamps for an architectural reason, and leaves the underlying question — who pays for 2²⁰ hashes and a burned turn — answered socially rather than on chain. |
 | The actual numbers | `initial_reward` and `halving_eras` are the monetary policy; §7's example is arithmetic, not a recommendation. Somebody has to choose what a unit is worth. |
 | Reward notes are linkable | The value is public until spent, and the recipient is a named validator. That is a bigger deanonymisation surface than an ordinary payment, and paying into a fresh one-time address per block (as `wallet/sealing.py` already supports) is the obvious mitigation nobody has costed. |
-| Succession | `docs/portability_design.md` carries `claimable_total = declared_total − burned_fees` across a freeze. With issuance that term gains `minted(H)`, and a successor's claim window has to know the schedule of the chain it inherits from. |
+| Succession | `plan/portability_design.md` carries `claimable_total = declared_total − burned_fees` across a freeze. With issuance that term gains `minted(H)`, and a successor's claim window has to know the schedule of the chain it inherits from. |
 
 ## Rendered version
 

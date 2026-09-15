@@ -1,6 +1,6 @@
 # What a fee buys
 
-*Part sixteen. Design only. Read after `docs/emission_design.md` (part fifteen),
+*Part fifteen. Design only. Read after `docs/emission_design.md` (part fourteen),
 which took the reward and deliberately left the fee alone.*
 
 A fee on fin6 is public, non-negative, and burned. It buys exactly one thing:
@@ -135,7 +135,7 @@ bound it, rather than trying to derive it.
 
 ## 4. Who gets it — and why burning is not a placeholder
 
-Part fifteen recommended paying the block reward to the seats named by the
+Part fourteen recommended paying the block reward to the seats named by the
 previous block's certificate, and the same three candidates apply to fees. The
 arithmetic here is different, and it cuts the other way.
 
@@ -180,7 +180,7 @@ fixed reward are two numbers instead of two rules.
 
 ## 6. Three things that must not happen
 
-- **A hidden fee.** Part fifteen's argument applies unchanged: the fee is
+- **A hidden fee.** Part fourteen's argument applies unchanged: the fee is
   public today because the sum row reveals it, and any scheme that hides it
   makes the supply unauditable rather than private. A fee is the one amount on
   this chain that must stay in the clear.

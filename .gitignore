@@ -44,3 +44,6 @@ web/
 
 # vibe (kept out of the repo: currently holds design.md, a solution design)
 vibe/
+
+# plan (kept out of the repo: as the design is not finalized.)
+plan/

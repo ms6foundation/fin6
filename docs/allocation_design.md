@@ -1,15 +1,15 @@
 # What may be created, and what may be seen
 
-*Part seventeen. Design only.*
+*Part sixteen. Design only.*
 
 Four questions were asked together — initial allocation, collateralisation,
 fees, reward — and two of them already have sketches, so this does not redo
 them:
 
-- **the reward** — `docs/emission_design.md` (part fifteen): whether a
+- **the reward** — `docs/emission_design.md` (part fourteen): whether a
   permissioned chain with burned fees needs issuance at all, the halving as a
   recurrence in eras, and pay-the-certificate over pay-the-leader;
-- **fees** — `docs/fee_design.md` (part sixteen): a fee buys survival in one
+- **fees** — `docs/fee_design.md` (part fifteen): a fee buys survival in one
   mempool and not inclusion, capacity is three unrelated constants, and
   burning is the only distribution under which a producer cannot bid for free.
 
@@ -18,7 +18,7 @@ four together.
 
 ## 0. One principle, arrived at four times
 
-Part fifteen got there for the reward: a block reward's amount **must be
+Part fourteen got there for the reward: a block reward's amount **must be
 public**, because a confidential chain where money can be created invisibly has
 an unauditable supply, and unauditable is worse than private. The same argument
 lands again on allocation and lands hardest on a stablecoin.
@@ -192,12 +192,12 @@ Where units come from and where they go, per asset:
 | | creates | destroys | public? |
 |---|---|---|---|
 | genesis mint | the initial allocation, once | — | total public, holdings hidden |
-| block reward (part fifteen) | `schedule(height)` | — | **must be public** — supply audit |
-| fees (part sixteen) | — | the fee, burned | already public, in the sum row |
+| block reward (part fourteen) | `schedule(height)` | — | **must be public** — supply audit |
+| fees (part fifteen) | — | the fee, burned | already public, in the sum row |
 | vault issue | stablecoin, against collateral | — | **must be public, with its asset** |
 | vault redeem | — | stablecoin, releasing collateral | same |
 
-and the invariant of part fifteen becomes one per asset:
+and the invariant of part fourteen becomes one per asset:
 
     supply(a, H) = genesis(a) + minted(a, H) − burned(a, H)
 
