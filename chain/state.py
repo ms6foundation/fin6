@@ -40,10 +40,10 @@ class ApplyResult:
 class UtxoDelta:
     """What one grid's ceremony does to the ledger.
 
-    A local grid cannot compute utxo_root: it does not know what the other grids
+    A tier-0 grid cannot compute utxo_root: it does not know what the other grids
     spent this epoch, so it has no idea what the global set will look like.  All
     it can honestly commit to is a delta against the last finalised state.  The
-    roots are computed once, at the supreme tier, by applying every surviving
+    roots are computed once, at the top tier, by applying every surviving
     delta in canonical order.
     """
     spent: tuple = ()          # input note commitments consumed

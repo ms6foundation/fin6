@@ -84,10 +84,10 @@ def main():
 
     # ── 2. the encoding earns its keep on everything else ────────────────────
     rule("2. canonical encoding, on the part that is not a proof")
-    stripped = dataclasses.replace(blocks[0], supers=tuple(
+    stripped = dataclasses.replace(blocks[0], groups=tuple(
         dataclasses.replace(s, children=tuple(
             dataclasses.replace(c, transactions=()) for c in s.children))
-        for s in blocks[0].supers))
+        for s in blocks[0].groups))
     as_json = json.dumps(dataclasses.asdict(stripped), default=str).encode()
     encoded = codec.encode(stripped)
     print(f"  one block's headers, rolls and certificates")

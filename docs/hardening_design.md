@@ -1,6 +1,6 @@
 # Hardening a block into history — fin6 design sketch, part three
 
-The last stage: how a block leaves the supreme mempool and becomes network
+The last stage: how a block leaves the top-tier mempool and becomes network
 history. Follows `private_chain_design.md` and `tiered_ceremony_design.md`
 (implemented in `chain/`).
 
@@ -11,10 +11,10 @@ verification. It is not: it is hardening, and the analogy is Bitcoin mining.
 
 The ceremony decides what is true. Hardening decides that it stays true.
 
-Parts one and two produce **consensus finality**: a supreme grid agrees a network
-block, a quorum certificate proves it, and the block lands in the supreme
+Parts one and two produce **consensus finality**: a top tier agrees a network
+block, a quorum certificate proves it, and the block lands in the top-tier
 mempool. That is instant and it is enough — right up until the moment the
-consensus itself was wrong. A captured supreme grid, a quorum breach, a roster
+consensus itself was wrong. A captured top tier, a quorum breach, a roster
 that drifted: in every one of those cases the certificate is valid and the
 history is not.
 
@@ -26,14 +26,14 @@ the other jobs mining does (leader election, Sybil resistance, fork choice among
 honest peers), because the tiers below already handle those.
 
 ```
-supreme mempool          hardening              network history
+top-tier mempool          hardening              network history
 (agreed, reversible) --> w turns spend    -->   (weight accumulates,
                          themselves             cost to unsay grows)
 ```
 
 ## 1. What hardening is actually for
 
-Under normal operation the hardening layer **decides nothing**. The supreme grid
+Under normal operation the hardening layer **decides nothing**. The top tier
 has already agreed exactly one block for the height; there is no competing
 candidate; the turns stamp the only thing on offer.
 
@@ -267,7 +267,7 @@ what keeps it usable as a backstop for that hierarchy's own failures.
 | How the 70,000 turns are distributed | Still the most important unanswered question, and now quantitative: the attacker's share of the pool *is* the rewrite ceiling. Needs a mapping across independent operators, and a way to verify it. |
 | The lazy stamper | A turn stamped without checking is a turn donated. Committing to sampled proof digests proves fetching, not checking. The *attester* half of this is now provable — see `Seat.catch_lazy`: an attestation over a block that does not validate is a signed statement its author could not have made honestly, which is the same shape as equivocation. The stamper half is not, because a stamp commits to a block hash and nothing about having checked it. |
 | Difficulty in a permissioned setting | Retargeting assumes a competitive rate to measure. With a known roster and consume-on-draw the rate is closer to fixed; the retarget rule may need to be schedule-driven rather than race-driven. |
-| Interaction with instant consensus finality | The supreme grid says a block is final; hardening says it becomes final. Applications need a stated rule for which to act on, and at what depth. |
+| Interaction with instant consensus finality | The top tier says a block is final; hardening says it becomes final. Applications need a stated rule for which to act on, and at what depth. |
 | Era genesis | Era n+1 is authorised by era n; era 0 is a trusted setup and should be named as one. |
 | Stateful signing | One-time keys must never be reused; a holder restored from backup can destroy its own turn. |
 | Reorg mechanics | If a fork does win, ledger state has to roll back. Part four added undo records and `ChainStore.rollback`, kept to `retention_depth` — 729 blocks at a third of the pool. Beyond that ceiling there is nothing, and a node that cannot roll back that far diverges permanently from one that can. |

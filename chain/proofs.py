@@ -3,7 +3,7 @@
 All three prove the same statement: knowledge of a witness z with
 F(embed(known, z)) = v over a transaction's TxSystem, under the same MQ hardness
 assumption.  What differs is the machinery, and therefore the implementation
-surface a soundness bug could hide in.  A transaction that reaches the supreme
+surface a soundness bug could hide in.  A transaction that reaches the top tier
 tier has been accepted by all three.
 
     mpcith   MPC-in-the-head          mq/ms6/mpcith.py   smallest proof

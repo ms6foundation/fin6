@@ -1,6 +1,6 @@
 # Superseded
 
-This file framed the final stage — moving a block from the supreme mempool into
+This file framed the final stage — moving a block from the top-tier mempool into
 network history — as a **verification** layer: 70,000 one-shot verifier-only
 nodes checking blocks and sampling transaction proofs.
 

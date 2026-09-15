@@ -180,10 +180,10 @@ def test_both_halves_keep_working_after_the_split():
         assert ok, "a transaction always has a grid that owns its partition"
         result = run_tiered_epoch(world, epoch=epoch, base_seed="grow")
         assert result.finalised, (epoch, result.reason)
-        assert result.tiers == 2, "two grids means a super tier"
+        assert result.tiers == 2, "two grids means a tier-1 grid"
         # Both halves run their own ceremony and both reach quorum — the donor
         # was not stranded and the founded grid is not a passenger.
-        assert set(result.local.finalised) == grids, result.local.skipped
+        assert set(result.tier0.finalised) == grids, result.tier0.skipped
         world.apply_network_block(result.block)
 
 

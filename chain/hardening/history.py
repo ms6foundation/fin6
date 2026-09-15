@@ -1,6 +1,6 @@
 """Network history — hardened blocks, spent turns, and fork choice.
 
-A block leaves the supreme mempool agreed but reversible.  It enters history when
+A block leaves the top-tier mempool agreed but reversible.  It enters history when
 enough turns have burned themselves on it, and it becomes harder to displace as
 later blocks pile weight on top.  The fork-choice rule is Bitcoin's — greatest
 cumulative weight — with one change that does most of the work:

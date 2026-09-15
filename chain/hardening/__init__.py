@@ -1,7 +1,7 @@
 """Phase H — hardening an agreed block into network history.
 
 The ceremony decides what is true; hardening decides that it stays true.  A
-block leaves the supreme mempool agreed but reversible, and enters history when
+block leaves the top-tier mempool agreed but reversible, and enters history when
 turns from a finite, single-use pool have burned themselves on it.
 
     pool.py    the era — 70,000 one-time turns in a Merkle tree

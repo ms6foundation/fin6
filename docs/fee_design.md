@@ -27,7 +27,7 @@ way it is.
 | the value | `tx.fee`, and it is **public** — the sum row reads `sum(in) − sum(out) = fee`, so it is revealed while every amount stays hidden. |
 | the check | `fee < 0` is refused. There is no minimum and no maximum. |
 | where it goes | `state.burned_fees += tx.fee`. Burned, and a term in the supply bound. |
-| ordering | none. `LocalWorkload.build` walks `leader.mempool.values()` in whatever order the dict holds, filters by partition, and stops at an optional `limit` no caller sets. |
+| ordering | none. `GridWorkload.build` walks `leader.mempool.values()` in whatever order the dict holds, filters by partition, and stops at an optional `limit` no caller sets. |
 | eviction | when a mempool is full: lowest fee first, oldest on a tie, *per node*, consensus-free. |
 | block capacity | **no rule at all.** Nothing caps transactions per block. |
 
@@ -65,7 +65,7 @@ else happens, and the budget cannot decline it. The wire ceiling and the clock
 ceiling land within a factor of two of each other **by coincidence**.
 
 **The frame bounds the whole network, not one grid.** A network block carries
-every super block, carrying every ceremony block. It travels as one `"block"`
+every tier-1 block, carrying every ceremony block. It travels as one `"block"`
 frame. So partitioning multiplies *verification* capacity across grids and does
 not multiply *wire* capacity at all: 22 launch transactions per block is the
 figure whether there is one grid or forty. Part two's throughput claim — that

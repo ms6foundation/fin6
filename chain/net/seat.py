@@ -454,7 +454,7 @@ class Seat:
 
         This is still the seat's own certificate, and it is still what this
         node will offer if it leads next epoch. The difference is that it is
-        no longer what this node *checks against*: `LocalWorkload.roll_from`
+        no longer what this node *checks against*: `GridWorkload.roll_from`
         derives the expected roll from the block's copy.
         """
         return AttendanceRoll.from_cert(

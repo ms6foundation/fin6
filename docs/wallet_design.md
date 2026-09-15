@@ -206,7 +206,7 @@ wallet, this is that rule:
 |---|---|---|---|
 | submitted | a node accepted it | the proof verified and it is in one mempool | *pending* |
 | included | in a ceremony block with a quorum certificate | one grid agreed | *pending* |
-| agreed | in the network block | the supreme tier agreed; consensus-final | **paid** |
+| agreed | in the network block | the top tier agreed; consensus-final | **paid** |
 | hardened | the block carries `t` stamps, and more accrue | historically final, cost to unsay grows | **settled** |
 
 The gap between *agreed* and *settled* is where the rewrite ceiling lives —

@@ -318,7 +318,7 @@ def test_pruning_an_era_is_deleting_one_file():
 
 def test_a_hardened_block_archives_with_its_stamps():
     """The archive's unit is what the hardening layer produced, not what the
-    supreme grid agreed."""
+    top tier agreed."""
     blocks = epoch_blocks()
     hardened = HardenedBlock(block_hash=blocks[0].hash(), height=blocks[0].height,
                              prev_hash="nb:genesis", era_id=0, drawn=(1, 2, 3),

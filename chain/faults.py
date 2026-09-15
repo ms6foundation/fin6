@@ -58,7 +58,7 @@ def self_evident_flaw(block, params, *, chain_id: str | None = None,
     malformed block is a flawed block, and a checker that throws on the
     evidence it was handed is a checker an attacker can silence.
     """
-    if hasattr(block, "supers"):
+    if hasattr(block, "groups"):
         return _network_flaw(block, params, chain_id=chain_id,
                              check_proofs=check_proofs)
     return _ceremony_flaw(block, params, chain_id=chain_id,
@@ -68,7 +68,7 @@ def self_evident_flaw(block, params, *, chain_id: str | None = None,
 def _network_flaw(block, params, *, chain_id, check_proofs) -> str | None:
     """What a network block says about itself, and its nested ceremonies.
 
-    Only the commitments over things the block carries: `super_root`,
+    Only the commitments over things the block carries: `group_root`,
     `foundings_root`, and every ceremony underneath. The rest of a network
     header — the UTXO root, the history root, the counts, the register roots —
     is a statement about the *ledger*, which is contextual by construction and
@@ -78,15 +78,15 @@ def _network_flaw(block, params, *, chain_id, check_proofs) -> str | None:
         h = block.header
         if chain_id is not None and h.chain_id != chain_id:
             return f"block is for chain {str(h.chain_id)[:20]}…"
-        if h.super_root != block.compute_super_root():
-            return "super_root does not match the super blocks carried"
+        if h.group_root != block.compute_group_root():
+            return "group_root does not match the tier-1 blocks carried"
         if h.foundings_root != block.compute_foundings_root():
             return "foundings_root does not match the foundings carried"
         if h.merges_root != block.compute_merges_root():
             return "merges_root does not match the merges carried"
-        for sup in block.supers:
+        for sup in block.groups:
             if sup.header.child_root != sup.compute_child_root():
-                return (f"{sup.header.super_id}: child_root does not match "
+                return (f"{sup.header.group_id}: child_root does not match "
                         f"the ceremony blocks carried")
         for child in block.ceremony_blocks():
             flaw = _ceremony_flaw(child, params, chain_id=chain_id,

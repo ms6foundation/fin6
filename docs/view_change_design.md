@@ -101,8 +101,8 @@ assumption.
 
 - **No pipelining.** A view is a whole attempt at one height, not a stage in a
   chained protocol. The epoch ends when it ends.
-- **No view change at the super or supreme tier.** Those are C2's problem, and
-  the supreme grid stalling is a different failure — everything stops, rather
+- **No view change at tier 1 or the top tier.** Those are C2's problem, and
+  the top tier stalling is a different failure — everything stops, rather
   than one grid's height not advancing.
 - **No proposal without a body.** A leader bound to re-propose a locked block it
   does not hold cannot; the view fails and the next one tries. Bodies are

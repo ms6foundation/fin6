@@ -276,8 +276,8 @@ that can acknowledge a block it does not have.
 
 Named rather than discovered:
 
-- **One tier over the network.** The node process runs a single grid. The super
-  and supreme tiers exist in the simulation (`run_tiered_epoch`) and have never
+- **One tier over the network.** The node process runs a single grid. Tier 1
+  and top tiers exist in the simulation (`run_tiered_epoch`) and have never
   run over sockets.
 - **No admission over the network.** Growth — admitting nodes, founding and
   merging grids — runs in the simulation. On a live network the roster is the

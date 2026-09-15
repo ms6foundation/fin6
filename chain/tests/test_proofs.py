@@ -115,8 +115,8 @@ def test_unknown_backend_is_refused():
 
 
 def test_the_designed_policy_is_now_the_running_one():
-    """mpcith / ssh5 / ssh3 from local to supreme — all three implemented."""
-    assert DEMO.backend_for("local") == "mpcith"
-    assert DEMO.backend_for("super") == "ssh5"
-    assert DEMO.backend_for("supreme") == "ssh3"
+    """mpcith / ssh5 / ssh3 from tier 0 upward — all three implemented."""
+    assert DEMO.backend_for(0) == "mpcith"
+    assert DEMO.backend_for(1) == "ssh5"
+    assert DEMO.backend_for(2) == "ssh3"
     assert set(DEMO.proof_backends) == {"mpcith", "ssh5", "ssh3"}

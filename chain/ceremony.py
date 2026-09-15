@@ -326,7 +326,7 @@ class NodeWorkload:
     """Default: the leader builds from its own mempool and seats validate it.
 
     The tiered scheduler substitutes a workload per tier, which is what lets the
-    same Ceremony machinery run a local grid, a super grid and the supreme grid
+    same Ceremony machinery run a tier-0 grid, a tier-1 grid and the top tier
     without changing a line of it.
     """
 

@@ -60,7 +60,7 @@ def main(argv=None):
         dt = time.time() - t
         hb = res.hardened
         status = f"{GREEN}✓{OFF}" if res.finalised else f"{RED}✗{OFF}"
-        print(f"   {epoch:>6} {len(res.epoch.local.finalised):>6} "
+        print(f"   {epoch:>6} {len(res.epoch.tier0.finalised):>6} "
               f"{len(hb.stamps):>4}/{len(hb.drawn):<3} {hb.weight:>10,} "
               f"{hb.cumulative:>12,} {history.remaining_turns():>11,}  "
               f"{status} {dt:.1f}s")

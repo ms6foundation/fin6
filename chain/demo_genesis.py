@@ -125,12 +125,12 @@ def main():
     b = world.nodes[sorted(world.nodes)[0]].state
     print(f"\n  the block is the ordinary format, not a special one:")
     print(f"    NetworkBlock  tiers={block.header.tiers}  "
-          f"supers={len(block.supers)}  "
+          f"groups={len(block.groups)}  "
           f"grids={sum(1 for _ in block.ceremony_blocks())}")
     print(f"    certificate on the network block: "
           f"{GREEN}{block.quorum_cert is not None}{OFF}   "
           f"on the blocks nested inside it: "
-          f"{block.supers[0].children[0].quorum_cert is not None}")
+          f"{block.groups[0].children[0].quorum_cert is not None}")
     print(f"{DIM}    tiers=1 is signed, so a later reader can tell a legitimately "
           f"degenerate block from a forged one whose inner certificates were "
           f"stripped{OFF}")

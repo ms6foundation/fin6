@@ -56,7 +56,7 @@ def _valid_block():
 
 
 def _flawed_block():
-    """A block whose header commits to a super_root the block does not have.
+    """A block whose header commits to a group_root the block does not have.
 
     Staged rather than mined — a leader that produces one is by definition
     broken — but the shape is what matters, and the shape is checkable by
@@ -64,8 +64,8 @@ def _flawed_block():
     """
     good = _valid_block()
     header = dataclasses.replace(good.header,
-                                 super_root=good.header.super_root + 1)
-    return NetworkBlock(header=header, supers=good.supers,
+                                 group_root=good.header.group_root + 1)
+    return NetworkBlock(header=header, groups=good.groups,
                         dropped=good.dropped, foundings=good.foundings)
 
 
@@ -79,7 +79,7 @@ def test_a_valid_block_has_no_self_evident_flaw():
 def test_a_header_that_does_not_match_its_body_is_self_evident():
     world, _ = _run_one()
     flaw = self_evident_flaw(_flawed_block(), world.params)
-    assert flaw is not None and "super_root" in flaw
+    assert flaw is not None and "group_root" in flaw
 
 
 def test_every_self_evident_check_is_a_pure_function_of_the_block():
@@ -100,7 +100,7 @@ def test_the_ledger_questions_are_deliberately_not_checked():
     good = _valid_block()
     moved = NetworkBlock(
         header=dataclasses.replace(good.header, prev_hash="nb:somewhere-else"),
-        supers=good.supers, dropped=good.dropped, foundings=good.foundings)
+        groups=good.groups, dropped=good.dropped, foundings=good.foundings)
     assert self_evident_flaw(moved, world.params) is None
 
 
@@ -217,8 +217,8 @@ def test_a_proven_lazy_attester_is_suspended_by_the_next_block():
     assert register.standing_of("n01") == Standing.ATTESTER
 
     block = dataclasses.replace(
-        result.block.header, super_root=result.block.header.super_root + 1)
-    flawed = NetworkBlock(header=block, supers=result.block.supers,
+        result.block.header, group_root=result.block.header.group_root + 1)
+    flawed = NetworkBlock(header=block, groups=result.block.groups,
                           dropped=result.block.dropped,
                           foundings=result.block.foundings)
     world.pending_faults = (_lazy_report(world, "n00", ["n01"], flawed,
@@ -261,8 +261,8 @@ def test_a_suspended_seat_does_not_heal_by_turning_up():
     world.apply_network_block(run.block)
     flawed = NetworkBlock(
         header=dataclasses.replace(run.block.header,
-                                   super_root=run.block.header.super_root + 1),
-        supers=run.block.supers, dropped=run.block.dropped,
+                                   group_root=run.block.header.group_root + 1),
+        groups=run.block.groups, dropped=run.block.dropped,
         foundings=run.block.foundings)
     world.pending_faults = (_lazy_report(world, "n00", ["n01"], flawed,
                                          epoch=1),)

@@ -3,9 +3,9 @@
     CeremonyBlock   one grid's work.  Carries a *delta*, not roots, plus the
                     attendance roll of the previous ceremony and the register
                     root that follows from it.
-    SuperBlock      a bundle of ceremony blocks from one super grid, with the
+    GroupBlock      a bundle of ceremony blocks from one tier-1 grid, with the
                     siblings it had to drop.
-    NetworkBlock    the supreme grid's output.  The only tier that computes the
+    NetworkBlock    the top tier's output.  The only tier that computes the
                     global utxo_root and nf_root, because it is the only tier
                     that can see every delta.
 
@@ -92,7 +92,7 @@ def tier_service(block) -> dict:
     """Who sat at tiers 1 and 2 in this block, who signed, and who led.
 
     Standing lives in one register per *local* grid, advanced by an attendance
-    roll.  The super and supreme grids are not local grids: they have no
+    roll.  Tier-1 and top-tier grids are not tier-0 grids: they have no
     persistent membership, no register and no roll of their own — so a node
     that no-showed at the top paid nothing, while the same node missing its
     home ceremony lost its attendance streak.  The incentives were inverted
@@ -103,8 +103,8 @@ def tier_service(block) -> dict:
     Everything here is derived from the block and nothing is carried in it,
     which is what makes it checkable rather than announced:
 
-      * a super grid's seats are the leaders of the children it carries;
-      * the supreme committee is the union of those, which is the leaders of
+      * a tier-1 grid's seats are the leaders of the children it carries;
+      * the top-tier committee is the union of those, which is the leaders of
         every child in the block (Road A seats the tier below, so the two are
         the same set by construction);
       * who attended is what each certificate proves, and the certificates are
@@ -113,11 +113,11 @@ def tier_service(block) -> dict:
 
     Returns {node_id: (seated, attended, led)}, summed across both tiers.
 
-    Two residuals, named rather than hidden.  A child that a super grid
+    Two residuals, named rather than hidden.  A child that a tier-1 grid
     *dropped* is not in `children`, so its leader loses credit for a ceremony
     it did sit in — `dropped` carries hashes, not seats, so the block cannot
-    say otherwise.  And at two tiers the same seats sit in both the super and
-    the supreme ceremony and are credited twice, which is not double-counting:
+    say otherwise.  And at two tiers the same seats sit in both tier 1 and
+    the top-tier ceremony and are credited twice, which is not double-counting:
     they did sit twice.
     """
     out = {}
@@ -136,7 +136,7 @@ def tier_service(block) -> dict:
         return sorted({c.header.leader_id for c in children
                        if c.header.leader_id})
 
-    for sup in block.supers:
+    for sup in block.groups:
         signed = set(sup.quorum_cert.attended()) if sup.quorum_cert else set()
         for nid in seats_of(sup.children):
             credit(nid, 1, 1 if nid in signed else 0,
@@ -244,8 +244,8 @@ class CeremonyBlock:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @dataclass(frozen=True)
-class SuperBlockHeader:
-    super_id: str
+class GroupBlockHeader:
+    group_id: str
     epoch: int
     chain_id: str
     prev_network_hash: str
@@ -253,31 +253,31 @@ class SuperBlockHeader:
     dropped_root: int
     #: Who led this ceremony.  A `CeremonyBlockHeader` has carried this since
     #: part two and the tiers above it never did, so the archive knew who led
-    #: every local grid and nothing about who led anything above one.  It is
+    #: every tier-0 grid and nothing about who led anything above one.  It is
     #: needed now for a second reason: standing at the upper tiers is credited
     #: from the block, and "led" cannot be credited to somebody the block does
     #: not name.  Review C2 §7.
     leader_id: str = ""
 
     def hash(self) -> str:
-        return "sb:" + h_hex("super-header", self.super_id, self.epoch,
+        return "sb:" + h_hex("group-header", self.group_id, self.epoch,
                              self.chain_id, self.prev_network_hash,
                              self.child_root, self.dropped_root,
                              self.leader_id)
 
 
 @dataclass(eq=False)
-class SuperBlock:
-    header: SuperBlockHeader
+class GroupBlock:
+    header: GroupBlockHeader
     children: tuple = ()
     dropped: tuple = ()            # (child_hash, reason) for siblings refused
     quorum_cert: object = field(default=None, repr=False)
 
     def compute_child_root(self) -> int:
-        return seal_root("super-children", [c.hash() for c in self.children])
+        return seal_root("group-children", [c.hash() for c in self.children])
 
     def compute_dropped_root(self) -> int:
-        return seal_root("super-dropped", [f"{h}:{why}" for h, why in self.dropped])
+        return seal_root("group-dropped", [f"{h}:{why}" for h, why in self.dropped])
 
     def hash(self) -> str:
         return self.header.hash()
@@ -291,7 +291,7 @@ class SuperBlock:
             yield from child.transactions
 
     def __repr__(self):
-        return (f"SuperBlock({self.header.super_id}, {len(self.children)} grids, "
+        return (f"GroupBlock({self.header.group_id}, {len(self.children)} grids, "
                 f"{len(self.dropped)} dropped, {self.hash()[:13]}…)")
 
 
@@ -307,7 +307,7 @@ class NetworkBlockHeader:
     prev_hash: str
     utxo_root: int
     nf_root: int
-    super_root: int
+    group_root: int
     registers_root: int
     tiers: int = 3
     foundings_root: int = 0
@@ -348,21 +348,21 @@ class NetworkBlockHeader:
     #: believes the membership was.  See chain/seats.py and
     #: docs/quorum_signature_decision.md.
     seats_root: str = ""
-    #: Who led the ceremony that produced this block — the supreme grid's
+    #: Who led the ceremony that produced this block — the top tier's
     #: leader, or the single grid's at one tier.  Same reason as
-    #: `SuperBlockHeader.leader_id`: the archive should not lose who led the
+    #: `GroupBlockHeader.leader_id`: the archive should not lose who led the
     #: tier that decides the roots, and service at the upper tiers is credited
     #: from what the block names.
     leader_id: str = ""
     #: How many attestations this block's own certificate had to carry — the
-    #: grid's, at one tier, and the supreme grid's above that.  Same reason as
+    #: grid's, at one tier, and the top tier's above that.  Same reason as
     #: `CeremonyBlockHeader.quorum`: the register a verifier holds is not the
     #: one the ceremony ran under.  See review B4.
     quorum: int = 0
     """How many ceremonies stand behind this block.
 
-    Three is the full hierarchy: a local grid agreed the transactions, a super
-    grid agreed the bundle, a supreme grid agreed the roots, and each carries
+    Three is the full hierarchy: a tier-0 grid agreed the transactions, a tier-1
+    grid agreed the bundle, a top tier agreed the roots, and each carries
     the certificates of the tier below.  Below the sizing thresholds the tiers
     collapse onto each other, and at one tier there is a single certificate on
     this block with none on the blocks nested inside it.
@@ -375,7 +375,7 @@ class NetworkBlockHeader:
     def hash(self) -> str:
         return "nb:" + h_hex("network-header", self.height, self.epoch,
                              self.chain_id, self.prev_hash, self.utxo_root,
-                             self.nf_root, self.super_root,
+                             self.nf_root, self.group_root,
                              self.registers_root, self.tiers,
                              self.foundings_root, self.merges_root,
                              self.witness_root,
@@ -387,14 +387,14 @@ class NetworkBlockHeader:
 @dataclass(eq=False)
 class NetworkBlock:
     header: NetworkBlockHeader
-    supers: tuple = ()
+    groups: tuple = ()
     dropped: tuple = ()
     foundings: tuple = ()
     merges: tuple = ()
     quorum_cert: object = field(default=None, repr=False)
 
-    def compute_super_root(self) -> int:
-        return seal_root("network-supers", [s.hash() for s in self.supers])
+    def compute_group_root(self) -> int:
+        return seal_root("network-groups", [s.hash() for s in self.groups])
 
     def compute_foundings_root(self) -> int:
         return foundings_root(self.foundings)
@@ -410,7 +410,7 @@ class NetworkBlock:
         return self.header.height
 
     def ceremony_blocks(self):
-        for sup in self.supers:
+        for sup in self.groups:
             yield from sup.children
 
     def transactions(self):
@@ -418,7 +418,7 @@ class NetworkBlock:
             yield from child.transactions
 
     def __repr__(self):
-        return (f"NetworkBlock(h={self.header.height}, {len(self.supers)} supers, "
+        return (f"NetworkBlock(h={self.header.height}, {len(self.groups)} groups, "
                 f"{sum(1 for _ in self.ceremony_blocks())} grids, "
                 f"{sum(1 for _ in self.transactions())} txs, {self.hash()[:13]}…)")
 

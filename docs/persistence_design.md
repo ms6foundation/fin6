@@ -33,7 +33,7 @@ sentence.
 | class | what is in it | what losing it costs | durability it needs |
 |---|---|---|---|
 | **A · ledger** | utxo values + dead bits, nullifiers, register records, network headers, hardened headers, weight, spent turns | the node cannot validate anything; recovery only by re-sync | atomic with the block, fsynced |
-| **B · evidence** | transaction bodies, proofs, quorum certificates, attendance rolls, ceremony and super blocks | can still validate forward; cannot serve history or re-derive it | written lazily, deleted by policy |
+| **B · evidence** | transaction bodies, proofs, quorum certificates, attendance rolls, ceremony and tier-1 blocks | can still validate forward; cannot serve history or re-derive it | written lazily, deleted by policy |
 | **C · working** | three mempools, verification cache, era tree, topology, trust list | an epoch of throughput | none |
 | **D · secret and monotone** | node signing seed, era master seed slice, highest anchor ever signed | key compromise, or a turn spent twice | fsync **before** the action, not after |
 
@@ -83,7 +83,7 @@ a whole epoch as a journal and then applies once:
 ```
 epoch journal (discardable whole)        ledger (atomic, ordered)
   phase L  ceremony blocks, rolls    ┐
-  phase S  super blocks, drops       ├──> one transaction: deltas, registers,
+  phase S  tier-1 blocks, drops       ├──> one transaction: deltas, registers,
   phase X  network block + cert      ┘    roots, tip, undo record
 ```
 
@@ -230,7 +230,7 @@ nullifier(pos INTEGER PRIMARY KEY, nf BLOB UNIQUE)
 register(grid_id, node_id, joined, standing, consecutive, total,
          last_seen, led, faults, PRIMARY KEY(grid_id, node_id))
 netblock(height INTEGER PRIMARY KEY, hash, prev, epoch, utxo_root, nf_root,
-         super_root, registers_root, seg_id, seg_off, seg_len)
+         group_root, registers_root, seg_id, seg_off, seg_len)
 hardened(block_hash PRIMARY KEY, height, prev, era_id, weight,
          cumulative, spent_root)
 spent_turn(era_id, leaf_index, block_hash, PRIMARY KEY(era_id, leaf_index))

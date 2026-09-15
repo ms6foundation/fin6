@@ -33,7 +33,7 @@ from wallet.store import Held, Wallet, WalletError
 
 PARAMS = dataclasses.replace(DEMO, proof_backends=("mpcith",),
                              default_backend="mpcith",
-                             proof_policy=(("local", "mpcith"),))
+                             proof_policy=((0, "mpcith"),))
 CHAIN = "fin6:" + "cd" * 32
 K = 4
 

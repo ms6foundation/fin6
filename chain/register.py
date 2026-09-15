@@ -82,7 +82,7 @@ class MemberRecord:
     #: the rule that relocating restarts the counter, and a waiver that is not
     #: visible in the state is a waiver nobody can audit.
     founded_from: str = ""
-    #: Service at the tiers above this grid: how many super or supreme
+    #: Service at the tiers above this grid: how many tier-1 or top-tier
     #: ceremonies this member was seated for, how many of those it attended,
     #: and how many it led.  Separate counters from the local ones, because
     #: they are a different thing earned in a different place — a seat at the
@@ -254,7 +254,7 @@ class GridRegister:
         Deliberately does **not** touch `epoch`, `consecutive` or standing.
         The register advances by one ceremony per `apply`, and service is not
         a second ceremony of this grid — it is what a member did somewhere
-        else.  Whether a missed supreme ceremony should also cost a member its
+        else.  Whether a missed top-tier ceremony should also cost a member its
         local streak is a governance question with an argument on both sides,
         and it is recorded here rather than answered: the counters make it
         answerable with numbers instead of intuition.

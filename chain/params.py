@@ -56,7 +56,11 @@ GROEBNER_FLOOR = 16
 RANGE_FLOOR = 16
 RANGE_COMFORTABLE = 32
 SOUNDNESS_BITS = 80
-TIER_ORDER = ("local", "super", "supreme")
+#: Tiers are numbered, not named: 0 is where transactions are verified, and
+#: the highest tier a network runs is the one that computes the global roots.
+#: A count that varies per epoch cannot be addressed by a superlative — see
+#: docs/tier_naming_decision.md.
+TOP_TIER = 2
 
 # Fixed note coordinates: value, asset, owner, rho.  Everything after these is
 # a random blinder, which is what makes the published note commitment hiding.
@@ -114,13 +118,13 @@ class ChainParams:
     # ── consensus ─────────────────────────────────────────────────────────────
     chain_id: str = "fin6-private-v1"
     row_size: int = 5        # C: seats per ceremony row
-    grid_size: int = 5       # g: target seats per grid, and per super grid
+    grid_size: int = 5       # g: target seats per grid, at every tier
     quorum_num: int = 2      # quorum = ceil(N * num / den) attestations
     quorum_den: int = 3
 
-    # tier -> proof backend.  See backend_for().
-    proof_policy: tuple = (("local", "mpcith"), ("super", "ssh5"),
-                           ("supreme", "ssh3"))
+    # tier number -> proof backend.  See backend_for().
+    proof_policy: tuple = ((0, "mpcith"), (1, "ssh5"),
+                           (2, "ssh3"))
 
     def __post_init__(self):
         if self.n_note <= NOTE_FIXED_COORDS:
@@ -147,12 +151,12 @@ class ChainParams:
     def max_value(self) -> int:
         return 1 << self.range_bits
 
-    def backend_for(self, tier: str) -> str:
-        """Which proof system guards a tier.
+    def backend_for(self, tier: int) -> str:
+        """Which proof system guards a tier, by tier number.
 
-        mpcith / ssh5 / ssh3 from local to supreme: smallest proof where the
-        most verifying happens, simplest analysis where the output is
-        irreversible.  All three now ship in mq/.
+        mpcith / ssh5 / ssh3 from tier 0 upward: smallest proof where the most
+        verifying happens, simplest analysis where the output is irreversible.
+        All three now ship in mq/.
         """
         return dict(self.proof_policy)[tier]
 
@@ -234,14 +238,14 @@ class ChainParams:
                 f"proof_backends {list(self.proof_backends)}: a bare "
                 f"verify_transaction would look for a proof no wallet makes")
         policy = dict(self.proof_policy)
-        needed = [t for t in TIER_ORDER[:max(1, int(tiers))]]
+        needed = list(range(max(1, int(tiers))))
         for tier in needed:
             backend = policy.get(tier)
             if backend is None:
-                problems.append(f"no proof backend for the {tier} tier")
+                problems.append(f"no proof backend for tier {tier}")
             elif backend not in self.proof_backends:
                 problems.append(
-                    f"the {tier} tier verifies with {backend!r}, which no "
+                    f"tier {tier} verifies with {backend!r}, which no "
                     f"wallet proves in")
         spare = [b for b in self.proof_backends
                  if b not in {policy.get(t) for t in needed}]
@@ -282,8 +286,8 @@ DEMO = ChainParams(name="demo")
 # The two-backend mapping, for comparing against the full policy.
 NO_MPCITH = ChainParams(name="no-mpcith",
                         proof_backends=("ssh5", "ssh3"),
-                        proof_policy=(("local", "ssh5"), ("super", "ssh5"),
-                                      ("supreme", "ssh3")))
+                        proof_policy=((0, "ssh5"), (1, "ssh5"),
+                                      (2, "ssh3")))
 DESIGNED = DEMO
 
 # Sized per mq/mq.md's parameter guidance.  Slow in pure Python.
@@ -302,8 +306,8 @@ STRONG = ChainParams(
 #: promotion and grid founding happen while someone is watching.
 LOCAL = ChainParams(name="local", proof_backends=("mpcith",),
                     default_backend="mpcith",
-                    proof_policy=(("local", "mpcith"), ("super", "mpcith"),
-                                  ("supreme", "mpcith")),
+                    proof_policy=((0, "mpcith"), (1, "mpcith"),
+                                  (2, "mpcith")),
                     attend_threshold=3, grid_size=7, row_size=5)
 
 #: What a real network launches with.  Sized to mq.md's revised guidance —
@@ -329,8 +333,8 @@ LAUNCH = ChainParams(
     zk_rounds=80,
     proof_backends=("mpcith",),
     default_backend="mpcith",
-    proof_policy=(("local", "mpcith"), ("super", "mpcith"),
-                  ("supreme", "mpcith")),
+    proof_policy=((0, "mpcith"), (1, "mpcith"),
+                  (2, "mpcith")),
     grid_size=7,
     row_size=5,
 )

@@ -17,15 +17,15 @@
     ],
     "proof_policy": [
       [
-        "local",
+        0,
         "mpcith"
       ],
       [
-        "super",
+        1,
         "mpcith"
       ],
       [
-        "supreme",
+        2,
         "mpcith"
       ]
     ],
@@ -170,43 +170,43 @@
   "mint": {
     "total": 4000,
     "outputs": [
-      "cm:1e19b75133c12d420e68129dd3be7cb755e3470f3fdd637901fb78c8cb68efe0",
-      "cm:9b18df85136bfd370b8231f3a99815945e1319066e7abbc35177dd00c8ad1f57",
-      "cm:828d8ac8aa7a34035aa066d27a88f68733fb28b5213538e6d3a40fd2acad464b",
-      "cm:82a4eff63993a1b9c792d4fcf216d3fdbfe71701f22d707a63d92db1d4b3643e",
-      "cm:28386cb5e563de28f67229f26e1b831d5387bc1db0f34c68750192ff5eb10b9d"
+      "cm:4a3b11f8160985892f0238b0fb26409724e5f431de014382ea6c5c4f1d1530f6",
+      "cm:684d5e23c36d383850497e7ebb08fc182628111c2c54be15acde221934f17d27",
+      "cm:91c2856e7d1780dcc464d12d2216fdf37c62015b300768306b76bbd30b36b123",
+      "cm:df8c8ded35d2aa7baf92095d9f2ff211f9e075fe2df4cc2ff9c1ea01e23a5c9d",
+      "cm:769b8e373a9d6c0f30e6b9ffda7d2b890de0508ecc3942ed556728842ee076d7"
     ],
-    "digest": "d12e885cbc1f4a9e7f7c4b7e1b9502ada19713ab27c5af95331e0870c95eedb3"
+    "digest": "4e5306eb5f9d1d994c510188fba241e77e45d1fc885c62776d809e1069e5d559"
   },
   "ratifications": [
     {
       "node_id": "fin6-n01",
-      "signature": "a2c8a30f0e788fce02356cb547d1804b268b647547dfe358695b0f185cbccde08ebf4c32ce31c188ebcedf6efc72787bab84191beb8fbb9f8d07d24234dcaf09"
+      "signature": "0dfe55f6ed5b64ddc40a9555484b0e3a301e8a7b98a0dc3fbc293cff8cd3bae1a0865037176a2b5673b5469830e311e5829043195270ad2bfe5d7fc1c696ac0e"
     },
     {
       "node_id": "fin6-n02",
-      "signature": "6487d69e3246a094d5cbf7226f345dabd695681e604a4ae2361dd861d223299efea6dd6454d1c949e56daf5ab8263af0935780c59a34d96e85ec8a24ab43e90c"
+      "signature": "e649d6b8e2a1aef1b9dcbfed470ae6ae3fe540203afa029883a8c1fdc13992fd214f056b133b78d42e0ca22b38c5a35f05b7ac952b29536e959ab72a8e30ec09"
     },
     {
       "node_id": "fin6-n03",
-      "signature": "94aa414d8cd107d86f4c1af8ecf8955e57eaa7122a642ef22e82b78375ec33e02d60fcf95c892b34c2179d2d6c1b336ba1fbc1dc4c504c1c9e821e9e348b9005"
+      "signature": "3978dff43bb8452059f1e5c06f8587eabaa3c21b11956bc10acd81590b4b22bf6dafb8e5b35519a71e3e64f8b72cc163bd0e2a4971a3c0a2121a78e50bf4d205"
     },
     {
       "node_id": "fin6-n04",
-      "signature": "a599266c45fffda0ae944fa634c665eb10d09e1e5bdaf830178ec97c95cc77b61630296c59e9d814b222b43677ec4e35ef1a95911b3db272a588cbf85357e806"
+      "signature": "b5508a9ef5b23ec209e7917e8e97eb9ec47ffbc6354808557b7fc740f09214f2ad18a833445cc5308a15d71f2561179f570964ca55973631e241f1fc35816005"
     },
     {
       "node_id": "fin6-n05",
-      "signature": "2c86dcc6708087ef9f385f3348f54fce90b3b187eb3d31b6737c54e8d4cf52a5d208f6f17f69212a78602265c0d4f5115ab2ca6c88e12d9d342016fe8867c20f"
+      "signature": "89037dfb739872061e8404907fdd39d691c367d8381ac84b574c73acd9e827527a5b0f312dc8ec4c3c8a427f6dc2e47f60d3638fa00a638500995cb82df4fa08"
     },
     {
       "node_id": "fin6-n06",
-      "signature": "659109064af0a8288e109028aee63deba2988e704d23bf39153d245e345dd646fa94dc2ac03cd8b59dea5338d736044695496087268d3a97301fea8c871e7300"
+      "signature": "bdf28fb3c025faa9a86df2801b225be72f247763889fca97ae147ae252fca25db3344542a1c6e9b0b78bc0f28017267e910cdfad052f089938aa4a9ffe4e5405"
     },
     {
       "node_id": "fin6-n07",
-      "signature": "2c44b7a9bbc02c2b160b9f15f3699fcb7e1f16123a7e93ffe34c690ad33a3a739b96ab5e78977d673eb795f4e033cfe10b6d1e27adee4a681df30cc7db14fb0d"
+      "signature": "4516e81875b74104e81c3a2d7fe9a383455bcc5dbb63a61b4f696e927630f7ec57c84b77417fa40abb81d382a14ce6af3bede4b40b705ef291927f9577795e0d"
     }
   ],
-  "chain_id": "fin6:ae99a5d267c099169dc3755b3d37e21abd76d9662738e6bbc14c0f7e1c04e3c4"
+  "chain_id": "fin6:ed7c42edcf9a9e66f31b8030553901b49a57b11d414cce6afed51e23ecf1821e"
 }

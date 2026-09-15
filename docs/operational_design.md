@@ -203,7 +203,7 @@ that each tier re-checks the tier below with a different proof system, audited
 by seeded sample — *"the real prize: protocol diversity"*. Reading the code:
 `SuperWorkload.validate` checks quorum certificates, partition compliance and
 delta collisions, and **verifies no transaction proof at all**; nor does the
-supreme tier. Above tier 0 nobody re-verifies anything, so the ladder's
+top tier. Above tier 0 nobody re-verifies anything, so the ladder's
 independence is currently an aspiration rather than a property. It is also
 moot at launch, because `LAUNCH` ships **one** backend — a deliberate, argued
 choice — so there is no second system to audit with. This is a *mechanism*

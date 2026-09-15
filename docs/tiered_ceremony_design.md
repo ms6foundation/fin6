@@ -9,33 +9,33 @@ The ceremony mechanism does not change. What is new is a tree of grids, a
 register that records who showed up, and three proof systems standing behind
 each other:
 
-- **Assignment** — which local grid a node belongs to, given it should be nearby
+- **Assignment** — which tier-0 grid a node belongs to, given it should be nearby
   and must be exactly one.
 - **The register** — each grid keeps an objective record of attendance, which is
   what the 40-ceremony gate counts against.
 - **Trusted lists** — separately, each node builds its own list from what it
   watched. The two are deliberately not the same thing.
-- **Aggregation** — leaders promote to a super grid, super leaders to the supreme
-  grid, blocks climb from a local mempool to the network mempool, and each tier
+- **Aggregation** — leaders promote to a tier-1 grid, tier-1 leaders to the top
+  grid, blocks climb from a tier-0 mempool to the network mempool, and each tier
   verifies with a different proof system.
 
 ## 1. The epoch: three phases, one ladder of certificates
 
 ```
-Phase L   local grids run concurrently      MPC-in-the-head  -> CeremonyBlock -> local mempool
-Phase S   super grids of local leaders      5-pass SSH       -> SuperBlock    -> super mempool
-Phase X   supreme grid of super leaders     3-pass SSH       -> NetworkBlock  -> network mempool
+Phase L   tier-0 grids run concurrently      MPC-in-the-head  -> CeremonyBlock -> tier-0 mempool
+Phase S   tier-1 grids of tier-0 leaders      5-pass SSH       -> GroupBlock    -> tier-1 mempool
+Phase X   top tier of tier-1 leaders     3-pass SSH       -> NetworkBlock  -> network mempool
 ```
 
 Phases run in sequence, because each tier's membership is only known once the
-tier below has finished — a super grid is made of local *leaders*.
+tier below has finished — a tier-1 grid is made of local *leaders*.
 
 Each tier signs a quorum certificate over what it agreed and carries the
 certificates below it, so a network block contains a **ladder** that lets anyone
 walk a transaction to finality without trusting any single tier.
 
-**Naming, precisely.** "Committed to the local mempool" means *this grid agreed
-on this bundle* — not that it is final. Only the supreme grid puts anything in
+**Naming, precisely.** "Committed to the tier-0 mempool" means *this grid agreed
+on this bundle* — not that it is final. Only the top tier puts anything in
 the network mempool.
 
 ## 2. Joining a grid
@@ -97,7 +97,7 @@ the same seal-tree machinery. Every seat computes it; the leader's claimed
 The root climbs with the block:
 
 ```
-register_root -> CeremonyBlock -> SuperBlock -> NetworkBlock
+register_root -> CeremonyBlock -> GroupBlock -> NetworkBlock
 ```
 
 So standing is **grid-local in how it is earned and global in how it is checked** —
@@ -177,29 +177,29 @@ implementation surface where a soundness bug could hide.
 | tier | protocol | rounds/reps | why here | DEMO h=48 | STRONG h=208 |
 |---|---|---|---|---|---|
 | local | MPC-in-the-head | τ=20, N=16 | smallest proof, verifies every transaction | 62 KB | ~260 KB* |
-| super | 5-pass SSH | 80 | middle ground | 185 KB | 0.75 MB |
-| supreme | 3-pass SSH | 137 | simplest analysis, fewest verifications, irreversible output | 295 KB | ~1.3 MB* |
+| 1 | 5-pass SSH | 80 | middle ground | 185 KB | 0.75 MB |
+| 2 | 3-pass SSH | 137 | simplest analysis, fewest verifications, irreversible output | 295 KB | ~1.3 MB* |
 
 \* STRONG figures extrapolated; DEMO figures measured on the shipped
 implementation. Round counts follow `mq.md`: 2^-80 needs 137 rounds at error 2/3
 for 3-pass, 80 at error ~1/2 for 5-pass, and ceil(80/log2 N) repetitions for
 MPCitH. N=16 rather than the sketched N=256 is the shipped default: N=256 is
 half the size (32.3 KB) but 7x slower both ways (0.22 s prove, 0.20 s verify vs
-0.03 s), and the local tier is the one that verifies most.
+0.03 s), and the tier 0 is the one that verifies most.
 
 ### The ordering is deliberate in two directions
 
 **Size against volume.** Proof size runs MPCitH << 5-pass < 3-pass; verification
-volume runs local > super > supreme. Smallest proof where the most verifying
+volume runs tier 0 > tier 1 > tier 2. Smallest proof where the most verifying
 happens keeps total bytes bounded.
 
 **Simplicity against consequence.** 3-pass has the fewest moving parts and the
 least subtle Fiat-Shamir analysis — `mq.md` has to argue specifically that the
 Kales-Zaverucha grinding attack on Fiat-Shamir'd 5-pass schemes gains nothing here
 because α lives in a 255-bit field, and MPCitH brings seed trees, party simulation
-and a three-phase transcript, by far the most code to get wrong. The supreme
+and a three-phase transcript, by far the most code to get wrong. The top tier
 grid's output is network-final and irreversible, so it gets the protocol with the
-fewest sharp edges; the local tier's mistakes still have two tiers above them.
+fewest sharp edges; the tier 0's mistakes still have two tiers above them.
 
 ### The real prize: protocol diversity
 
@@ -219,9 +219,9 @@ can re-verify but never re-prove. So the spender produces the statement in each
 system it will meet, and tiers verify at different densities:
 
 - **Local** — every seat verifies the MPCitH proof of every transaction.
-- **Super** — every super seat verifies child certificates plus the 5-pass proof
+- **Tier 1** — every tier-1 seat verifies child certificates plus the 5-pass proof
   of a *seeded sample* of each grid's transactions.
-- **Supreme** — the same with 3-pass, at a smaller sample.
+- **Tier 2** — the same with 3-pass, at a smaller sample.
 
 The sample is drawn from the epoch seed, so nobody knows in advance which
 transactions face the second and third verifier. Heavier proofs can be fetched on
@@ -274,27 +274,27 @@ split or merge, so announce it one epoch ahead.
 ```
 CeremonyBlock  = { grid_id, partition, txs, utxo_delta, attendance_roll,
                    register_root, cert(MPCitH-verified) }
-SuperBlock     = { super_id, [CeremonyBlock...], dropped[], register_roots[],
+GroupBlock     = { super_id, [CeremonyBlock...], dropped[], register_roots[],
                    cert(5-pass sample) }
-NetworkBlock   = { height, [SuperBlock...], roster_delta, utxo_root, nf_root,
+NetworkBlock   = { height, [GroupBlock...], roster_delta, utxo_root, nf_root,
                    registers_root, cert(3-pass sample) }
 ```
 
-A local grid **cannot compute `utxo_root`** — it does not know what other grids
+A tier-0 grid **cannot compute `utxo_root`** — it does not know what other grids
 spent this epoch. It can only commit to: these transactions verified, each input
 was unspent as of the last network block, every nullifier lay in my partition.
 That is a *delta*, not a root.
 
 Worth noticing the asymmetry: **the register root is local state and can be
 finalised at tier 0; the ledger roots are global state and cannot.** Global roots
-are computed once at the supreme tier by applying every surviving delta in
+are computed once at the top tier by applying every surviving delta in
 canonical order. So the state machine splits — per-grid delta validation vs.
 tier-2 global application. In the current code `ChainState.check_block` does both
 at once and would need separating.
 
 ## 9. Sizing: three tiers wants about g^3 nodes
 
-| nodes | g | grids | super grids | supreme seats | verdict |
+| nodes | g | grids | tier-1 grids | top-tier seats | verdict |
 |---|---|---|---|---|---|
 | 125 | 5 | 25 | 5 | 5 | balanced |
 | 1000 | 10 | 100 | 10 | 10 | balanced |
@@ -331,7 +331,7 @@ node set and a quorum, so they run at all three tiers unchanged.
 | `register.py` | *new* — `GridRegister`, `MemberRecord`, deterministic update rule, rooted serialisation |
 | `trustlist.py` | *new* — each node's private, unrooted view; explicitly forbidden from touching quorum |
 | `locality.py` | *new* — locality tags, candidate grids, seeded enrolment, split/merge rules |
-| `tiers.py` | *new* — epoch scheduler; phases L, S, X; assembles super and network blocks |
+| `tiers.py` | *new* — epoch scheduler; phases L, S, X; assembles group and network blocks |
 | `proofs.py` | *new* — backend interface over `prove`/`verify`; 5-pass wired in, 3-pass and MPCitH written into `mq/ms6` and mirrored into `mq/vs6` |
 | `ceremony.py` | `Grid.seat` takes standing from the register; shadow attestations collected separately from quorum |
 | `block.py` | three block types; attendance roll and `register_root` in the certificate |
@@ -348,12 +348,12 @@ the three protocols add:
 |---|---|
 | ~~Two of three provers do not exist~~ | **Closed.** All three are implemented in `mq/ms6`, with independent verifiers in `mq/vs6`. What remains is that the 3-pass and MPCitH have no reference implementation to differential-test against — they are validated by soundness tests and by two independent verifiers agreeing, not by a third-party vector. |
 | Three proof systems, three audit surfaces | Diversity protects against a bug in one system and multiplies the code that could contain one. Worth it only if all three are actually reviewed. |
-| Sample rates at the upper tiers | How much of a grid's work super and supreme re-verify decides both cost and catch probability. Unset. |
+| Sample rates at the upper tiers | How much of a grid's work tier-1 and top-tier re-verify decides both cost and catch probability. Unset. |
 | Register handling on split and merge | Counters survive involuntary restructuring by design, but which register a split's records land in, and how two merged registers reconcile, needs a concrete rule. Part nine settled one boundary condition on the way past: a grid with no certificate on file has produced no block and therefore follows none, which is what lets a freshly founded grid build its first. |
 | Apprentice density per grid | Apprentices hold seats but cannot make quorum, so a grid admitting too many at once stalls. Needs an admission rate limit tied to attester count. |
 | Cross-partition transactions | A spend touching two partitions has no grid that may include it. |
 | Aggregate signatures become mandatory | The ladder now carries attendance rolls as well as attestations. At 1000 nodes that is tens of KB of Ed25519 per epoch before any payload. |
-| The supreme grid is a global stall point | If it aborts, nothing finalises anywhere that epoch. |
+| The top tier is a global stall point | If it aborts, nothing finalises anywhere that epoch. |
 | Apprenticeship is a rate limiter, not Sybil resistance | 40 ceremonies costs time, not identities. Fine while permissioned, fatal if opened. |
 | Locality tags are self-declared | A node claiming to be everywhere-adjacent widens its candidate set. |
 | Epoch clock | Three phase-locked tiers need a shared notion of when a phase ends; today's ceremony is a synchronous simulation with no timeouts. |

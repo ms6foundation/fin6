@@ -52,13 +52,13 @@ def main(argv=None):
 
     rule("3. Proof systems, one per tier")
     print(f"   available backends: {available_backends()}")
-    for tier in ("local", "super", "supreme"):
+    for tier in (0, 1, 2):
         name = params.backend_for(tier)
         b = get_backend(name)
         print(f"   {tier:<8} → {name:<7} {b.passes}-pass, "
               f"{b.rounds_for(params.security_bits):>3} rounds for 2^-80")
-    print(f"   {DIM}designed policy is {DESIGNED.backend_for('local')} at the "
-          f"local tier; not implemented, so this run falls back to ssh5{OFF}")
+    print(f"   {DIM}designed policy is {DESIGNED.backend_for(0)} at "
+          f"tier 0; not implemented, so this run falls back to ssh5{OFF}")
 
     rule("4. A transfer — alice pays bob 300, fee 5")
     t = time.time()
@@ -80,17 +80,17 @@ def main(argv=None):
     st = result.stats()
     print(f"   {'phase L':<9} {st['grids_finalised']}/{st['grids']} grids "
           f"finalised a CeremonyBlock")
-    for g, block in sorted(result.local.blocks.items())[:3]:
+    for g, block in sorted(result.tier0.blocks.items())[:3]:
         print(f"     {g:<8} {len(block.transactions)} txs  "
               f"delta {block.delta}  register_root "
               f"{str(block.header.register_root)[:10]}…")
     print(f"     {DIM}… {st['grids'] - 3} more{OFF}")
-    print(f"   {'phase S':<9} {len(result.supers.finalised)} super grids "
+    print(f"   {'phase S':<9} {len(result.tier1.finalised)} tier-1 grids "
           f"bundled them")
-    for s_id, block in sorted(result.supers.blocks.items()):
+    for s_id, block in sorted(result.tier1.blocks.items()):
         print(f"     {s_id:<8} {len(block.children)} grids, "
               f"{len(block.dropped)} dropped")
-    print(f"   {'phase X':<9} supreme grid computed the global roots")
+    print(f"   {'phase X':<9} top tier computed the global roots")
     b = result.block
     print(f"     utxo_root {str(b.header.utxo_root)[:14]}…  "
           f"nf_root {str(b.header.nf_root)[:14]}…")
@@ -137,7 +137,7 @@ def main(argv=None):
         for g in world.topology.grid_ids()[:4]) + " …")
     print(f"   balances: " + "  ".join(f"{k}={v.balance()}"
                                        for k, v in wallets.items()))
-    print(f"\n   {DIM}blocks reach the supreme mempool here.  Moving them into "
+    print(f"\n   {DIM}blocks reach the top-tier mempool here.  Moving them into "
           f"network history is part three.{OFF}")
     return 0
 

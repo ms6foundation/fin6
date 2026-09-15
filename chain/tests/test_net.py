@@ -25,7 +25,7 @@ from ..tiers import SoloWorkload, bootstrap_world
 CHAIN = "fin6:" + "ab" * 32
 PARAMS = dataclasses.replace(DEMO, attend_threshold=2, grid_size=7, row_size=5,
                              proof_backends=("mpcith",),
-                             proof_policy=(("local", "mpcith"),))
+                             proof_policy=((0, "mpcith"),))
 
 
 # ── frames ───────────────────────────────────────────────────────────────────
@@ -254,8 +254,8 @@ def _self_contradicting(body):
     from chain.tiered import NetworkBlock
 
     header = dataclasses.replace(body.header,
-                                 super_root=body.header.super_root + 1)
-    return NetworkBlock(header=header, supers=body.supers,
+                                 group_root=body.header.group_root + 1)
+    return NetworkBlock(header=header, groups=body.groups,
                         dropped=body.dropped, foundings=body.foundings)
 
 

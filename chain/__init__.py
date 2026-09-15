@@ -22,7 +22,7 @@ from .locality import (Enrolment, GridSpec, Topology, partition_of_nullifier,
                        sign_enrolment, tx_partition)
 from .proofs import BACKENDS, available_backends, get_backend
 from .register import AttendanceRoll, GridRegister, MemberRecord, Standing
-from .tiered import CeremonyBlock, NetworkBlock, SuperBlock
+from .tiered import CeremonyBlock, NetworkBlock, GroupBlock
 from .trustlist import TrustList
 from . import hardening
 from .hardening import Era, NetworkHistory, HardeningParams
@@ -55,7 +55,7 @@ __all__ = [
     "Topology", "GridSpec", "Enrolment", "sign_enrolment",
     "partition_of_nullifier", "tx_partition",
     "TrustList", "UtxoDelta", "merge_deltas",
-    "CeremonyBlock", "SuperBlock", "NetworkBlock",
+    "CeremonyBlock", "GroupBlock", "NetworkBlock",
     "get_backend", "available_backends", "BACKENDS", "NodeWorkload",
     # hardening
     "hardening", "Era", "NetworkHistory", "HardeningParams",

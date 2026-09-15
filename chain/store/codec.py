@@ -46,7 +46,7 @@ from ..net.directory import AddressRecord
 from ..viewchange import ViewChange, ViewChangeCert
 from ..state import UtxoDelta
 from ..tiered import (CeremonyBlock, CeremonyBlockHeader, NetworkBlock,
-                      NetworkBlockHeader, SuperBlock, SuperBlockHeader)
+                      NetworkBlockHeader, GroupBlock, GroupBlockHeader)
 from ..transaction import Transaction, TxInput
 
 FORMAT_VERSION = 1
@@ -56,7 +56,7 @@ FORMAT_VERSION = 1
 TYPES = (
     TxInput, Transaction, CeremonyMeta, BlockHeader, Block, Attestation,
     QuorumCert, FaultReport, SignedProposal, AttendanceRoll, UtxoDelta,
-    CeremonyBlockHeader, CeremonyBlock, SuperBlockHeader, SuperBlock,
+    CeremonyBlockHeader, CeremonyBlock, GroupBlockHeader, GroupBlock,
     NetworkBlockHeader, NetworkBlock, Stamp, HardenedBlock,
     # Appended, never inserted: the wire
     # type tag is this tuple's index.

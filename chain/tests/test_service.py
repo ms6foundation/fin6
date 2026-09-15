@@ -1,7 +1,7 @@
 """Standing for what a node does above its own grid.  Review C2 §7.
 
 Standing lives in one register per *local* grid, advanced by an attendance
-roll.  The super and supreme grids are not local grids — no persistent
+roll.  Tier-1 and top-tier grids are not tier-0 grids — no persistent
 membership, no register, no roll — so a node that no-showed at the top paid
 nothing, while the same node missing its home ceremony lost its streak.
 
@@ -39,7 +39,7 @@ def _fresh():
 
 
 def _three_tiers():
-    """One epoch of a 40-node network: 8 grids, 2 super grids, 3 tiers."""
+    """One epoch of a 40-node network: 8 grids, 2 tier-1 grids, 3 tiers."""
     if "run" not in _RUN:
         w, wallets = _world()
         r = run_tiered_epoch(w, epoch=1, base_seed="s")
@@ -61,9 +61,9 @@ def test_service_is_derived_from_the_block_and_carried_in_nothing():
 def test_everyone_who_sat_above_their_grid_is_named():
     w, r = _three_tiers()
     service = tier_service(r.block)
-    committee = set(r.supreme.grid.seats)
-    assert committee <= set(service), "a supreme seat that is not in the record"
-    for res in r.supers.finalised.values():
+    committee = set(r.tier2.grid.seats)
+    assert committee <= set(service), "a top-tier seat that is not in the record"
+    for res in r.tier1.finalised.values():
         assert set(res.grid.seats) <= set(service)
     assert all(nid in w.nodes for nid in service)
 
@@ -72,7 +72,7 @@ def test_attending_and_leading_are_counted_apart():
     w, r = _three_tiers()
     service = tier_service(r.block)
     led = [n for n, (_, _, l) in service.items() if l]
-    assert r.block.header.leader_id in led, "the supreme leader led something"
+    assert r.block.header.leader_id in led, "the top-tier leader led something"
     for nid, (seated, attended, leading) in service.items():
         assert attended <= seated, (nid, service[nid])
         assert leading <= seated
@@ -189,31 +189,31 @@ def test_a_restarted_node_credits_the_same_thing():
 
 # ── views at the top ─────────────────────────────────────────────────────────
 
-def test_a_silent_supreme_leader_costs_a_view_and_not_the_epoch():
+def test_a_silent_top_tier_leader_costs_a_view_and_not_the_epoch():
     """Review C2, Road C.  The tier below can lose a grid and carry on; this
     one cannot lose anything, so a leader that does not propose used to end the
     epoch for every partition on the network.
 
-    Silenced at the supreme tier only.  A bare node id would silence it in its
+    Silenced at the top tier only.  A bare node id would silence it in its
     own grid too, which changes which grids finalise, which changes the
     committee — and the experiment would be measuring something else.
     """
     from ..ceremony import SilentLeader
 
     w, r = _three_tiers()
-    bad = r.supreme.grid.leader
-    assert r.supreme_views == 1
+    bad = r.tier2.grid.leader
+    assert r.top_views == 1
 
     world, _ = _world()
     result = run_tiered_epoch(world, epoch=1, base_seed="s",
-                              behaviours={("supreme", bad): SilentLeader()})
+                              behaviours={(2, bad): SilentLeader()})
     assert result.finalised, result.reason
-    assert result.supreme_views == 2, "one view lost, the next one carried it"
-    assert result.supreme.grid.leader != bad, \
+    assert result.top_views == 2, "one view lost, the next one carried it"
+    assert result.tier2.grid.leader != bad, \
         "a view that reseats the same leader is not a view change"
-    assert set(result.supreme.grid.seats) == set(r.supreme.grid.seats), \
+    assert set(result.tier2.grid.seats) == set(r.tier2.grid.seats), \
         "the committee is the same one; only the seating moved"
-    assert result.block.header.leader_id == result.supreme.grid.leader
+    assert result.block.header.leader_id == result.tier2.grid.leader
 
 
 def test_the_view_budget_is_a_budget_and_not_a_guarantee():
@@ -222,12 +222,12 @@ def test_the_view_budget_is_a_budget_and_not_a_guarantee():
     from ..ceremony import SilentLeader
 
     world, _ = _world()
-    quiet = {("supreme", n): SilentLeader() for n in world.nodes}
+    quiet = {(2, n): SilentLeader() for n in world.nodes}
     result = run_tiered_epoch(world, epoch=1, base_seed="s", behaviours=quiet)
     assert not result.finalised
-    assert "supreme grid" in result.reason, result.reason
-    assert result.supreme_views == 3, "it spent the whole budget first"
-    assert result.local.finalised and result.supers.finalised, \
+    assert "top tier" in result.reason, result.reason
+    assert result.top_views == 3, "it spent the whole budget first"
+    assert result.tier0.finalised and result.tier1.finalised, \
         "the tiers below did their work and lost it, which is C2 exactly"
 
 
@@ -238,15 +238,15 @@ def test_one_view_is_the_behaviour_this_replaced():
     world, _ = _world()
     result = run_tiered_epoch(
         world, epoch=1, base_seed="s", max_views=1,
-        behaviours={("supreme", r.supreme.grid.leader): SilentLeader()})
-    assert not result.finalised and result.supreme_views == 1
+        behaviours={(2, r.tier2.grid.leader): SilentLeader()})
+    assert not result.finalised and result.top_views == 1
 
 
 def test_a_behaviour_can_still_be_aimed_at_a_node_everywhere():
     from ..ceremony import SilentLeader
     from ..tiers import _behaviour
 
-    assert _behaviour({}, "supreme", "n01").name == "honest"
-    assert _behaviour({"n01": SilentLeader()}, "local", "n01").name == "silent"
-    assert _behaviour({("supreme", "n01"): SilentLeader()},
-                      "local", "n01").name == "honest"
+    assert _behaviour({}, 2, "n01").name == "honest"
+    assert _behaviour({"n01": SilentLeader()}, 0, "n01").name == "silent"
+    assert _behaviour({(2, "n01"): SilentLeader()},
+                      0, "n01").name == "honest"

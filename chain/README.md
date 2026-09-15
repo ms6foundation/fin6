@@ -48,7 +48,7 @@ Both are run from the repository root (the same place `examples/` imports
 | `register.py` | `GridRegister` — attendance as rooted state, not opinion |
 | `trustlist.py` | each node's private view; structurally barred from quorum |
 | `locality.py` | persistent grids, seeded enrolment, nullifier partitioning, founding a grid |
-| `tiered.py` | `CeremonyBlock` / `SuperBlock` / `NetworkBlock` |
+| `tiered.py` | `CeremonyBlock` / `GroupBlock` / `NetworkBlock` |
 | `tiers.py` | the three-phase epoch scheduler and per-tier workloads |
 | `demo_tiers.py` | the tiered walkthrough |
 | `demo_genesis.py` | launching the seven-node network |
@@ -277,19 +277,19 @@ Added by the implementation:
 
 # The tiered path
 
-Parts two of the design, implemented up to the supreme mempool.  What happens
+Parts two of the design, implemented up to the top-tier mempool.  What happens
 after that — moving a block into network history — is deliberately not here.
 
 ```
-Phase L   every local grid runs a ceremony concurrently   -> CeremonyBlock
-Phase S   the local leaders form super grids              -> SuperBlock
-Phase X   the super leaders form the supreme grid         -> NetworkBlock
+Phase L   every tier-0 grid runs a ceremony concurrently   -> CeremonyBlock
+Phase S   the local leaders form tier-1 grids              -> GroupBlock
+Phase X   the tier-1 leaders form the top tier         -> NetworkBlock
 ```
 
 `Grid`, `Envelope`, `Ceremony` and `QuorumCert` are unchanged: each tier supplies
 a **Workload** saying what its leader builds and what its seats check, and the
 same seating, equivocation detection, quorum and view change run at all three
-scales.  Tier count follows the roster — with one super grid the supreme tier
+scales.  Tier count follows the roster — with one tier-1 grid the top tier
 collapses onto it, and a single-grid topology is refused with a pointer to
 `chain.ceremony.run_epoch`, which is the one-tier case.
 
@@ -298,13 +298,13 @@ collapses onto it, and a single-grid topology is refused with a pointer to
 ```
 CeremonyBlock  = { grid_id, partition, txs, utxo_delta, attendance_roll,
                    register_root, cert }
-SuperBlock     = { super_id, [CeremonyBlock...], dropped[], cert }
-NetworkBlock   = { height, [SuperBlock...], utxo_root, nf_root,
+GroupBlock     = { super_id, [CeremonyBlock...], dropped[], cert }
+NetworkBlock   = { height, [GroupBlock...], utxo_root, nf_root,
                    registers_root, cert }
 ```
 
-A local grid **cannot compute `utxo_root`** — it cannot see what the other grids
-spent this epoch.  It commits a *delta*; the supreme tier applies every surviving
+A tier-0 grid **cannot compute `utxo_root`** — it cannot see what the other grids
+spent this epoch.  It commits a *delta*; the top tier applies every surviving
 delta in canonical order and computes the roots once.  The register root is the
 exception: it is local state, so it is finalised at tier 0.
 
@@ -456,13 +456,13 @@ tripwire that raises on read and asserts the epoch still finalises.
 | tier | backend | rounds / reps for 2^-80 | proof at h=48 |
 |---|---|---|---|
 | local | `mpcith` (N=16) | 20 | 62 KB |
-| super | `ssh5` | 80 | 185 KB |
-| supreme | `ssh3` | 137 | 295 KB |
+| 1 | `ssh5` | 80 | 185 KB |
+| 2 | `ssh3` | 137 | 295 KB |
 
 This is the designed policy, and it is the running one: `ChainParams.DEMO`
 carries all three backends and `proof_policy` maps each tier to its own. A
 transaction built for the full policy carries ~542 KB of proof and takes 0.09 s
-to build; the local tier verifies its `mpcith` proof in 0.026 s.
+to build; the tier 0 verifies its `mpcith` proof in 0.026 s.
 
 **The 3-pass had to be written.** `mq/ms6/core.py` dropped its 3-pass path when
 it moved to 5-pass — only the `rounds_for_security` helper survived, computing
@@ -518,7 +518,7 @@ and builds in 60 ms.  Full suite: 107 tests in ~15 s.
 # Phase H — hardening
 
 Part three, implemented. The ceremony decides what is true; hardening decides it
-stays true. A block leaves the supreme mempool agreed but reversible, and enters
+stays true. A block leaves the top-tier mempool agreed but reversible, and enters
 history when turns from a finite single-use pool have burned themselves on it.
 
 ```python

@@ -100,7 +100,7 @@ PROFILES = {r.name: r for r in (FULL, COMPACT, HEADERS)}
 def split_proofs(block, retention: Retention = FULL):
     """(block with empty proof dicts, one proof dict per transaction).
 
-    The order is the block's own walk order — supers, then children, then
+    The order is the block's own walk order — groups, then children, then
     transactions — which is the order `join_proofs` puts them back in, so the
     two never need to agree on a key.
     """
@@ -114,13 +114,13 @@ def split_proofs(block, retention: Retention = FULL):
         return dataclasses.replace(
             cb, transactions=tuple(do_tx(t) for t in cb.transactions))
 
-    def do_super(sb):
+    def do_group(sb):
         return dataclasses.replace(
             sb, children=tuple(do_ceremony(c) for c in sb.children))
 
     def do_network(nb):
         return dataclasses.replace(
-            nb, supers=tuple(do_super(s) for s in nb.supers))
+            nb, groups=tuple(do_group(s) for s in nb.groups))
 
     if isinstance(block, HardenedBlock):
         inner = None if block.block is None else do_network(block.block)
@@ -143,13 +143,13 @@ def join_proofs(block, table):
         return dataclasses.replace(
             cb, transactions=tuple(do_tx(t) for t in cb.transactions))
 
-    def do_super(sb):
+    def do_group(sb):
         return dataclasses.replace(
             sb, children=tuple(do_ceremony(c) for c in sb.children))
 
     def do_network(nb):
         return dataclasses.replace(
-            nb, supers=tuple(do_super(s) for s in nb.supers))
+            nb, groups=tuple(do_group(s) for s in nb.groups))
 
     if isinstance(block, HardenedBlock):
         inner = None if block.block is None else do_network(block.block)
@@ -450,7 +450,7 @@ def _transactions_of(block):
     inner = block.block if isinstance(block, HardenedBlock) else block
     if inner is None:
         return
-    for sup in inner.supers:
+    for sup in inner.groups:
         for child in sup.children:
             yield from child.transactions
 

@@ -421,7 +421,7 @@ class _FakeBlock:
         self.header = NetworkBlockHeader(
             height=height, epoch=height, chain_id="fin6:" + "ab" * 32,
             prev_hash=f"nb:{height - 1}", utxo_root=1, nf_root=2,
-            super_root=3, registers_root=4)
+            group_root=3, registers_root=4)
         self.quorum_cert = None
 
     def transactions(self):

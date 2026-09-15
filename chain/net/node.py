@@ -524,7 +524,7 @@ class NodeProcess:
         attesters = [n for n in members
                      if register.standing_of(n) == Standing.ATTESTER]
         workload = SoloWorkload(self.world, gid, epoch,
-                                self.world.params.backend_for("local"))
+                                self.world.params.backend_for(0))
         self.seat = Seat(
             self.node, grid, workload, epoch=epoch,
             height=self.world.height + 1,
@@ -1249,7 +1249,7 @@ class NodeProcess:
             return False, f"certificate: {why}"
 
         workload = SoloWorkload(self.world, gid, header.epoch,
-                                self.world.params.backend_for("local"))
+                                self.world.params.backend_for(0))
         ok, why = workload.validate(self.node, block)
         if not ok:
             return False, why
@@ -1313,7 +1313,7 @@ class NodeProcess:
         set says are live, and that is the only identity a submission has.
         Everything after it is queued.
         """
-        backend = self.world.params.backend_for("local")
+        backend = self.world.params.backend_for(0)
         # Before authentication, because it is a lookup and because a
         # transaction with no home is not a transaction anybody can act on: a
         # note is spendable in exactly one grid, so one spending notes from two

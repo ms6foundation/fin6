@@ -76,7 +76,7 @@ CHANGES = {
 #: and, by construction, a new chain; scheduling one in advance is just a
 #: number."  A chain that discovers it needs a rule change and has nowhere to
 #: put one has to migrate instead of upgrade.  Partitioned finality, the only
-#: design that removes the supreme grid from the critical path, is exactly such
+#: design that removes the top tier from the critical path, is exactly such
 #: a change (docs/supreme_tier_design.md §8).
 #:
 #: Read it as a deadline rather than an option, because that is what it is: a

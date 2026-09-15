@@ -99,7 +99,7 @@ Second thing to notice, and it decides where the reward lives: **a mint has no
 nullifiers, so it has no partition.** `tx_partition` reads the partition off
 the inputs' nullifiers; with none, the answer is `None`, which means *no grid
 may include it*. A reward therefore cannot be an ordinary transaction in a
-ceremony block. It belongs on the **network block**, minted by the supreme
+ceremony block. It belongs on the **network block**, minted by the top
 tier — the only tier that computes global roots and the tier that already
 carries the other governance events (`foundings`, `merges`).
 
@@ -277,7 +277,7 @@ state.
 |---|---|---|
 | 1 | `emission` block in the document, `payout_address` on `NodeEntry`, `verify` caveats | **pre-genesis** — it is inside the chain id |
 | 2 | `schedule(height)` as a pure function, with the recurrence tested against the closed form | additive |
-| 3 | `mint` on `NetworkBlock` + a header root, built by the supreme tier | format |
+| 3 | `mint` on `NetworkBlock` + a header root, built by the top tier | format |
 | 4 | the four checks of §9, and the supply invariant in the light client | additive |
 | 5 | reconcile the two definitions of "a year" (§4) | trivial, and do it first |
 

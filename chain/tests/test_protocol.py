@@ -209,7 +209,7 @@ def test_a_launch_document_reserves_activation_heights():
     The schedule is inside the hash the chain id is, so a chain that reserves
     nothing can never adopt a rule change — it can only be replaced by a
     different chain.  Partitioned finality, the only design that takes the
-    supreme grid off the critical path, is exactly such a change.
+    top tier off the critical path, is exactly such a change.
     """
     doc = genesis.draft_seven()
     assert doc.schedule() == protocol.reserved_slots(PRODUCTION)

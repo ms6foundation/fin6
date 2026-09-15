@@ -118,7 +118,7 @@ def test_a_bit_past_the_last_seat_is_refused():
 def _header(**kw):
     return NetworkBlockHeader(height=1, epoch=1, chain_id=CHAIN,
                               prev_hash="nb:zero", utxo_root=1, nf_root=2,
-                              super_root=3, registers_root=4, **kw)
+                              group_root=3, registers_root=4, **kw)
 
 
 def test_the_seat_order_is_inside_the_block_hash():
@@ -259,9 +259,9 @@ def test_a_network_block_whose_seat_order_is_not_the_committed_one_is_refused():
     grid membership must be refused by every seat — otherwise the commitment is
     a number the producer writes and nobody reads.
 
-    The behaviour is handed to every node because the supreme leader is drawn
+    The behaviour is handed to every node because the top-tier leader is drawn
     from committed state and is not known in advance; it passes every block
-    through untouched except a `NetworkBlockHeader`, which only the supreme
+    through untouched except a `NetworkBlockHeader`, which only the top tier
     tier builds.
     """
     import dataclasses
@@ -294,7 +294,7 @@ def test_a_network_block_whose_seat_order_is_not_the_committed_one_is_refused():
 def test_a_certificate_signed_by_another_grids_seat_is_refused_by_the_world():
     """The wiring, on a real world rather than on a hand-made roster.
 
-    `TierWorld.verify_cert` is the one place both the super tier and a
+    `TierWorld.verify_cert` is the one place both tier 1 and a
     one-tier node check a certificate, and it is the reason the committed
     order is worth something before any aggregation: the outsider here is a
     real validator with a real key and a real signature, seated in another

@@ -94,14 +94,14 @@ def test_a_block_claiming_a_quorum_it_did_not_need_is_refused():
 
 
 def test_the_ceremony_header_is_checked_the_same_way():
-    """The same rule one tier down, where `LocalWorkload.validate` is what
-    refuses it — and where the number the super tier later reads comes from."""
-    from ..tiers import LocalWorkload
+    """The same rule one tier down, where `GridWorkload.validate` is what
+    refuses it — and where the number tier 1 later reads comes from."""
+    from ..tiers import GridWorkload
 
     world, result = _one_epoch()
     child = next(result.block.ceremony_blocks())
     gid = child.header.grid_id
-    workload = LocalWorkload(world, gid, 1, PARAMS.backend_for("local"))
+    workload = GridWorkload(world, gid, 1, PARAMS.backend_for(0))
     node = world.nodes[sorted(world.nodes)[0]]
     bad = dataclasses.replace(
         child, header=dataclasses.replace(child.header, quorum=2))

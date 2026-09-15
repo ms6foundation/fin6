@@ -287,7 +287,7 @@ t=0 makes permanent.
 
 ## 10. Starting at one tier
 
-The proposal: launch with 7 nodes named in the document, run only the supreme
+The proposal: launch with 7 nodes named in the document, run only the top-tier
 grid, and start the three-tier ceremony when the network grows. Yes — with three
 amendments, and one dependency that turns out to be the interesting part.
 
@@ -312,15 +312,15 @@ That is §03's waiver, used exactly as intended.
 `run_tiered_epoch` used to refuse fewer than two grids and points at
 `chain.ceremony.run_epoch` — part one's single-grid path, which emits a `Block`
 rather than a `NetworkBlock`. Taking that route means the chain's first blocks
-have a different header, no `registers_root`, no `super_root`, and the move to
+have a different header, no `registers_root`, no `group_root`, and the move to
 three tiers is a **change of block format in the middle of history**. Every
 archive, snapshot and verifier would have to know both, forever.
 
-So one grid runs one ceremony and emits a `NetworkBlock` whose `supers` holds a
-single `SuperBlock` holding a single `CeremonyBlock` — which is what
+So one grid runs one ceremony and emits a `NetworkBlock` whose `groups` holds a
+single `GroupBlock` holding a single `CeremonyBlock` — which is what
 `SoloWorkload` now does. The hierarchy degenerates;
 the format does not. The 3→2 collapse already works exactly this way — "the
-supreme tier collapses onto it, exactly as the sizing rule says it should" — and
+top tier collapses onto it, exactly as the sizing rule says it should" — and
 this extends the same rule to 2→1. Growth then changes how many ceremonies run,
 not what the chain looks like.
 
@@ -334,11 +334,11 @@ certificates were stripped. `TieredEpochResult` already computed `tiers`; it is 
 verification stands behind a block is part of what the block says about
 itself.**
 
-### The one grid does the local tier's job
+### The one grid does the tier 0's job
 
 It verifies every transaction, which is the local role, so the natural policy is
 `mpcith` — 62 KB and the fastest of the three — rather than `ssh3` at 295 KB
-because the grid is called supreme.
+because the grid is the top tier.
 
 But at genesis there is a better option that stops being available later: with
 seven nodes and low volume, check **all three**. Verification diversity is
@@ -349,7 +349,7 @@ and relaxes to the per-tier policy at the transition.
 ### Name the first leader, not the leader
 
 `Grid.seat` rerolls leadership every ceremony from the epoch seed. A permanently
-named supreme leader would be the only standing privilege in a design that has
+named top-tier leader would be the only standing privilege in a design that has
 none, and the fault machinery — equivocation detection, view change, the
 `leader_eligible` rule — all assume leaders rotate. So the document names the
 first view seed (or equivalently the first leader) and rotation takes over at
@@ -468,7 +468,7 @@ document      7 nodes, K=1, tiers=1, first view seed,
               era 0 holder map over 7 slices
 
 epochs 1..n   one grid, one ceremony, one certificate
-              NetworkBlock{ tiers=1, supers=[ super[ ceremony ] ] }
+              NetworkBlock{ tiers=1, groups=[ group[ ceremony ] ] }
 
               newcomers admitted as apprentices, promoted after 40 ceremonies
 

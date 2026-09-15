@@ -137,9 +137,9 @@ def test_a_default_backend_nobody_proves_in_is_refused():
 
 def test_a_tier_verifying_with_a_backend_no_wallet_proves_is_refused():
     bad = dataclasses.replace(LAUNCH,
-                              proof_policy=(("local", "ssh3"),
-                                            ("super", "mpcith"),
-                                            ("supreme", "mpcith")))
+                              proof_policy=((0, "ssh3"),
+                                            (1, "mpcith"),
+                                            (2, "mpcith")))
     assert any("no wallet proves" in p for p in bad.assess()[0])
 
 

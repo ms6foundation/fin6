@@ -110,7 +110,7 @@ could be finalised by five seats that were nowhere near it.
 `verify(..., seats=)` closes it, and it is honest now precisely because the
 order is committed: the validator is not checking against its own idea of the
 membership, it is checking against the one in the header. Wired at the two
-places that verify a certificate with a grid in hand — the super tier's check of
+places that verify a certificate with a grid in hand — the tier 1's check of
 its children, and a node's check of a one-tier network block.
 
 ## 4. What is left, and what it costs now

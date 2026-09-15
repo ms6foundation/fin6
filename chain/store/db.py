@@ -69,7 +69,7 @@ SCHEMA = (
     "CREATE TABLE IF NOT EXISTS grid_cert("
     "  grid_id TEXT PRIMARY KEY, leader TEXT, blob BLOB NOT NULL)",
     # What the last block said about service at the tiers above the grids —
-    # who sat in a super or supreme ceremony, who signed, who led.  It is
+    # who sat in a tier-1 or top-tier ceremony, who signed, who led.  It is
     # credited into the registers one block later, exactly as a roll is, so a
     # node that restarts without it computes a different register root from
     # everybody else.  Third time this lesson has arrived; see `grid_roll`.
@@ -82,7 +82,7 @@ SCHEMA = (
     # a node has reassembled from columns is a header a node could get wrong.
     "CREATE TABLE IF NOT EXISTS netblock("
     "  height INTEGER PRIMARY KEY, hash TEXT NOT NULL UNIQUE, prev TEXT,"
-    "  epoch INTEGER, utxo_root TEXT, nf_root TEXT, super_root TEXT,"
+    "  epoch INTEGER, utxo_root TEXT, nf_root TEXT, group_root TEXT,"
     "  registers_root TEXT, blob BLOB, cert BLOB)",
     # The stamps are kept, not just their weight: a client that has to weigh
     # two branches has to be able to check the work, and a number a node
@@ -350,7 +350,7 @@ class ChainStore:
 
     def block_headers(self):
         return list(self.db.execute(
-            "SELECT height,hash,prev,epoch,utxo_root,nf_root,super_root,"
+            "SELECT height,hash,prev,epoch,utxo_root,nf_root,group_root,"
             "registers_root FROM netblock ORDER BY height"))
 
     # ── the commit ───────────────────────────────────────────────────────────
@@ -394,11 +394,11 @@ class ChainStore:
                 [(tx.txid, header.height) for tx in block.transactions()])
             self.db.execute(
                 "INSERT INTO netblock(height,hash,prev,epoch,utxo_root,nf_root,"
-                "super_root,registers_root,blob,cert) "
+                "group_root,registers_root,blob,cert) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (header.height, block.hash(), header.prev_hash, header.epoch,
                  str(header.utxo_root), str(header.nf_root),
-                 str(header.super_root), str(header.registers_root),
+                 str(header.group_root), str(header.registers_root),
                  codec.encode(header),
                  codec.encode(block.quorum_cert) if block.quorum_cert else None))
             if service is not None:
